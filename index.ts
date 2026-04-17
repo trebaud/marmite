@@ -1,29 +1,46 @@
 import { resolve, dirname } from "path";
-import { mkdirSync } from "fs";
+import { mkdirSync, existsSync, readFileSync } from "fs";
 import type { HarnessConfig, ModelPricing } from "./.harness/core/types.ts";
 import { run } from "./.harness/core/orchestrator.ts";
 
 const DEFAULT_MAX_ITERATIONS = 1000;
-const DEFAULT_MODEL = "claude-opus-4-7";
+const DEFAULT_MODEL = "claude-sonnet-4-6";
 const DEFAULT_BUILD_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_VERIFY_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_FIX_TIMEOUT_MS = 15 * 60_000;
+const DEFAULT_ORCHESTRATE_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_COST_BUDGET = 15;
+const DEFAULT_COST_BUDGET_TOTAL = 0;
 const DEFAULT_MAX_FIX_ATTEMPTS = 3;
 const DEFAULT_MAX_TRANSIENT_RETRIES = 2;
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 
-// Pricing table in $/Mtok. Values approximate public list prices; override via --pricing or env.
-const PRICING: Record<string, ModelPricing> = {
+const DEFAULT_PRICING: Record<string, ModelPricing> = {
   "claude-opus-4-7":   { inputPerMTok: 15,  outputPerMTok: 75,  cacheReadPerMTok: 1.5 },
   "claude-opus-4-6":   { inputPerMTok: 5,   outputPerMTok: 25,  cacheReadPerMTok: 0.5 },
   "claude-sonnet-4-6": { inputPerMTok: 3,   outputPerMTok: 15,  cacheReadPerMTok: 0.3 },
   "claude-haiku-4-5":  { inputPerMTok: 1,   outputPerMTok: 5,   cacheReadPerMTok: 0.1 },
 };
 
-function pricingFor(model: string): ModelPricing {
-  return PRICING[model] ?? PRICING["claude-opus-4-7"]!;
+interface FileConfig {
+  maxIterations?: number;
+  prdPath?: string;
+  sensorsConfigPath?: string;
+  model?: string;
+  builderModel?: string;
+  verifierModel?: string;
+  orchestratorModel?: string;
+  pricing?: Record<string, ModelPricing>;
+  buildTimeoutMs?: number;
+  verifyTimeoutMs?: number;
+  fixTimeoutMs?: number;
+  orchestrateTimeoutMs?: number;
+  costBudgetUsdPerStory?: number;
+  costBudgetUsdTotal?: number;
+  maxFixAttempts?: number;
+  maxTransientRetries?: number;
+  resumeIfAvailable?: boolean;
 }
 
 function usage(): never {
@@ -33,22 +50,24 @@ Orchestrates an autonomous coding agent that builds a project from a PRD.
 The agent runs from this directory and writes application code inside app/.
 
 Options:
-  -n, --max-iterations <n>    Maximum iterations (default: ${DEFAULT_MAX_ITERATIONS})
-  -p, --prd <path>            Path to prd.json (default: ./prd.json)
-      --model <id>            Model ID (default: ${DEFAULT_MODEL})
-      --build-timeout <ms>    Build phase timeout (default: ${DEFAULT_BUILD_TIMEOUT_MS})
-      --verify-timeout <ms>   Verify phase timeout (default: ${DEFAULT_VERIFY_TIMEOUT_MS})
-      --fix-timeout <ms>      Fix phase timeout (default: ${DEFAULT_FIX_TIMEOUT_MS})
-      --cost-budget <usd>     Per-story cost budget, 0 disables (default: ${DEFAULT_COST_BUDGET})
-      --max-fix-attempts <n>  Fix attempts per story (default: ${DEFAULT_MAX_FIX_ATTEMPTS})
-      --retries <n>           Transient retries per session (default: ${DEFAULT_MAX_TRANSIENT_RETRIES})
-      --resume                Resume from .harness/state.json if available
-      --no-resume             Ignore existing state file
+  -c, --config <path>         Path to JSON config file (default: ./harness.config.json)
+  -n, --max-iterations <n>    Maximum iterations
+  -p, --prd <path>            Path to prd.json
+      --model <id>            Default model ID (fallback for builder/verifier)
+      --builder-model <id>    Override model for builder/fix phases
+      --verifier-model <id>   Override model for verify phase
+      --build-timeout <ms>    Build phase timeout
+      --verify-timeout <ms>   Verify phase timeout
+      --fix-timeout <ms>      Fix phase timeout
+      --cost-budget <usd>     Per-story cost budget, 0 disables
+      --cost-budget-total <usd>  Total run cost budget, 0 disables; halts run when exceeded
+      --max-fix-attempts <n>  Fix attempts per story
+      --retries <n>           Transient retries per session
+      --resume / --no-resume  Resume from .harness/state.json if available
   -h, --help                  Show this help
 
-Environment:
-  HARNESS_MODEL               Equivalent to --model
-  HARNESS_COST_BUDGET         Equivalent to --cost-budget
+Layer order (low → high precedence):
+  built-in defaults < config file < CLI flags
 `);
   process.exit(0);
 }
@@ -71,18 +90,26 @@ function parseFloatOrExit(name: string, value: string | undefined, min = 0): num
   return n;
 }
 
+function loadConfigFile(path: string): FileConfig {
+  if (!existsSync(path)) return {};
+  try {
+    const raw = readFileSync(path, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      console.error(`Error: config file ${path} must contain a JSON object`);
+      process.exit(2);
+    }
+    return parsed as FileConfig;
+  } catch (err) {
+    console.error(`Error: failed to read config file ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
+}
+
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
-  let maxIterations = DEFAULT_MAX_ITERATIONS;
-  let prdPath: string | undefined;
-  let model = process.env.HARNESS_MODEL ?? DEFAULT_MODEL;
-  let buildTimeoutMs = DEFAULT_BUILD_TIMEOUT_MS;
-  let verifyTimeoutMs = DEFAULT_VERIFY_TIMEOUT_MS;
-  let fixTimeoutMs = DEFAULT_FIX_TIMEOUT_MS;
-  let costBudget = process.env.HARNESS_COST_BUDGET ? parseFloat(process.env.HARNESS_COST_BUDGET) : DEFAULT_COST_BUDGET;
-  let maxFixAttempts = DEFAULT_MAX_FIX_ATTEMPTS;
-  let retries = DEFAULT_MAX_TRANSIENT_RETRIES;
-  let resumeIfAvailable = true;
+  const cli: FileConfig = {};
+  let configPath: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -91,101 +118,116 @@ function parseArgs(argv: string[]) {
       case "--help":
         usage();
         break;
+      case "-c":
+      case "--config":
+        configPath = args[++i];
+        if (!configPath) { console.error("Error: --config requires a path"); process.exit(1); }
+        break;
       case "-n":
       case "--max-iterations":
-        maxIterations = parseIntOrExit("--max-iterations", args[++i]);
+        cli.maxIterations = parseIntOrExit("--max-iterations", args[++i]);
         break;
       case "-p":
       case "--prd": {
         const val = args[++i];
-        if (!val) {
-          console.error("Error: --prd requires a file path");
-          process.exit(1);
-        }
-        prdPath = resolve(val);
+        if (!val) { console.error("Error: --prd requires a file path"); process.exit(1); }
+        cli.prdPath = resolve(val);
         break;
       }
       case "--model":
-        model = args[++i] ?? model;
+        cli.model = args[++i];
+        break;
+      case "--builder-model":
+        cli.builderModel = args[++i];
+        break;
+      case "--verifier-model":
+        cli.verifierModel = args[++i];
         break;
       case "--build-timeout":
-        buildTimeoutMs = parseIntOrExit("--build-timeout", args[++i], 1000);
+        cli.buildTimeoutMs = parseIntOrExit("--build-timeout", args[++i], 1000);
         break;
       case "--verify-timeout":
-        verifyTimeoutMs = parseIntOrExit("--verify-timeout", args[++i], 1000);
+        cli.verifyTimeoutMs = parseIntOrExit("--verify-timeout", args[++i], 1000);
         break;
       case "--fix-timeout":
-        fixTimeoutMs = parseIntOrExit("--fix-timeout", args[++i], 1000);
+        cli.fixTimeoutMs = parseIntOrExit("--fix-timeout", args[++i], 1000);
         break;
       case "--cost-budget":
-        costBudget = parseFloatOrExit("--cost-budget", args[++i]);
+        cli.costBudgetUsdPerStory = parseFloatOrExit("--cost-budget", args[++i]);
+        break;
+      case "--cost-budget-total":
+        cli.costBudgetUsdTotal = parseFloatOrExit("--cost-budget-total", args[++i]);
         break;
       case "--max-fix-attempts":
-        maxFixAttempts = parseIntOrExit("--max-fix-attempts", args[++i], 0);
+        cli.maxFixAttempts = parseIntOrExit("--max-fix-attempts", args[++i], 0);
         break;
       case "--retries":
-        retries = parseIntOrExit("--retries", args[++i], 0);
+        cli.maxTransientRetries = parseIntOrExit("--retries", args[++i], 0);
         break;
       case "--resume":
-        resumeIfAvailable = true;
+        cli.resumeIfAvailable = true;
         break;
       case "--no-resume":
-        resumeIfAvailable = false;
+        cli.resumeIfAvailable = false;
         break;
       default: {
         const n = parseInt(arg, 10);
-        if (!isNaN(n) && n > 0) {
-          maxIterations = n;
-        } else {
-          console.error(`Unknown option: ${arg}\nRun with --help for usage.`);
-          process.exit(1);
-        }
+        if (!isNaN(n) && n > 0) cli.maxIterations = n;
+        else { console.error(`Unknown option: ${arg}\nRun with --help for usage.`); process.exit(1); }
       }
     }
   }
 
-  return {
-    maxIterations,
-    prdPath,
-    model,
-    buildTimeoutMs,
-    verifyTimeoutMs,
-    fixTimeoutMs,
-    costBudget,
-    maxFixAttempts,
-    retries,
-    resumeIfAvailable,
-  };
+  return { cli, configPath };
 }
 
-const parsed = parseArgs(process.argv);
+const { cli, configPath } = parseArgs(process.argv);
+
+const resolvedConfigPath = resolve(
+  configPath ?? process.env.HARNESS_CONFIG ?? resolve(scriptDir, "harness.config.json"),
+);
+const fileCfg = loadConfigFile(resolvedConfigPath);
+
+function pick<K extends keyof FileConfig>(key: K, fallback: NonNullable<FileConfig[K]>): NonNullable<FileConfig[K]> {
+  return (cli[key] ?? fileCfg[key] ?? fallback) as NonNullable<FileConfig[K]>;
+}
 
 const harnessDir = resolve(scriptDir, ".harness");
 mkdirSync(harnessDir, { recursive: true });
 
+const model = pick("model", DEFAULT_MODEL);
+const pricing = { ...DEFAULT_PRICING, ...(fileCfg.pricing ?? {}) };
+
 const config: HarnessConfig = {
-  maxIterations: parsed.maxIterations,
+  maxIterations: pick("maxIterations", DEFAULT_MAX_ITERATIONS),
   projectRoot: scriptDir,
   builderMdPath: resolve(scriptDir, ".harness/prompts/builder-prompt.md"),
   verifierMdPath: resolve(scriptDir, ".harness/prompts/verifier-prompt.md"),
-  prdPath: parsed.prdPath ?? resolve(scriptDir, "prd.json"),
+  orchestratorMdPath: resolve(scriptDir, ".harness/prompts/orchestrator-prompt.md"),
+  prdPath: cli.prdPath ?? (fileCfg.prdPath ? resolve(fileCfg.prdPath) : resolve(scriptDir, "prd.json")),
+  sensorsConfigPath: fileCfg.sensorsConfigPath
+    ? resolve(fileCfg.sensorsConfigPath)
+    : resolve(scriptDir, "sensors/sensors.json"),
   progressPath: resolve(scriptDir, "progress.txt"),
   archiveDir: resolve(scriptDir, "archive"),
   lastBranchPath: resolve(scriptDir, ".last-branch"),
   statePath: resolve(harnessDir, "state.json"),
   eventsPath: resolve(harnessDir, "events.jsonl"),
-  verificationResultsPath: resolve(scriptDir, "verification-results.json"),
-  lastStoryPath: resolve(scriptDir, "last-story.txt"),
-  buildStatusPath: resolve(scriptDir, "build-status.json"),
-  model: parsed.model,
-  pricing: pricingFor(parsed.model),
-  buildTimeoutMs: parsed.buildTimeoutMs,
-  verifyTimeoutMs: parsed.verifyTimeoutMs,
-  fixTimeoutMs: parsed.fixTimeoutMs,
-  maxTransientRetries: parsed.retries,
-  costBudgetUsdPerStory: parsed.costBudget,
-  maxFixAttempts: parsed.maxFixAttempts,
-  resumeIfAvailable: parsed.resumeIfAvailable,
+  currentTaskPath: resolve(scriptDir, "current-task.json"),
+  model,
+  builderModel: pick("builderModel", model),
+  verifierModel: pick("verifierModel", model),
+  orchestratorModel: pick("orchestratorModel", model),
+  pricing,
+  buildTimeoutMs: pick("buildTimeoutMs", DEFAULT_BUILD_TIMEOUT_MS),
+  verifyTimeoutMs: pick("verifyTimeoutMs", DEFAULT_VERIFY_TIMEOUT_MS),
+  fixTimeoutMs: pick("fixTimeoutMs", DEFAULT_FIX_TIMEOUT_MS),
+  orchestrateTimeoutMs: pick("orchestrateTimeoutMs", DEFAULT_ORCHESTRATE_TIMEOUT_MS),
+  maxTransientRetries: pick("maxTransientRetries", DEFAULT_MAX_TRANSIENT_RETRIES),
+  costBudgetUsdPerStory: pick("costBudgetUsdPerStory", DEFAULT_COST_BUDGET),
+  costBudgetUsdTotal: pick("costBudgetUsdTotal", DEFAULT_COST_BUDGET_TOTAL),
+  maxFixAttempts: pick("maxFixAttempts", DEFAULT_MAX_FIX_ATTEMPTS),
+  resumeIfAvailable: pick("resumeIfAvailable", true),
 };
 
 await run(config);

@@ -1,70 +1,72 @@
 # Builder Agent Instructions
 
-You are a senior software engineer working inside an automated harness. Every iteration you are assigned **one** user story. A separate verifier agent will review your work, and the orchestrator — not you — is responsible for marking stories as passed. Your single job is to ship the one story cleanly and stop.
+You are an autonomous coding agent. Your job is to implement the story assigned to you and nothing else.
 
-## What you MUST do, in order
+## Your Task
 
-1. **Read `prd.json`** — at the repo root, next to this prompt.
-2. **Read `progress.txt`** — contains a running log of prior iterations.
-3. **Read `verification-results.json`** — if it exists, it holds the verifier's verdict on the previous story. If `verdict` is anything other than `pass`, the issues are about the **previous** story, not yours. Only act on it if your assigned story is the same.
-4. **Check the branch** — read `branchName` from `prd.json`. If you're not on it, check it out (create from `main` if missing).
-5. **Pick the next story** — the user story with the **lowest `priority` number** where `passes: false`. Break ties by ascending `id`. If no such story exists, write `build-status.json` (see below) with `status: "skipped_no_work"` and stop.
-6. **Implement that single story** inside `app/`. Follow the conventions and patterns already in the codebase and in relevant `CLAUDE.md` files.
-7. **Run quality gates** — the commands listed in `CLAUDE.md`. Typecheck must pass. Tests must pass when the workspace has them configured.
-8. **Commit all changes** with message exactly `feat: [Story ID] - [Story Title]`.
-9. **Write `last-story.txt`** containing just the story ID (e.g. `US-001`). Use an atomic write (temp file + rename) if possible.
-10. **Append to `progress.txt`** — format below. Do NOT edit existing lines.
-11. **STOP.** Do not continue to another story. Do not mark the story as passing in `prd.json` — the orchestrator does that after the verifier agrees.
+1. Run `pwd` to get your working directory, then read `current-task.json` using the full absolute path — contains your assigned story, acceptance criteria, guidance from the orchestrator, and a `sensorSummary` field summarizing any quality sensor results
+2. Read `progress.txt` — check the Codebase Patterns section first, then recent entries for context
+3. **Check `current-task.json` for a `verdict` field** — if present, the verifier has already reviewed this story. Read `summary` and `qaResults` and address all issues before committing.
+4. **Check `current-task.json` for a `sensorSummary` field** — if non-empty, it contains a summary of quality sensor results (linters, type checkers, etc.). Address any issues reported.
+5. Implement the assigned story
+6. Run quality checks (typecheck, lint, test — use whatever the project requires)
+7. Update CLAUDE.md files if you discover reusable patterns (see below)
+8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
+9. Append your progress to `progress.txt`
 
-End your response with:
-```
-Implemented [Story ID]
-```
+The `guidance` field in `current-task.json` contains specific instructions from the orchestrator — always read and act on it.
 
-## What you MUST NOT do
+## Progress Report Format
 
-- **Never edit `prd.json`.** The orchestrator is the only writer of the `passes` field.
-- **Never overwrite `progress.txt`.** It is append-only.
-- **Never skip typecheck** to get a commit through.
-- **Never commit broken code.** If you cannot make quality gates pass, write a blocked `build-status.json` (below) and stop without committing broken code.
-
-## Failure reporting: `build-status.json`
-
-When you cannot complete the story normally, write `build-status.json` with this exact schema, then stop:
-
-```json
-{
-  "version": "1",
-  "phase": "build",
-  "storyId": "[Story ID or empty string]",
-  "status": "done" | "skipped_no_work" | "blocked" | "error",
-  "reason": "short human-readable reason",
-  "date": "[ISO timestamp]"
-}
-```
-
-Use:
-- `done` — the story is implemented and committed (you may also write this, but the orchestrator already infers `done` from a successful run).
-- `skipped_no_work` — every story already has `passes: true`.
-- `blocked` — something in the environment prevents the work (branch missing, workspace not initialized, required tool absent).
-- `error` — an unexpected failure you cannot recover from.
-
-## Progress log format
-
-APPEND to `progress.txt`:
-
+APPEND to `progress.txt` (never replace, always append):
 ```
 ## [Date/Time] - [Story ID]
-- What was implemented (one sentence)
-- Files changed (paths)
-- **Learnings:** anything a future iteration should know that isn't obvious from the code
+- What was implemented
+- Files changed
+- **Learnings for future iterations:**
+  - Patterns discovered (e.g., "this codebase uses X for Y")
+  - Gotchas encountered (e.g., "don't forget to update Z when changing W")
+  - Useful context (e.g., "the evaluation panel is in component X")
 ---
 ```
 
-## Where reusable knowledge goes
+The learnings section is critical — it helps future iterations avoid repeating mistakes.
 
-Reusable patterns belong in the nearest `CLAUDE.md` — not in `progress.txt`. When you discover something that would help future work in a directory, append a short note to that directory's `CLAUDE.md` (or create one). Keep `progress.txt` entries to this iteration's specifics only.
+## Consolidate Patterns
 
-## Browser verification (when applicable)
+If you discover a **reusable pattern**, add it to the `## Codebase Patterns` section at the TOP of `progress.txt` (create it if it doesn't exist):
 
-For frontend stories, verify the change renders correctly if the harness has browser tools available (Playwright MCP). Take a screenshot only if it materially helps the progress log. If no browser tools are available, note that in the progress entry.
+```
+## Codebase Patterns
+- Example: Use `sql<number>` template for aggregations
+- Example: Always use `IF NOT EXISTS` for migrations
+- Example: Export types from actions.ts for UI components
+```
+
+Only add patterns that are **general and reusable**, not story-specific details.
+
+## Update CLAUDE.md Files
+
+Before committing, check if any edited files have learnings worth preserving in nearby CLAUDE.md files:
+
+- API patterns or conventions specific to that module
+- Gotchas or non-obvious requirements
+- Dependencies between files
+- Testing approaches for that area
+
+Only update CLAUDE.md if you have **genuinely reusable knowledge** — not story-specific details or information already in `progress.txt`.
+
+## Quality Requirements
+
+- ALL commits must pass the project's quality checks (typecheck, lint, test)
+- Do NOT commit broken code
+- Keep changes focused and minimal
+- Follow existing code patterns
+
+## Important
+
+- Implement ONE story — the one in `current-task.json`
+- Do NOT read `prd.json` or decide what to work on next — the orchestrator handles that
+- Do NOT pick another story after finishing — just end your response
+- Commit frequently, keep CI green
+- Do NOT install or update dependencies in the harness root project (the directory containing `index.ts` and `harness.config.json`) — only modify the app workspace inside `app/`

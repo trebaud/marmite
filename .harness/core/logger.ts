@@ -49,6 +49,7 @@ export async function emitEvent(kind: string, data: Record<string, unknown>): Pr
 // ── Anomaly detection ─────────────────────────────────────────────────────
 
 const history: Record<SessionPhase, { cost: number[]; duration: number[] }> = {
+  orchestrate: { cost: [], duration: [] },
   build: { cost: [], duration: [] },
   verify: { cost: [], duration: [] },
   fix: { cost: [], duration: [] },
@@ -116,6 +117,20 @@ export function logArchive(branch: string, folder: string): void {
   console.log(`   Archived to: ${folder}`);
 }
 
+export function logBranchSetup(branchName: string, action: "created" | "switched" | "already_on"): void {
+  switch (action) {
+    case "created":
+      console.log(`Branch ${c.green}created${c.reset}: ${c.cyan}${branchName}${c.reset}`);
+      break;
+    case "switched":
+      console.log(`Branch ${c.yellow}switched${c.reset}: ${c.cyan}${branchName}${c.reset}`);
+      break;
+    case "already_on":
+      console.log(`Branch ${c.dim}already on${c.reset}: ${c.cyan}${branchName}${c.reset}`);
+      break;
+  }
+}
+
 export function logResume(state: { iteration: number; storyId: string; lastPhase: string }): void {
   console.log("");
   console.log(`Resuming run from .harness/state.json: iteration=${state.iteration} story=${state.storyId} lastPhase=${state.lastPhase}`);
@@ -130,8 +145,8 @@ export function logError(context: string, err: unknown, category: string): void 
   console.error(`  ${c.red}[${category}]${c.reset} ${context}: ${msg}`);
 }
 
-export function logMessage(message: SDKMessage): void {
-  const t = tag("harness");
+export function logMessage(message: SDKMessage, agentLabel: string = "harness"): void {
+  const t = tag(agentLabel);
   const time = ts();
 
   switch (message.type) {
@@ -303,10 +318,12 @@ export function logFinalReport(runStats: RunStats): void {
   const totalCacheRead = runStats.sessions.reduce((sum, s) => sum + s.cacheReadTokens, 0);
   const totalCacheCreate = runStats.sessions.reduce((sum, s) => sum + s.cacheCreateTokens, 0);
 
+  const orchestrateSessions = runStats.sessions.filter(s => s.phase === "orchestrate");
   const buildSessions = runStats.sessions.filter(s => s.phase === "build");
   const verifySessions = runStats.sessions.filter(s => s.phase === "verify");
   const fixSessions = runStats.sessions.filter(s => s.phase === "fix");
 
+  const orchestrateCost = orchestrateSessions.reduce((sum, s) => sum + s.costUsd, 0);
   const buildCost = buildSessions.reduce((sum, s) => sum + s.costUsd, 0);
   const verifyCost = verifySessions.reduce((sum, s) => sum + s.costUsd, 0);
   const fixCost = fixSessions.reduce((sum, s) => sum + s.costUsd, 0);
@@ -326,12 +343,13 @@ export function logFinalReport(runStats: RunStats): void {
   console.log(`${line}   Wall time:         ${fmtDuration(elapsed)}`);
   console.log(`${line}   Session time:      ${fmtDuration(totalDuration)} (API: ${fmtDuration(totalApiDuration)})`);
   console.log(`${line}   Iterations:        ${runStats.iterationsCompleted}`);
-  console.log(`${line}   Sessions:          ${runStats.sessions.length} (build: ${buildSessions.length}, verify: ${verifySessions.length}, fix: ${fixSessions.length})`);
+  console.log(`${line}   Sessions:          ${runStats.sessions.length} (orchestrate: ${orchestrateSessions.length}, build: ${buildSessions.length}, verify: ${verifySessions.length}, fix: ${fixSessions.length})`);
   console.log(`${line}   Outcomes:          ${Object.entries(outcomes).map(([k, v]) => `${k}=${v}`).join(", ") || "n/a"}`);
   console.log(`${line}   Stories passed:    ${runStats.storiesPassed}`);
   console.log(`${line}   Stories failed:    ${runStats.storiesFailed}`);
   console.log(`${line}`);
   console.log(`${line}   ${c.bold}Total API Cost:     ${fmtCost(totalCost)}${c.reset}`);
+  console.log(`${line}     Orchestrate:     ${fmtCost(orchestrateCost)}`);
   console.log(`${line}     Build:           ${fmtCost(buildCost)}`);
   console.log(`${line}     Verify:          ${fmtCost(verifyCost)}`);
   console.log(`${line}     Fix:             ${fmtCost(fixCost)}`);

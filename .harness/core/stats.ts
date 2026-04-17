@@ -44,6 +44,10 @@ export function iterationCost(runStats: RunStats, iteration: number): number {
     .reduce((sum, s) => sum + s.costUsd, 0);
 }
 
+export function totalCost(runStats: RunStats): number {
+  return runStats.sessions.reduce((sum, s) => sum + s.costUsd, 0);
+}
+
 export function finalizeStoryOutcome(
   runStats: RunStats,
   storyId: string,

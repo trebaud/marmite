@@ -4,7 +4,7 @@ import { readJson, readJsonField, writeAtomicJson } from "./utils.ts";
 
 export const STATE_VERSION = "1";
 
-const SessionPhaseSchema = z.enum(["build", "verify", "fix"]);
+const SessionPhaseSchema = z.enum(["orchestrate", "build", "verify", "fix"]);
 
 const HarnessStateSchema = z.object({
   version: z.literal(STATE_VERSION),

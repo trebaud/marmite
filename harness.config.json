@@ -1,0 +1,21 @@
+{
+  "maxIterations": 1000,
+  "model": "claude-sonnet-4-6",
+  "builderModel": "claude-sonnet-4-6",
+  "verifierModel": "claude-haiku-4-5",
+  "orchestratorModel": "claude-sonnet-4-6",
+  "buildTimeoutMs": 1200000,
+  "verifyTimeoutMs": 600000,
+  "fixTimeoutMs": 900000,
+  "orchestrateTimeoutMs": 600000,
+  "costBudgetUsdPerStory": 15,
+  "costBudgetUsdTotal": 100,
+  "maxFixAttempts": 3,
+  "maxTransientRetries": 2,
+  "resumeIfAvailable": true,
+  "sensorsConfigPath": "./sensors/sensors.json",
+  "pricing": {
+    "claude-opus-4-7":   { "inputPerMTok": 15, "outputPerMTok": 75, "cacheReadPerMTok": 1.5 },
+    "claude-sonnet-4-6": { "inputPerMTok": 3,  "outputPerMTok": 15, "cacheReadPerMTok": 0.3 }
+  }
+}

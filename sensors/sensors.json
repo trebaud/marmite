@@ -1,0 +1,18 @@
+{
+  "sensors": [
+    {
+      "name": "dep-cruiser",
+      "type": "drift",
+      "src": "dependency-cruiser.json",
+      "description": "Architectural drift — detects import violations, circular dependencies, and layer misuse",
+      "guidance": "Setup: copy `dependency-cruiser.json` to the app workspace root (e.g. `app/.dependency-cruiser.json`). Violations mean the builder introduced imports that break the intended layer boundaries. Run the `architect` skill to fix structural violations before continuing."
+    },
+    {
+      "name": "eslint",
+      "type": "debt",
+      "src": "eslintrc.json",
+      "description": "Code quality debt — style issues, complexity, and error-prone patterns",
+      "guidance": "Setup: copy `eslintrc.json` next to the app workspace's `package.json` (e.g. `app/.eslintrc.json`). Lint errors signal accumulating code quality debt. Run the `clean-code` skill to address violations, or the `refactor` skill if the debt is structural."
+    }
+  ]
+}

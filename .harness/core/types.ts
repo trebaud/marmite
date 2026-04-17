@@ -9,33 +9,39 @@ export interface HarnessConfig {
   projectRoot: string;
   builderMdPath: string;
   verifierMdPath: string;
+  orchestratorMdPath: string;
   prdPath: string;
+  sensorsConfigPath: string;
   progressPath: string;
   archiveDir: string;
   lastBranchPath: string;
   statePath: string;
   eventsPath: string;
-  verificationResultsPath: string;
-  lastStoryPath: string;
-  buildStatusPath: string;
+  currentTaskPath: string;
   // Model & pricing
   model: string;
-  pricing: ModelPricing;
+  builderModel: string;
+  verifierModel: string;
+  orchestratorModel: string;
+  pricing: Record<string, ModelPricing>;
   // Timeouts (ms)
   buildTimeoutMs: number;
   verifyTimeoutMs: number;
   fixTimeoutMs: number;
+  orchestrateTimeoutMs: number;
   // Retries for transient errors per phase
   maxTransientRetries: number;
   // Cost budget per story (USD). Exceeding aborts remaining fix attempts for that story. 0 disables.
   costBudgetUsdPerStory: number;
+  // Total run cost budget (USD). Exceeding halts the run before the next iteration. 0 disables.
+  costBudgetUsdTotal: number;
   // Fix loop retry cap
   maxFixAttempts: number;
   // Resume from .harness/state.json if it matches current PRD/branch
   resumeIfAvailable: boolean;
 }
 
-export type SessionPhase = "build" | "verify" | "fix";
+export type SessionPhase = "orchestrate" | "build" | "verify" | "fix";
 
 export type SessionOutcome =
   | "success"

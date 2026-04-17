@@ -143,7 +143,4 @@ vite.config.ts.timestamp-*
 # Harness runtime state
 .harness/state.json
 .harness/events.jsonl
-verification-results.json
-build-status.json
-last-story.txt
 .last-branch

@@ -1,7 +1,7 @@
 import { rename, unlink } from "fs/promises";
 import { resolve } from "path";
 import { spawnSync } from "child_process";
-import { logError } from "./logger.ts";
+import { logBranchSetup, logError } from "./logger.ts";
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -26,6 +26,7 @@ export async function readJson<T = unknown>(path: string): Promise<ReadState<T>>
   } catch (err) {
     return { kind: "malformed", error: err instanceof Error ? err : new Error(String(err)) };
   }
+  if (raw.trim() === "") return { kind: "missing" };
   try {
     return { kind: "present", value: JSON.parse(raw) as T };
   } catch (err) {
@@ -110,6 +111,24 @@ export function classifyError(err: unknown): { category: ErrorCategory; message:
     return { category: "transient", message, code };
   }
   return { category: "fatal", message, code };
+}
+
+export function gitEnsureBranch(cwd: string, branchName: string): void {
+  const current = spawnSync("git", ["branch", "--show-current"], { cwd, encoding: "utf8" });
+  if (current.stdout?.trim() === branchName) {
+    logBranchSetup(branchName, "already_on");
+    return;
+  }
+  const exists = spawnSync("git", ["show-ref", "--verify", `refs/heads/${branchName}`], { cwd });
+  if (exists.status === 0) {
+    const r = spawnSync("git", ["checkout", branchName], { cwd, stdio: "inherit" });
+    if (r.status !== 0) { logError(`git checkout ${branchName}`, `exit ${r.status ?? "?"}`, "git"); return; }
+    logBranchSetup(branchName, "switched");
+  } else {
+    const r = spawnSync("git", ["checkout", "-b", branchName], { cwd, stdio: "inherit" });
+    if (r.status !== 0) { logError(`git checkout -b ${branchName}`, `exit ${r.status ?? "?"}`, "git"); return; }
+    logBranchSetup(branchName, "created");
+  }
 }
 
 export function gitCommit(cwd: string, path: string, message: string): void {

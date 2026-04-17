@@ -1,0 +1,99 @@
+{
+  "project": "TodoApp",
+  "branchName": "todo-app-silver-fox-dance",
+  "description": "TodoApp - Simple full-stack todo list with React + Express in a single monorepo. Full CRUD surface with in-memory state, covered by integration tests.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Monorepo scaffold with server and client workspaces",
+      "description": "As a developer, I need a monorepo layout with server and client workspaces so that subsequent stories can build on a consistent structure.",
+      "acceptanceCriteria": [
+        "Root package.json declares workspaces for app/server and app/client",
+        "app/server has tsconfig.json with strict TypeScript and Express + TypeScript dependencies",
+        "app/client has tsconfig.json and Vite + React dependencies",
+        "Vite config in app/client proxies /api/* to http://localhost:3000",
+        "npm test script is wired at the root (can be a placeholder until US-006)",
+        "All code lives under app/ (Marmite convention)",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": "",
+      "dependencies": []
+    },
+    {
+      "id": "US-002",
+      "title": "Express server entry point with health endpoint",
+      "description": "As a developer, I need the Express server to start on port 3000 and expose GET /api/health so that later endpoints have a working host.",
+      "acceptanceCriteria": [
+        "app/server entry point creates an Express app listening on port 3000",
+        "GET /api/health returns 200 with JSON body { ok: true }",
+        "All API routes are mounted under the /api prefix",
+        "Server can be started via an npm script (e.g. npm run dev --workspace=server)",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "",
+      "dependencies": ["US-001"]
+    },
+    {
+      "id": "US-003",
+      "title": "In-memory todo store and REST CRUD API",
+      "description": "As a client, I need a full CRUD REST API for todos so that the UI can create, list, toggle, and delete tasks.",
+      "acceptanceCriteria": [
+        "In-memory store holds todos with fields id (string), title (string), completed (boolean)",
+        "GET /api/todos returns 200 with Todo[]",
+        "POST /api/todos accepts { title } and returns 201 with the created Todo (id generated, completed=false, title trimmed)",
+        "POST /api/todos returns 400 when title is missing or empty after trim",
+        "PATCH /api/todos/:id accepts { completed } and returns 200 with updated Todo",
+        "PATCH /api/todos/:id returns 404 when id is unknown",
+        "DELETE /api/todos/:id returns 204 on success",
+        "DELETE /api/todos/:id returns 404 when id is unknown",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "",
+      "dependencies": ["US-002"]
+    },
+    {
+      "id": "US-004",
+      "title": "React client app with todo list UI wired to the API",
+      "description": "As a user, I want a web UI to view, add, toggle, and delete my todos so that I can manage my task list.",
+      "acceptanceCriteria": [
+        "Vite dev server runs on port 5173 and serves a React App component",
+        "On mount the app fetches GET /api/todos and renders the list",
+        "An input + Add button POSTs a new todo; empty submissions are blocked client-side",
+        "Each row shows a checkbox that toggles completed via PATCH /api/todos/:id",
+        "Each row has a delete button that calls DELETE /api/todos/:id and removes the row",
+        "UI re-renders from server responses (no optimistic updates required)",
+        "Styling is minimal but the UI is usable",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "",
+      "dependencies": ["US-003"]
+    },
+    {
+      "id": "US-005",
+      "title": "API integration tests for CRUD and validation",
+      "description": "As a maintainer, I want integration tests covering the API so that regressions are caught by the verifier.",
+      "acceptanceCriteria": [
+        "Integration tests start the Express app and exercise real HTTP endpoints (no mocked handlers)",
+        "Tests cover CRUD happy paths: create, list, toggle completed, delete",
+        "Tests cover the 400 validation case for POST /api/todos with empty/missing title",
+        "Tests cover the 404 cases for PATCH and DELETE with unknown ids",
+        "npm test from the repo root runs the suite and exits green",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "",
+      "dependencies": ["US-003"]
+    }
+  ]
+}

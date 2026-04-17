@@ -3,8 +3,10 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "workspaces": ["app/server", "app/client"],
   "scripts": {
-    "cook": "bun run index.ts"
+    "cook": "bun run index.ts",
+    "test": "npm run test --workspace=app/server"
   },
   "devDependencies": {
     "@types/bun": "latest"

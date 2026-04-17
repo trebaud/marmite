@@ -28,7 +28,7 @@ export async function archivePreviousRun(config: HarnessConfig): Promise<void> {
     : null;
 
   const date = formatDate();
-  const folderName = lastBranch.replace(/^ralph\//, "").replace(/[^\w.-]/g, "_");
+  const folderName = lastBranch.replace(/[^\w.-]/g, "_");
   const archiveFolder = resolve(config.archiveDir, `${date}-${folderName}`);
 
   logArchive(lastBranch, archiveFolder);
@@ -43,7 +43,7 @@ export async function archivePreviousRun(config: HarnessConfig): Promise<void> {
     config.progressPath,
     `# Harness Progress Log\nStarted: ${new Date().toString()}\n---\n`,
   );
-  for (const p of [config.statePath, config.eventsPath, config.verificationResultsPath, config.buildStatusPath, config.lastStoryPath]) {
+  for (const p of [config.statePath, config.eventsPath, config.currentTaskPath]) {
     if (await fileExists(p)) {
       try {
         await Bun.write(p, "");

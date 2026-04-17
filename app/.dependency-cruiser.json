@@ -1,0 +1,61 @@
+{
+  "forbidden": [
+    {
+      "name": "no-circular",
+      "severity": "error",
+      "comment": "Circular dependencies are forbidden",
+      "from": {},
+      "to": { "circular": true }
+    },
+    {
+      "name": "no-orphans",
+      "severity": "warn",
+      "comment": "Orphan modules (not imported anywhere) should be reviewed",
+      "from": { "orphan": true, "pathNot": ["\\.(test|spec)\\.(ts|js)$", "^src/index\\.ts$"] },
+      "to": {}
+    },
+    {
+      "name": "no-test-in-prod",
+      "severity": "error",
+      "comment": "Production code must not import test files",
+      "from": { "pathNot": "\\.(test|spec)\\.(ts|js)$" },
+      "to": { "path": "\\.(test|spec)\\.(ts|js)$" }
+    },
+
+    {
+      "name": "ca-domain-no-outer",
+      "severity": "error",
+      "comment": "Domain layer must not import from application, infrastructure, or presentation layers",
+      "from": { "path": "^src/(domain|entities|models)/" },
+      "to": {
+        "path": "^src/(application|use-cases|usecases|infrastructure|infra|repositories|adapters|presentation|api|controllers|routes|handlers)/"
+      }
+    },
+    {
+      "name": "ca-application-no-infra-or-presentation",
+      "severity": "error",
+      "comment": "Application/use-case layer must not directly import infrastructure or presentation — depend on interfaces (ports), not implementations",
+      "from": { "path": "^src/(application|use-cases|usecases)/" },
+      "to": {
+        "path": "^src/(infrastructure|infra|repositories|adapters|presentation|api|controllers|routes|handlers)/"
+      }
+    },
+    {
+      "name": "ca-infra-no-presentation",
+      "severity": "error",
+      "comment": "Infrastructure layer must not import from the presentation layer",
+      "from": { "path": "^src/(infrastructure|infra|repositories|adapters)/" },
+      "to": {
+        "path": "^src/(presentation|api|controllers|routes|handlers)/"
+      }
+    }
+  ],
+  "options": {
+    "doNotFollow": { "path": "node_modules" },
+    "tsPreCompilationDeps": true,
+    "tsConfig": { "fileName": "tsconfig.json" },
+    "reporterOptions": {
+      "text": { "highlightFocused": true }
+    }
+  }
+}

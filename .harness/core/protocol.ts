@@ -5,86 +5,41 @@ import { readJson } from "./utils.ts";
 const VerificationVerdictSchema = z.enum(["pass", "fail_retry", "fail_abort"]);
 export type VerificationVerdict = z.infer<typeof VerificationVerdictSchema>;
 
-// Raw input schema — accepts both the current verdict-based shape and the legacy
-// {passed, needsMoreFixes} shape. The transform below normalizes to VerificationResult.
+// current-task.json is written by the orchestrator agent (story fields) and then
+// updated in-place by the verifier (verdict fields). We only parse the verdict
+// portion here; the verdict field being absent means the verifier hasn't run yet.
 const VerificationInputSchema = z
   .object({
-    version: z.string().optional(),
     storyId: z.string().min(1, "missing storyId"),
     storyTitle: z.string().optional(),
-    date: z.string().optional(),
+    verdict: VerificationVerdictSchema.optional(),
     summary: z.string().optional(),
     qaResults: z
       .array(z.object({ criterion: z.string().default(""), passed: z.boolean().default(false) }))
       .optional(),
-    codeQuality: z.array(z.string()).optional(),
-    architecture: z.array(z.string()).optional(),
-    verdict: VerificationVerdictSchema.optional(),
-    passed: z.boolean().optional(),
-    needsMoreFixes: z.boolean().optional(),
+    verifiedAt: z.string().optional(),
   })
   .transform((r, ctx) => {
-    let verdict: VerificationVerdict;
-    if (r.verdict) {
-      verdict = r.verdict;
-    } else if (r.passed === true) {
-      verdict = "pass";
-    } else if (r.needsMoreFixes === true) {
-      verdict = "fail_retry";
-    } else if (r.needsMoreFixes === false) {
-      verdict = "fail_abort";
-    } else {
-      ctx.addIssue({
-        code: "custom",
-        message: "missing verdict (expected 'pass'|'fail_retry'|'fail_abort')",
-      });
+    if (!r.verdict) {
+      ctx.addIssue({ code: "custom", message: "verdict not yet written by verifier" });
       return z.NEVER;
     }
     const summary = r.summary ?? "";
-    if (verdict !== "pass" && summary.trim() === "") {
-      ctx.addIssue({
-        code: "custom",
-        message: "summary must be non-empty when verdict is not 'pass'",
-      });
+    if (r.verdict !== "pass" && summary.trim() === "") {
+      ctx.addIssue({ code: "custom", message: "summary must be non-empty when verdict is not 'pass'" });
       return z.NEVER;
     }
     return {
-      version: r.version ?? "1",
-      phase: "verify" as const,
       storyId: r.storyId,
       storyTitle: r.storyTitle ?? "",
-      date: r.date ?? new Date().toISOString(),
-      verdict,
+      verdict: r.verdict,
       summary,
       qaResults: r.qaResults ?? [],
-      codeQuality: r.codeQuality ?? [],
-      architecture: r.architecture ?? [],
+      verifiedAt: r.verifiedAt ?? new Date().toISOString(),
     };
   });
 
 export type VerificationResult = z.infer<typeof VerificationInputSchema>;
-
-const BuildStatusKindSchema = z.enum(["done", "skipped_no_work", "blocked", "error"]);
-export type BuildStatusKind = z.infer<typeof BuildStatusKindSchema>;
-
-const BuildStatusSchema = z
-  .object({
-    version: z.string().optional(),
-    storyId: z.string().optional(),
-    status: BuildStatusKindSchema,
-    reason: z.string().optional(),
-    date: z.string().optional(),
-  })
-  .transform((r) => ({
-    version: r.version ?? "1",
-    phase: "build" as const,
-    storyId: r.storyId ?? "",
-    status: r.status,
-    reason: r.reason ?? "",
-    date: r.date ?? new Date().toISOString(),
-  }));
-
-export type BuildStatus = z.infer<typeof BuildStatusSchema>;
 
 export type ParsedVerification =
   | { kind: "present"; value: VerificationResult }
@@ -95,24 +50,53 @@ function formatZodError(err: z.ZodError): string {
   return err.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
 }
 
+// Reads the verdict written by the verifier into current-task.json.
+// Returns "missing" if the file doesn't exist or the verifier hasn't written a verdict yet.
 export async function readVerificationResultFile(config: HarnessConfig): Promise<ParsedVerification> {
-  const read = await readJson(config.verificationResultsPath);
+  const read = await readJson(config.currentTaskPath);
   if (read.kind === "missing") return { kind: "missing" };
   if (read.kind === "malformed") {
     return { kind: "malformed", error: read.error.message };
   }
   const parsed = VerificationInputSchema.safeParse(read.value);
   if (!parsed.success) {
-    return { kind: "malformed", error: formatZodError(parsed.error) };
+    const err = parsed.error;
+    // "verdict not yet written" is expected between orchestrate and verify phases — treat as missing.
+    if (err.issues.every((i) => i.message === "verdict not yet written by verifier")) {
+      return { kind: "missing" };
+    }
+    return { kind: "malformed", error: formatZodError(err) };
   }
   return { kind: "present", value: parsed.data };
 }
 
-export async function readBuildStatusFile(config: HarnessConfig): Promise<BuildStatus | null> {
-  const read = await readJson(config.buildStatusPath);
-  if (read.kind !== "present") return null;
-  const parsed = BuildStatusSchema.safeParse(read.value);
-  return parsed.success ? parsed.data : null;
+
+const CurrentTaskDecisionSchema = z
+  .object({
+    storyId: z.string().min(1, "missing storyId"),
+    storyTitle: z.string().optional(),
+    ranSensors: z.array(z.string()).default([]),
+  })
+  .transform((r) => ({
+    storyId: r.storyId,
+    storyTitle: r.storyTitle ?? "",
+    ranSensors: r.ranSensors,
+  }));
+
+export type CurrentTaskDecision = z.infer<typeof CurrentTaskDecisionSchema>;
+
+export type ParsedCurrentTaskDecision =
+  | { kind: "present"; value: CurrentTaskDecision }
+  | { kind: "missing" }
+  | { kind: "malformed"; error: string };
+
+export async function readCurrentTaskDecision(config: HarnessConfig): Promise<ParsedCurrentTaskDecision> {
+  const read = await readJson(config.currentTaskPath);
+  if (read.kind === "missing") return { kind: "missing" };
+  if (read.kind === "malformed") return { kind: "malformed", error: read.error.message };
+  const parsed = CurrentTaskDecisionSchema.safeParse(read.value);
+  if (!parsed.success) return { kind: "malformed", error: formatZodError(parsed.error) };
+  return { kind: "present", value: parsed.data };
 }
 
 export function buildFixPrompt(summary: string): string {

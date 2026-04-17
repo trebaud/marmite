@@ -1,99 +1,145 @@
 # Marmite
 
-An autonomous build system that drives two Claude Code agents in a loop to implement a project from a PRD. Drop in a PRD, let it simmer. A builder agent picks the next failing user story, implements it, and commits. A verifier agent then reviews the work and emits a verdict. An orchestrator (a TypeScript program, not an agent) advances state, retries on `fail_retry`, and persists crash-recovery checkpoints.
+An autonomous build system that drives three agents in a loop to implement a project from a PRD. Drop in a PRD, let it simmer.
+
+Each iteration: the **orchestrator** picks the next story, runs health sensors, and briefs the builder. The **builder** implements the story and commits. The **verifier** reviews and emits a verdict. A plain **harness** advances state, retries on `fail_retry`, and checkpoints for crash recovery.
+
+## Philosophy
+
+A model tends to trust its own output — a fresh verifier has no attachment to the builder's plan, so it catches what's actually broken. When the verifier rejects, the builder resumes its original session to fix it, keeping context.
+
+- Each agent has one job. Combining them produces agreeable mush.
+- Agents do the creative work. A plain program handles state transitions, schema validation, `prd.json` writes, and crash recovery.
+- Agents don't call each other. They read and write zod-validated files, so every handoff is inspectable and replayable.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph Harness["Orchestrator (index.ts)"]
-        O[["run loop"]]
-        S[(".harness/state.json")]
-        E[(".harness/events.jsonl")]
-    end
+    O["Orchestrator"]
+    B["Builder"]
+    V["Verifier"]
 
     P[("prd.json")]
-    LS[("last-story.txt")]
-    VR[("verification-results.json")]
+    CT[("current-task.json")]
     PR[("progress.txt")]
 
-    B["Builder session<br/>(.harness/prompts/builder-prompt.md)"]
-    V["Verifier session<br/>(.harness/prompts/verifier-prompt.md)"]
-    App[/"app/ — project code"/]
-
-    O -->|pick next story| P
-    O -->|spawn| B
-    B -->|write| LS
-    B -->|append| PR
-    B -->|commit feat/fix| App
-    O -->|spawn| V
-    V -->|read| LS
-    V -->|run skills: architect, design-qa-checker| App
-    V -->|write verdict| VR
-    O -->|read verdict| VR
-    O -->|verdict=pass: mark + commit| P
-    O -->|verdict=fail_retry: resume builder with summary| B
-    O -->|checkpoint| S
-    O -->|emit| E
+    P -->|read stories| O
+    O -->|story + guidance + sensors| CT
+    CT -->|read brief| B
+    B -->|append work log| PR
+    CT --> V
+    PR --> V
+    V -->|write verdict| CT
+    CT -.->|pass: mark story| P
+    CT -.->|fail_retry| B
 ```
 
-### Roles
+| Phase | Agent | Writes | Purpose |
+|---|---|---|---|
+| ORCHESTRATE | Orchestrator (fresh) | `current-task.json` | Pick story, run sensors, brief builder |
+| BUILD | Builder (fresh) | `progress.txt`, commit | Implement the story |
+| VERIFY | Verifier (fresh) | `current-task.json` verdict | Approve or reject |
+| FIX | Builder (resumes) | commit | Address verifier feedback |
 
-- Orchestrator: the deterministic TypeScript program at `.harness/core/orchestrator.ts` (entry point `index.ts`, started via `bun cook`). Not a Claude agent. It runs the outer loop, spawns builder and verifier as subprocesses, validates their output against zod schemas, and is the only writer of `prd.json`. It flips `passes: true` via `markStoryPassing` and creates the `verify: [Story ID] - passed verification` commit once the verifier returns `verdict: "pass"`.
-- Builder: a Claude Code session spawned fresh per story. Implements code under `app/` and commits. Never touches `prd.json`.
-- Verifier: a Claude Code session spawned fresh per verification. Reviews the builder's work and writes a verdict to `verification-results.json`. Never touches `prd.json` and never commits.
+`current-task.json` is the single handoff file between agents. The orchestrator writes the story, guidance, and a `sensorSummary`; the verifier merges in the verdict. The harness reads it after each phase to drive state transitions.
 
-The split exists so the `passes` mutation is deterministic, schema-validated, and survives crashes via `.harness/state.json`, which is something an LLM agent can't reliably provide. Agents communicate through protocol files validated with zod schemas (`.harness/core/protocol.ts`, `.harness/core/prd.ts`, `.harness/core/state.ts`).
+The harness (`index.ts`, `.harness/core/`) is the only writer of `prd.json` — it flips `passes: true` and commits on pass. Generated code lives under `app/`.
 
 ## Install
 
-Requires [Bun](https://bun.sh). Clone and install:
+Requires [Bun](https://bun.sh).
 
 ```bash
-git clone <repo>
-cd marmite
+git clone <repo> && cd marmite
 bun install
-```
-
-Set your Anthropic API key:
-
-```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-## Setup
+## Setup a new app
 
-1. Author a PRD. Place a `prd.json` at the repo root. See `CLAUDE.md` for the format. To generate one, use the `/prd` skill to draft a spec file, then `/ralph` to convert that spec into `prd.json`.
-2. Configure prompts. `.harness/prompts/builder-prompt.md` and `.harness/prompts/verifier-prompt.md` drive the builder and verifier agents. Adjust for your project.
-3. Set up the target project. All generated code lives under `app/`. Structure and stack are up to the target project.
+Everything the agents read lives in the repo root and in `.harness/prompts/`. Walk through these steps before your first `bun cook`.
+
+### 1. Write the PRD
+
+The PRD is the source of truth for what to build. Stories have `id`, `priority` (lower = higher priority), `description`, `acceptanceCriteria`, and a `passes` flag the harness flips as stories land.
+
+- Draft the spec with the `/prd` skill, then convert to `prd.json` with `/ralph`.
+- Or copy `prd.example.json` and edit by hand.
+- Place the file at the repo root (or point to it with `--prd`).
+
+To generate `prd.json` from an existing markdown spec:
+
+```bash
+echo "/to-prd @docs/PRD.md" | claude --print --model claude-opus-4-7 --dangerously-skip-permissions
+```
+
+### 2. Tune the agent prompts
+
+The three prompts in `.harness/prompts/` are project-agnostic defaults. Edit them to bake in stack choices, house style, and any workflow rules specific to your app:
+
+- `orchestrator-prompt.md` — story selection heuristics, when to run sensors, how to brief the builder.
+- `builder-prompt.md` — stack, commit conventions, testing requirements, `progress.txt` format.
+- `verifier-prompt.md` — how strictly to interpret acceptance criteria, what counts as `fail_retry` vs `fail_abort`.
+
+### 3. Configure sensors (optional but recommended)
+
+Sensors are deterministic health checks (linters, type checker, tests, audits) the orchestrator runs selectively to feed objective feedback to the builder.
+
+```bash
+cp sensors/sensors.example.json sensors/sensors.json
+```
+
+Each entry:
+
+```json
+{
+  "name": "eslint",
+  "type": "debt",
+  "command": "bun run lint",
+  "description": "Code quality debt",
+  "guidance": "Setup: copy `eslintrc.json` next to `app/package.json`. Run the `clean-code` skill to address violations."
+}
+```
+
+The four standard `type`s map to suggested skills the orchestrator recommends to the builder when the sensor fails:
+
+| Type | Purpose | Typical tool | Suggested skill |
+|------|---------|--------------|-----------------|
+| `drift` | Import violations, circular deps, layer misuse | dependency-cruiser | `architect` |
+| `debt` | Style, complexity, unused code, type errors | eslint, tsc | `clean-code`, `refactor` |
+| `pulse` | Failing or flaky tests | jest, vitest | `debug` |
+| `safe` | Known CVEs in the dependency tree | npm audit, snyk | `security-review` |
+
+The `guidance` string carries both setup instructions (which config files to copy where) and remediation advice. The orchestrator reads it before briefing the builder, so first-time setup happens automatically.
+
+Drop supporting config files (e.g. `eslintrc.example.json`, `dependency-cruiser.example.json`) in `sensors/` — agents copy them into `app/` on demand per `guidance`.
+
+The orchestrator runs sensors when a story just failed verification, every 3rd completed story, or when `progress.txt` shows accumulating issues.
+
+### 4. (Optional) Harness config
+
+Override defaults in `harness.config.json` — see `harness.config.example.json` for the schema (models, timeouts, retries, cost budgets).
 
 ## Run
 
 ```bash
-bun cook                               # default: 1000 iterations, claude-opus-4-7
-bun cook -n 5                          # custom iteration count
-bun cook --prd ./x.json                # custom PRD
-bun cook --model claude-opus-4-7 --cost-budget 10
-bun cook --build-timeout 900000 --verify-timeout 600000
-bun cook --no-resume                   # ignore existing .harness/state.json
+bun cook                                                  # default: 1000 iterations, claude-opus-4-7
+bun cook -n 5                                             # custom iteration count
+bun cook --prd ./x.json
+bun cook --model claude-opus-4-7 --cost-budget 10         # per-story cap (USD)
+bun cook --cost-budget-total 100                          # total run cap; halts when exceeded
+bun cook --builder-model claude-opus-4-7 --verifier-model claude-sonnet-4-6
+bun cook --config ./harness.config.json
+bun cook --no-resume                                      # ignore existing .harness/state.json
 ```
 
-See `bun cook --help` for all flags. `HARNESS_MODEL` and `HARNESS_COST_BUDGET` environment variables are honored.
+Config precedence: defaults < `harness.config.json` < env vars (`HARNESS_MODEL`, `HARNESS_BUILDER_MODEL`, `HARNESS_VERIFIER_MODEL`, `HARNESS_COST_BUDGET`, `HARNESS_COST_BUDGET_TOTAL`, `HARNESS_CONFIG`) < CLI flags.
 
-## How it works
+## Operational notes
 
-| Phase | Session | Writes | Purpose |
-|---|---|---|---|
-| BUILD | fresh | `last-story.txt`, `progress.txt`, commit | Implement one story |
-| VERIFY | fresh | `verification-results.json` | Emit verdict against acceptance criteria |
-| FIX | resumes build session | commit | Address verifier feedback |
-
-- Fresh vs resume: build and verify always start a new session; fix attempts resume the build session with the verifier's summary as context.
-- Timeouts: per-phase `AbortController`; SIGINT cancels cleanly.
-- Retries: transient errors (429, 5xx, network) retried with exponential backoff; fatal errors abort the iteration.
-- Cost budget: a per-story cap halts remaining fix attempts when exceeded.
-- Resume: `.harness/state.json` checkpoints after every phase; `--resume` (default) picks up matching PRD + branch.
-- Archive: prior `prd.json` + `progress.txt` move to `archive/YYYY-MM-DD-branchname/` when the PRD branch changes.
-- Atomic writes: all protocol files go through `writeAtomic` (temp + rename).
-
-See `CLAUDE.md` for the full protocol and schemas.
+- `.harness/state.json` checkpoints after every phase; `--resume` (default) picks up a matching PRD + branch.
+- Transient errors (429, 5xx, network) retry with exponential backoff; fatal errors abort the iteration.
+- Per-story cost cap halts remaining fix attempts; total-run cap halts before the next iteration.
+- When the PRD branch changes, prior `prd.json` + `progress.txt` move to `archive/YYYY-MM-DD-branchname/`.
+- All protocol files are written atomically (temp + rename).

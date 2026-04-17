@@ -1,8 +1,14 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { HarnessConfig, SessionOutcome } from "./types.ts";
+import type { HarnessConfig, ModelPricing, SessionOutcome } from "./types.ts";
 import { logMessage, logError } from "./logger.ts";
 import { classifyError, sleep } from "./utils.ts";
+
+const FALLBACK_PRICING: ModelPricing = { inputPerMTok: 15, outputPerMTok: 75, cacheReadPerMTok: 1.5 };
+
+export function pricingFor(config: HarnessConfig, model: string): ModelPricing {
+  return config.pricing[model] ?? config.pricing[config.model] ?? FALLBACK_PRICING;
+}
 
 export interface SessionStatsRaw {
   costUsd: number;
@@ -34,11 +40,11 @@ const emptyStats: SessionStatsRaw = {
   cacheCreateTokens: 0,
 };
 
-function baseOptions(config: HarnessConfig, abort: AbortController) {
+function baseOptions(config: HarnessConfig, model: string, abort: AbortController) {
   return {
     cwd: config.projectRoot,
-    model: config.model,
-    settingSources: ["user" as const, "project" as const],
+    model,
+    settingSources: ["project" as const],
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
     abortController: abort,
@@ -56,7 +62,7 @@ function baseOptions(config: HarnessConfig, abort: AbortController) {
 }
 
 function calcCost(
-  pricing: HarnessConfig["pricing"],
+  pricing: ModelPricing,
   inputTokens: number,
   outputTokens: number,
   cacheReadTokens: number,
@@ -70,13 +76,15 @@ function calcCost(
 
 async function drain(
   config: HarnessConfig,
+  model: string,
   q: AsyncIterable<SDKMessage>,
+  agentLabel: string,
 ): Promise<{ result: string; sessionId: string; stats: SessionStatsRaw }> {
   let result = "";
   let sessionId = "";
   let stats: SessionStatsRaw = { ...emptyStats };
   for await (const message of q) {
-    logMessage(message);
+    logMessage(message, agentLabel);
     if (message.type === "result") {
       const r = message as any;
       if (message.subtype === "success") {
@@ -89,7 +97,7 @@ async function drain(
       // Prefer the SDK's reported cost when available; otherwise compute from our pricing table.
       const sdkCost = typeof r.total_cost_usd === "number" ? r.total_cost_usd : null;
       stats = {
-        costUsd: sdkCost ?? calcCost(config.pricing, inputTokens, outputTokens, cacheReadTokens),
+        costUsd: sdkCost ?? calcCost(pricingFor(config, model), inputTokens, outputTokens, cacheReadTokens),
         durationMs: r.duration_ms ?? 0,
         durationApiMs: r.duration_api_ms ?? 0,
         numTurns: r.num_turns ?? 0,
@@ -109,6 +117,8 @@ export async function runQuery(
   timeoutMs: number,
   resumeId?: string,
   parentSignal?: AbortSignal,
+  model: string = config.model,
+  agentLabel: string = "harness",
 ): Promise<SessionResult> {
   const abort = new AbortController();
   const onParentAbort = () => abort.abort();
@@ -128,11 +138,11 @@ export async function runQuery(
 
   try {
     const options = {
-      ...baseOptions(config, abort),
+      ...baseOptions(config, model, abort),
       ...(resumeId ? { resume: resumeId } : {}),
     };
     const q = query({ prompt, options });
-    const drained = await drain(config, q);
+    const drained = await drain(config, model, q, agentLabel);
     return {
       result: drained.result,
       sessionId: drained.sessionId,
@@ -164,10 +174,12 @@ export async function runQueryWithRetry(
   timeoutMs: number,
   resumeId: string | undefined,
   parentSignal: AbortSignal,
+  model: string = config.model,
+  agentLabel: string = "harness",
 ): Promise<SessionResult> {
   let lastResult: SessionResult | null = null;
   for (let attempt = 1; attempt <= config.maxTransientRetries + 1; attempt++) {
-    const result = await runQuery(config, prompt, timeoutMs, resumeId, parentSignal);
+    const result = await runQuery(config, prompt, timeoutMs, resumeId, parentSignal, model, agentLabel);
     lastResult = result;
     if (result.outcome !== "transient_error" && result.outcome !== "timeout") return result;
     if (parentSignal.aborted) return result;
