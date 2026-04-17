@@ -1,0 +1,188 @@
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { HarnessConfig, SessionOutcome } from "./types.ts";
+import { logMessage, logError } from "./logger.ts";
+import { classifyError, sleep } from "./utils.ts";
+
+export interface SessionStatsRaw {
+  costUsd: number;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+}
+
+export interface SessionResult {
+  result: string;
+  sessionId: string;
+  outcome: SessionOutcome;
+  errorMessage?: string;
+  stats: SessionStatsRaw;
+}
+
+const emptyStats: SessionStatsRaw = {
+  costUsd: 0,
+  durationMs: 0,
+  durationApiMs: 0,
+  numTurns: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreateTokens: 0,
+};
+
+function baseOptions(config: HarnessConfig, abort: AbortController) {
+  return {
+    cwd: config.projectRoot,
+    model: config.model,
+    settingSources: ["user" as const, "project" as const],
+    permissionMode: "bypassPermissions" as const,
+    allowDangerouslySkipPermissions: true,
+    abortController: abort,
+    mcpServers: {
+      playwright: {
+        command: "npx",
+        args: ["-y", "@playwright/mcp@latest"],
+      },
+    },
+    stderr: (data: string) => {
+      const line = data.trim();
+      if (line) console.error(`\x1b[90m[stderr]\x1b[0m ${line}`);
+    },
+  };
+}
+
+function calcCost(
+  pricing: HarnessConfig["pricing"],
+  inputTokens: number,
+  outputTokens: number,
+  cacheReadTokens: number,
+): number {
+  return (
+    (inputTokens * pricing.inputPerMTok) / 1_000_000 +
+    (outputTokens * pricing.outputPerMTok) / 1_000_000 +
+    (cacheReadTokens * pricing.cacheReadPerMTok) / 1_000_000
+  );
+}
+
+async function drain(
+  config: HarnessConfig,
+  q: AsyncIterable<SDKMessage>,
+): Promise<{ result: string; sessionId: string; stats: SessionStatsRaw }> {
+  let result = "";
+  let sessionId = "";
+  let stats: SessionStatsRaw = { ...emptyStats };
+  for await (const message of q) {
+    logMessage(message);
+    if (message.type === "result") {
+      const r = message as any;
+      if (message.subtype === "success") {
+        result = message.result;
+        sessionId = r.session_id ?? "";
+      }
+      const inputTokens = r.usage?.input_tokens ?? 0;
+      const outputTokens = r.usage?.output_tokens ?? 0;
+      const cacheReadTokens = r.usage?.cache_read_input_tokens ?? 0;
+      // Prefer the SDK's reported cost when available; otherwise compute from our pricing table.
+      const sdkCost = typeof r.total_cost_usd === "number" ? r.total_cost_usd : null;
+      stats = {
+        costUsd: sdkCost ?? calcCost(config.pricing, inputTokens, outputTokens, cacheReadTokens),
+        durationMs: r.duration_ms ?? 0,
+        durationApiMs: r.duration_api_ms ?? 0,
+        numTurns: r.num_turns ?? 0,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheCreateTokens: r.usage?.cache_creation_input_tokens ?? 0,
+      };
+    }
+  }
+  return { result, sessionId, stats };
+}
+
+export async function runQuery(
+  config: HarnessConfig,
+  prompt: string,
+  timeoutMs: number,
+  resumeId?: string,
+  parentSignal?: AbortSignal,
+): Promise<SessionResult> {
+  const abort = new AbortController();
+  const onParentAbort = () => abort.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) abort.abort();
+    parentSignal.addEventListener("abort", onParentAbort, { once: true });
+  }
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let timedOut = false;
+  if (timeoutMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      abort.abort();
+    }, timeoutMs);
+  }
+
+  try {
+    const options = {
+      ...baseOptions(config, abort),
+      ...(resumeId ? { resume: resumeId } : {}),
+    };
+    const q = query({ prompt, options });
+    const drained = await drain(config, q);
+    return {
+      result: drained.result,
+      sessionId: drained.sessionId,
+      outcome: "success",
+      stats: drained.stats,
+    };
+  } catch (err) {
+    const classified = classifyError(err);
+    let outcome: SessionOutcome = "fatal_error";
+    if (timedOut || classified.category === "timeout") outcome = "timeout";
+    else if (classified.category === "aborted") outcome = "aborted";
+    else if (classified.category === "transient") outcome = "transient_error";
+    return {
+      result: "",
+      sessionId: "",
+      outcome,
+      errorMessage: classified.message,
+      stats: { ...emptyStats },
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (parentSignal) parentSignal.removeEventListener("abort", onParentAbort);
+  }
+}
+
+export async function runQueryWithRetry(
+  config: HarnessConfig,
+  prompt: string,
+  timeoutMs: number,
+  resumeId: string | undefined,
+  parentSignal: AbortSignal,
+): Promise<SessionResult> {
+  let lastResult: SessionResult | null = null;
+  for (let attempt = 1; attempt <= config.maxTransientRetries + 1; attempt++) {
+    const result = await runQuery(config, prompt, timeoutMs, resumeId, parentSignal);
+    lastResult = result;
+    if (result.outcome !== "transient_error" && result.outcome !== "timeout") return result;
+    if (parentSignal.aborted) return result;
+    if (attempt > config.maxTransientRetries) return result;
+    const delay = Math.min(30_000, 1_000 * 2 ** (attempt - 1));
+    logError(
+      `${result.outcome} on attempt ${attempt}, retrying in ${delay}ms`,
+      result.errorMessage,
+      "retry",
+    );
+    await sleep(delay);
+  }
+  return lastResult!;
+}
+
+export async function readPromptFile(path: string): Promise<string> {
+  return Bun.file(path).text();
+}
