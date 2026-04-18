@@ -10,9 +10,10 @@ You are an autonomous coding agent. Your job is to implement the story assigned 
 4. **Check `current-task.json` for a `sensorSummary` field** — if non-empty, it contains a summary of quality sensor results (linters, type checkers, etc.). Address any issues reported.
 5. Implement the assigned story
 6. Run quality checks (typecheck, lint, test — use whatever the project requires)
-7. Update CLAUDE.md files if you discover reusable patterns (see below)
-8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
-9. Append your progress to `progress.txt`
+7. **If the story touched UI** (HTML, JSX/TSX, CSS, Tailwind classes, component styling, layout), invoke the `design-qa-checker` skill before committing and address anything it flags. Do not skip this step on UI-touching stories. Check the root `CLAUDE.md` for other project-specific skills that apply.
+8. Update CLAUDE.md files if you discover reusable patterns (see below)
+9. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
+10. Append your progress to `progress.txt`
 
 The `guidance` field in `current-task.json` contains specific instructions from the orchestrator — always read and act on it.
 
@@ -70,3 +71,4 @@ Only update CLAUDE.md if you have **genuinely reusable knowledge** — not story
 - Do NOT pick another story after finishing — just end your response
 - Commit frequently, keep CI green
 - Do NOT install or update dependencies in the harness root project (the directory containing `index.ts` and `harness.config.json`) — only modify the app workspace inside `app/`
+- If your story **creates a new sub-project / workspace** inside `app/` (a new package, a new service, a split of an existing one, etc.), propagate any sensor configs and sensor task entries (e.g. `lint`, `depcruise`) that already exist in sibling sub-projects into the new one, and declare the same sensor packages as dev dependencies there. A new sub-project must not be left uninstrumented — the sensor has to be runnable from inside it, not only from siblings.

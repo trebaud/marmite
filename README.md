@@ -1,6 +1,6 @@
 # Marmite
 
-An autonomous build system that drives three agents in a loop to implement a project from a PRD. Drop in a PRD, let it simmer.
+An autonomous build system that drives three agents in a loop to implement a project from a PRD. Works on greenfield apps and existing codebases alike — drop in a PRD, let it simmer.
 
 Each iteration: the **orchestrator** picks the next story, runs health sensors, and briefs the builder. The **builder** implements the story and commits. The **verifier** reviews and emits a verdict. A plain **harness** advances state, retries on `fail_retry`, and checkpoints for crash recovery.
 
@@ -56,9 +56,11 @@ bun install
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-## Setup a new app
+## Setup
 
 Everything the agents read lives in the repo root and in `.harness/prompts/`. Walk through these steps before your first `bun cook`.
+
+Marmite works on **greenfield projects** and **existing codebases**. For an existing project, the PRD describes the next batch of stories to implement — the agents will read the existing code and carry on from there.
 
 ### 1. Write the PRD
 
@@ -67,6 +69,7 @@ The PRD is the source of truth for what to build. Stories have `id`, `priority` 
 - Draft the spec with the `/prd` skill, then convert to `prd.json` with `/ralph`.
 - Or copy `prd.example.json` and edit by hand.
 - Place the file at the repo root (or point to it with `--prd`).
+- For an existing project, write stories for the features or improvements you want — the agents will read the existing code as context.
 
 To generate `prd.json` from an existing markdown spec:
 
@@ -76,7 +79,7 @@ echo "/to-prd @docs/PRD.md" | claude --print --model claude-opus-4-7 --dangerous
 
 ### 2. Tune the agent prompts
 
-The three prompts in `.harness/prompts/` are project-agnostic defaults. Edit them to bake in stack choices, house style, and any workflow rules specific to your app:
+The three prompts in `.harness/prompts/` are project-agnostic defaults. Edit them to bake in stack choices, house style, and any workflow rules specific to your app. For existing projects, add context about the current architecture, conventions, and areas to avoid:
 
 - `orchestrator-prompt.md` — story selection heuristics, when to run sensors, how to brief the builder.
 - `builder-prompt.md` — stack, commit conventions, testing requirements, `progress.txt` format.

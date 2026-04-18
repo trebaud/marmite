@@ -1,20 +1,19 @@
 {
   "project": "TodoApp",
-  "branchName": "todo-app-silver-fox-dance",
-  "description": "TodoApp - Simple full-stack todo list with React + Express in a single monorepo. Full CRUD surface with in-memory state, covered by integration tests.",
+  "branchName": "todo-app-mystery-fox",
+  "description": "TodoApp - Full-stack todo list with React + Express, in-memory state, full CRUD surface, starring, age-based guilt-tripping, and a tombstone graveyard for abandoned todos.",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Monorepo scaffold with server and client workspaces",
-      "description": "As a developer, I need a monorepo layout with server and client workspaces so that subsequent stories can build on a consistent structure.",
+      "title": "Monorepo scaffold with Express health endpoint",
+      "description": "As a developer, I need the monorepo structure and a running Express server so subsequent stories have a backend to build on.",
       "acceptanceCriteria": [
-        "Root package.json declares workspaces for app/server and app/client",
-        "app/server has tsconfig.json with strict TypeScript and Express + TypeScript dependencies",
-        "app/client has tsconfig.json and Vite + React dependencies",
-        "Vite config in app/client proxies /api/* to http://localhost:3000",
-        "npm test script is wired at the root (can be a placeholder until US-006)",
-        "All code lives under app/ (Marmite convention)",
-        "Typecheck passes"
+        "Root package.json defines npm workspaces for server/ and client/",
+        "server/ has TypeScript configured (tsconfig.json) and Express installed",
+        "Express server listens on port 3000",
+        "GET /api/health returns 200 with JSON body { ok: true }",
+        "npm run dev or equivalent starts the server successfully",
+        "Typecheck passes (tsc --noEmit in server/)"
       ],
       "priority": 1,
       "passes": false,
@@ -23,14 +22,16 @@
     },
     {
       "id": "US-002",
-      "title": "Express server entry point with health endpoint",
-      "description": "As a developer, I need the Express server to start on port 3000 and expose GET /api/health so that later endpoints have a working host.",
+      "title": "Vite + React client with API proxy",
+      "description": "As a developer, I need the client dev server running with a proxy to Express so the UI can call the API without CORS issues.",
       "acceptanceCriteria": [
-        "app/server entry point creates an Express app listening on port 3000",
-        "GET /api/health returns 200 with JSON body { ok: true }",
-        "All API routes are mounted under the /api prefix",
-        "Server can be started via an npm script (e.g. npm run dev --workspace=server)",
-        "Typecheck passes"
+        "client/ has Vite + React + TypeScript configured",
+        "Vite dev server runs on port 5173",
+        "Vite config proxies /api/* to http://localhost:3000",
+        "Root App component renders a visible heading (e.g. 'TodoApp')",
+        "Client successfully reaches /api/health through the proxy",
+        "Typecheck passes (tsc --noEmit in client/)",
+        "Verify in browser using dev-browser skill"
       ],
       "priority": 2,
       "passes": false,
@@ -39,58 +40,77 @@
     },
     {
       "id": "US-003",
-      "title": "In-memory todo store and REST CRUD API",
-      "description": "As a client, I need a full CRUD REST API for todos so that the UI can create, list, toggle, and delete tasks.",
+      "title": "In-memory todo store and REST API with graveyard",
+      "description": "As a developer, I need the full CRUD API (plus the graveyard endpoint) so the client has everything it needs to render and mutate todos.",
       "acceptanceCriteria": [
-        "In-memory store holds todos with fields id (string), title (string), completed (boolean)",
+        "In-memory store holds Todo { id, title, completed, starred, createdAt }",
         "GET /api/todos returns 200 with Todo[]",
-        "POST /api/todos accepts { title } and returns 201 with the created Todo (id generated, completed=false, title trimmed)",
-        "POST /api/todos returns 400 when title is missing or empty after trim",
-        "PATCH /api/todos/:id accepts { completed } and returns 200 with updated Todo",
-        "PATCH /api/todos/:id returns 404 when id is unknown",
-        "DELETE /api/todos/:id returns 204 on success",
-        "DELETE /api/todos/:id returns 404 when id is unknown",
+        "POST /api/todos validates non-empty trimmed title, returns 201 with created Todo; returns 400 on empty/missing title",
+        "PATCH /api/todos/:id accepts { completed?, starred? } and returns 200 with updated Todo; returns 404 if id unknown",
+        "DELETE /api/todos/:id returns 204; returns 404 if id unknown",
+        "Deleting an incomplete todo creates a Tombstone { id, title, abandonedAt } in the graveyard; deleting an already-completed todo does not",
+        "GET /api/graveyard returns 200 with Tombstone[]",
+        "createdAt is set server-side at creation and never mutated",
         "Typecheck passes"
       ],
       "priority": 3,
       "passes": false,
       "notes": "",
-      "dependencies": ["US-002"]
+      "dependencies": ["US-001"]
     },
     {
       "id": "US-004",
-      "title": "React client app with todo list UI wired to the API",
-      "description": "As a user, I want a web UI to view, add, toggle, and delete my todos so that I can manage my task list.",
+      "title": "Todo list UI - core CRUD",
+      "description": "As a user, I want to add, complete, and delete todos from the web UI wired to the API.",
       "acceptanceCriteria": [
-        "Vite dev server runs on port 5173 and serves a React App component",
-        "On mount the app fetches GET /api/todos and renders the list",
-        "An input + Add button POSTs a new todo; empty submissions are blocked client-side",
-        "Each row shows a checkbox that toggles completed via PATCH /api/todos/:id",
-        "Each row has a delete button that calls DELETE /api/todos/:id and removes the row",
+        "On mount, App fetches GET /api/todos and renders the list",
+        "Input + Add button posts a new todo via POST /api/todos; empty submissions are blocked client-side",
+        "Each row shows the title with a checkbox that toggles completed via PATCH /api/todos/:id",
+        "Each row has a delete button that calls DELETE /api/todos/:id and removes the row on success",
         "UI re-renders from server responses (no optimistic updates required)",
-        "Styling is minimal but the UI is usable",
         "Typecheck passes",
         "Verify in browser using dev-browser skill"
       ],
       "priority": 4,
       "passes": false,
       "notes": "",
-      "dependencies": ["US-003"]
+      "dependencies": ["US-002", "US-003"]
     },
     {
       "id": "US-005",
-      "title": "API integration tests for CRUD and validation",
-      "description": "As a maintainer, I want integration tests covering the API so that regressions are caught by the verifier.",
+      "title": "Starring, sorting, age labels, neglected styling, and graveyard section",
+      "description": "As a user, I want to star todos to pin them, see how long they have been hanging around, and peek at my abandoned todos.",
       "acceptanceCriteria": [
-        "Integration tests start the Express app and exercise real HTTP endpoints (no mocked handlers)",
-        "Tests cover CRUD happy paths: create, list, toggle completed, delete",
-        "Tests cover the 400 validation case for POST /api/todos with empty/missing title",
-        "Tests cover the 404 cases for PATCH and DELETE with unknown ids",
-        "npm test from the repo root runs the suite and exits green",
+        "Each row has a star button: filled (star) when starred is true, outlined when false; click toggles via PATCH",
+        "Starred todos always render above non-starred todos regardless of creation order",
+        "Incomplete todos display a relative age label next to the title (e.g. '. 2d', '. 3h'); completed todos show no age",
+        "Incomplete todos with age >= 3 days render the age label in a distinct muted-red style",
+        "A collapsible section labeled 'Abandoned (N)' sits below the main list; N reflects current tombstone count",
+        "Expanding the section shows each tombstone with strike-through title and relative abandoned timestamp (e.g. '. abandoned 2h ago')",
+        "The count updates after each incomplete-todo deletion",
         "Typecheck passes",
-        "Tests pass"
+        "Verify in browser using dev-browser skill"
       ],
       "priority": 5,
+      "passes": false,
+      "notes": "",
+      "dependencies": ["US-004"]
+    },
+    {
+      "id": "US-006",
+      "title": "API integration tests",
+      "description": "As a developer, I want integration tests covering the CRUD surface so regressions are caught by the verifier.",
+      "acceptanceCriteria": [
+        "Integration tests run against a real Express app instance (e.g. supertest)",
+        "Tests cover GET/POST/PATCH/DELETE happy paths on /api/todos",
+        "Test verifies POST returns 400 when title is empty or whitespace-only",
+        "Test verifies PATCH toggles starred and completed independently",
+        "Test verifies deleting an incomplete todo adds a tombstone to /api/graveyard",
+        "Test verifies deleting an already-completed todo leaves the graveyard unchanged",
+        "npm test from the repo root runs all tests green",
+        "Typecheck passes"
+      ],
+      "priority": 6,
       "passes": false,
       "notes": "",
       "dependencies": ["US-003"]
