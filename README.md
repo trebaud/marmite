@@ -2,11 +2,11 @@
 
 An autonomous build system that drives three agents in a loop to implement a project from a PRD. Works on greenfield apps and existing codebases alike — drop in a PRD, let it simmer.
 
-Each iteration: the **orchestrator** picks the next story, runs health sensors, and briefs the builder. The **builder** implements the story and commits. The **verifier** reviews and emits a verdict. A plain **harness** advances state, retries on `fail_retry`, and checkpoints for crash recovery.
+Each iteration: the **orchestrator** picks the next story, runs health sensors, and briefs the builder. The **builder** implements the story and commits. The **verifier** reviews and emits a verdict. A plain **harness** advances state, retries on failure and checkpoints for crash recovery.
 
 ## Philosophy
 
-A model tends to trust its own output — a fresh verifier has no attachment to the builder's plan, so it catches what's actually broken. When the verifier rejects, the builder resumes its original session to fix it, keeping context.
+A model tends to trust its own output, a fresh verifier has no attachment to the builder's plan, so it catches what's actually broken. When the verifier rejects, the builder resumes its original session to fix it, keeping context.
 
 - Each agent has one job. Combining them produces agreeable mush.
 - Agents do the creative work. A plain program handles state transitions, schema validation, `prd.json` writes, and crash recovery.
@@ -44,7 +44,7 @@ flowchart LR
 
 `current-task.json` is the single handoff file between agents. The orchestrator writes the story, guidance, and a `sensorSummary`; the verifier merges in the verdict. The harness reads it after each phase to drive state transitions.
 
-The harness (`index.ts`, `.harness/core/`) is the only writer of `prd.json` — it flips `passes: true` and commits on pass. Generated code lives under `app/`.
+The harness is the only writer of `prd.json` — it flips `passes: true` and commits on pass. Generated code lives under `app/`.
 
 ## Install
 
@@ -58,16 +58,13 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 ## Setup
 
-Everything the agents read lives in the repo root and in `.harness/prompts/`. Walk through these steps before your first `bun cook`.
-
 Marmite works on **greenfield projects** and **existing codebases**. For an existing project, the PRD describes the next batch of stories to implement — the agents will read the existing code and carry on from there.
 
 ### 1. Write the PRD
 
 The PRD is the source of truth for what to build. Stories have `id`, `priority` (lower = higher priority), `description`, `acceptanceCriteria`, and a `passes` flag the harness flips as stories land.
 
-- Draft the spec with the `/prd` skill, then convert to `prd.json` with `/ralph`.
-- Or copy `prd.example.json` and edit by hand.
+- Draft the spec then convert to `prd.json` with `/to-prd`.
 - Place the file at the repo root (or point to it with `--prd`).
 - For an existing project, write stories for the features or improvements you want — the agents will read the existing code as context.
 
