@@ -134,8 +134,6 @@ bun cook --config ./harness.config.json
 bun cook --no-resume                                      # ignore existing .harness/state.json
 ```
 
-Config precedence: defaults < `harness.config.json` < env vars (`HARNESS_MODEL`, `HARNESS_BUILDER_MODEL`, `HARNESS_VERIFIER_MODEL`, `HARNESS_COST_BUDGET`, `HARNESS_COST_BUDGET_TOTAL`, `HARNESS_CONFIG`) < CLI flags.
-
 ## Operational notes
 
 - `.harness/state.json` checkpoints after every phase; `--resume` (default) picks up a matching PRD + branch.
