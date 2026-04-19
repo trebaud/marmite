@@ -140,7 +140,13 @@ vite.config.ts.timestamp-*
 
 .playwright-mcp/
 
-# Harness runtime state
+# Marmite runtime state
+.marmite/state.json
+.marmite/events.jsonl
+.last-branch
+current-task.json
+archive/
+
+# Legacy locations (pre-package)
 .harness/state.json
 .harness/events.jsonl
-.last-branch

@@ -6,18 +6,8 @@ export interface ModelPricing {
 
 export interface HarnessConfig {
   maxIterations: number;
-  projectRoot: string;
-  builderMdPath: string;
-  verifierMdPath: string;
-  orchestratorMdPath: string;
+  appPath: string;
   prdPath: string;
-  sensorsConfigPath: string;
-  progressPath: string;
-  archiveDir: string;
-  lastBranchPath: string;
-  statePath: string;
-  eventsPath: string;
-  currentTaskPath: string;
   // Model & pricing
   model: string;
   builderModel: string;

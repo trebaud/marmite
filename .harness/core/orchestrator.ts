@@ -1,4 +1,5 @@
 import type { HarnessConfig, RunStats } from "./types.ts";
+import { PATHS, resolvePrompt } from "./paths.ts";
 import {
   emitEvent,
   initEventLog,
@@ -39,7 +40,7 @@ import {
 } from "./stats.ts";
 
 export async function run(config: HarnessConfig): Promise<void> {
-  initEventLog(config.eventsPath);
+  initEventLog(PATHS.events);
   await emitEvent("run_start", {
     maxIterations: config.maxIterations,
     model: config.model,
@@ -54,12 +55,12 @@ export async function run(config: HarnessConfig): Promise<void> {
   await archivePreviousRun(config);
   await trackBranch(config);
   const branchName = await readJsonField(config.prdPath, "branchName");
-  if (branchName) gitEnsureBranch(config.projectRoot, branchName);
+  if (branchName) gitEnsureBranch(PATHS.projectRoot, branchName);
   await initProgress(config);
   await clearStateIfBranchChanged(config);
 
   // Validate prompt + PRD files up front.
-  for (const p of [config.orchestratorMdPath, config.builderMdPath, config.verifierMdPath]) {
+  for (const p of [resolvePrompt("orchestrator"), resolvePrompt("builder"), resolvePrompt("verifier")]) {
     if (!(await fileExists(p))) {
       console.error(`Error: prompt file missing: ${p}`);
       process.exit(2);
@@ -141,7 +142,7 @@ export async function run(config: HarnessConfig): Promise<void> {
     // ── Phase 0: Orchestrate ──
     await emitEvent("phase_start", { phase: "orchestrate", iteration: i, storyId: nextStory.id });
 
-    const orchestratorPrompt = await readPromptFile(config.orchestratorMdPath);
+    const orchestratorPrompt = await readPromptFile(resolvePrompt("orchestrator"));
     const orchestrate = await runQueryWithRetry(
       config,
       orchestratorPrompt,
@@ -157,7 +158,7 @@ export async function run(config: HarnessConfig): Promise<void> {
     if (runAbort.signal.aborted) break;
 
     // Read orchestrator decision from current-task.json — determine actual story selected.
-    const decisionParsed = await readCurrentTaskDecision(config);
+    const decisionParsed = await readCurrentTaskDecision();
     let currentStory = nextStory;
 
     if (decisionParsed.kind === "present") {
@@ -200,7 +201,7 @@ export async function run(config: HarnessConfig): Promise<void> {
     console.log("===============================================================");
     await emitEvent("phase_start", { phase: "build", iteration: i, storyId: currentStory.id });
 
-    const builderPrompt = await readPromptFile(config.builderMdPath);
+    const builderPrompt = await readPromptFile(resolvePrompt("builder"));
     const build = await runQueryWithRetry(
       config,
       builderPrompt,
@@ -246,7 +247,7 @@ export async function run(config: HarnessConfig): Promise<void> {
       console.log("---------------------------------------------------------------");
       await emitEvent("phase_start", { phase: "verify", iteration: i, attempt: fix + 1 });
 
-      const verifierPrompt = await readPromptFile(config.verifierMdPath);
+      const verifierPrompt = await readPromptFile(resolvePrompt("verifier"));
       const verify = await runQueryWithRetry(
         config,
         verifierPrompt,
@@ -274,7 +275,7 @@ export async function run(config: HarnessConfig): Promise<void> {
         break;
       }
 
-      const parsed = await readVerificationResultFile(config);
+      const parsed = await readVerificationResultFile();
       if (parsed.kind === "missing") {
         console.log("  No verdict in current-task.json — verifier did not write results.");
         failReason = "missing_results";
@@ -359,7 +360,7 @@ export async function run(config: HarnessConfig): Promise<void> {
     if (passed) {
       const marked = await markStoryPassing(config, currentStory.id);
       if (marked) {
-        gitCommit(config.projectRoot, config.prdPath, `verify: ${currentStory.id} - passed verification`);
+        gitCommit(PATHS.projectRoot, config.prdPath, `verify: ${currentStory.id} - passed verification`);
       }
       finalizeStoryOutcome(runStats, currentStory.id, i, true);
       console.log(`Story ${currentStory.id} passed verification at iteration ${i}.`);

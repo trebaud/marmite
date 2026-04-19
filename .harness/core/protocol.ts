@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { HarnessConfig } from "./types.ts";
 import { readJson } from "./utils.ts";
+import { PATHS } from "./paths.ts";
 
 const VerificationVerdictSchema = z.enum(["pass", "fail_retry", "fail_abort"]);
 export type VerificationVerdict = z.infer<typeof VerificationVerdictSchema>;
@@ -52,8 +52,8 @@ function formatZodError(err: z.ZodError): string {
 
 // Reads the verdict written by the verifier into current-task.json.
 // Returns "missing" if the file doesn't exist or the verifier hasn't written a verdict yet.
-export async function readVerificationResultFile(config: HarnessConfig): Promise<ParsedVerification> {
-  const read = await readJson(config.currentTaskPath);
+export async function readVerificationResultFile(): Promise<ParsedVerification> {
+  const read = await readJson(PATHS.currentTask);
   if (read.kind === "missing") return { kind: "missing" };
   if (read.kind === "malformed") {
     return { kind: "malformed", error: read.error.message };
@@ -90,8 +90,8 @@ export type ParsedCurrentTaskDecision =
   | { kind: "missing" }
   | { kind: "malformed"; error: string };
 
-export async function readCurrentTaskDecision(config: HarnessConfig): Promise<ParsedCurrentTaskDecision> {
-  const read = await readJson(config.currentTaskPath);
+export async function readCurrentTaskDecision(): Promise<ParsedCurrentTaskDecision> {
+  const read = await readJson(PATHS.currentTask);
   if (read.kind === "missing") return { kind: "missing" };
   if (read.kind === "malformed") return { kind: "malformed", error: read.error.message };
   const parsed = CurrentTaskDecisionSchema.safeParse(read.value);

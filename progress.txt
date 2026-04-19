@@ -1,0 +1,32 @@
+# Harness Progress Log
+Started: Sat Apr 25 2026 10:46:04 GMT-0400 (Eastern Daylight Time)
+---
+
+## Codebase Patterns
+- npm workspaces: root at `app/`, workspaces are `server/` and `client/`
+- tsx is hoisted to `app/node_modules/.bin/tsx`; npm workspace scripts can call `tsx` directly because npm adds the root bin to PATH
+- ESLint config lives at `app/.eslintrc.json` with `@typescript-eslint` parser and plugin
+- dep-cruiser config lives at `app/.dependency-cruiser.json` with `tsConfig` pointing at `server/tsconfig.json`
+- Server src entry point: `app/server/src/index.ts`
+- TypeScript: strict mode, commonjs modules, outDir `dist/`, rootDir `src/`
+- Client: Vite 5 + React 18 + TypeScript, `moduleResolution: bundler`, `allowImportingTsExtensions: true`, `noEmit: true`
+- Vite proxy: `server.proxy: { '/api': 'http://localhost:3000' }` in `vite.config.ts`
+- `npm install --workspace=client` may warn "no workspace folder present" on first run if run before npm re-indexes; run plain `npm install` from `app/` root to let npm discover all workspaces then retry
+---
+
+## 2026-04-25 - US-001
+- Implemented monorepo scaffold: `app/package.json` workspace root with `server/` and `client/` workspaces
+- Created `app/server/` with TypeScript + Express on port 3000
+- `GET /api/health` returns `{ ok: true }` with status 200
+- Dev script uses `tsx watch src/index.ts` (tsx hoisted to app root node_modules)
+- Created baseline `app/.eslintrc.json` and `app/.dependency-cruiser.json` for sensor use
+- `client/` directory added as placeholder (only `.gitkeep`)
+- All quality checks pass: `tsc --noEmit` clean, `eslint` clean
+- Smoke tested: server starts, health endpoint returns `{"ok":true}`
+- Files changed: app/package.json, app/package-lock.json, app/server/package.json, app/server/tsconfig.json, app/server/src/index.ts, app/.eslintrc.json, app/.dependency-cruiser.json, app/client/.gitkeep
+- **Learnings for future iterations:**
+  - tsx is hoisted via npm workspaces — no need to reference it with a relative path in scripts
+  - The `app/.eslintrc.json` uses `"root": true` to prevent eslint from walking up past the app directory
+  - dep-cruiser tsConfig path is relative to the config file location (`server/tsconfig.json` from `app/`)
+  - Client workspace is just a placeholder dir for now; US-002 will scaffold it properly
+---

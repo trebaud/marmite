@@ -1,0 +1,54 @@
+{
+  // Directory where agents write application code; all implementation lives here.
+  "app": "./app",
+
+  // Path to the product requirements doc driving story generation.
+  "prd": "./prd.json",
+
+  // Sensor catalog — deterministic health checks the orchestrator can run between stories.
+  // `configPath` points at the tool's existing config anywhere in the repo.
+  // `guidance` is freeform prose passed to the agent invoking the sensor (command, exit-code quirks, ignore notes).
+  "sensors": [
+    {
+      "name": "eslint",
+      "type": "debt",
+      "package": "eslint",
+      "configPath": "./app/.eslintrc.json",
+      "guidance": "Run from the app workspace. If the config is missing, treat it as a setup gap and surface it in current-task.json — do not invent rules."
+    },
+    {
+      "name": "dep-cruiser",
+      "type": "drift",
+      "package": "dependency-cruiser",
+      "configPath": "./app/.dependency-cruiser.json",
+      "guidance": "Run from the app workspace. Violations indicate the builder broke a layer boundary — pair with the `architect` skill to fix."
+    }
+  ],
+
+  // Per-role model overrides; "default" is the fallback when a role is unset.
+  "models": {
+    // Fallback model for any role not explicitly configured below.
+    "default": "claude-sonnet-4-6",
+    // Writes application code — favor capability over speed.
+    "builder": "claude-sonnet-4-6",
+    // Checks builder output against sensors/acceptance — cheap+fast is fine.
+    "verifier": "claude-haiku-4-5",
+    // Plans stories and routes work — needs strong reasoning.
+    "orchestrator": "claude-sonnet-4-6"
+  },
+
+  // Per-phase wall-clock limits; accepts duration strings (e.g. "20m") or ms numbers.
+  "timeouts": { "build": "20m", "verify": "10m", "fix": "15m", "orchestrate": "10m" },
+
+  // USD spend caps; "perStory" bounds one story, "total" is the run-wide ceiling.
+  "budget":   { "perStory": 15, "total": 100 },
+
+  // "fix" = max fix attempts after a failed verify; "transient" = retries on infra/network errors.
+  "retries":  { "fix": 3, "transient": 2 },
+
+  // Safety cap on orchestrator loop iterations before the run exits.
+  "maxIterations": 1000,
+
+  // When true, continue an interrupted run using prior state instead of starting fresh.
+  "resume": true
+}

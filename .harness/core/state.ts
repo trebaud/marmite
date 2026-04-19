@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { HarnessConfig, HarnessState } from "./types.ts";
 import { readJson, readJsonField, writeAtomicJson } from "./utils.ts";
+import { PATHS } from "./paths.ts";
 
 export const STATE_VERSION = "1";
 
@@ -18,11 +19,11 @@ const HarnessStateSchema = z.object({
 });
 
 export async function persistState(config: HarnessConfig, state: HarnessState): Promise<void> {
-  await writeAtomicJson(config.statePath, state);
+  await writeAtomicJson(PATHS.state, state);
 }
 
 export async function loadState(config: HarnessConfig): Promise<HarnessState | null> {
-  const read = await readJson(config.statePath);
+  const read = await readJson(PATHS.state);
   if (read.kind !== "present") return null;
   const parsed = HarnessStateSchema.safeParse(read.value);
   return parsed.success ? parsed.data : null;
@@ -34,7 +35,7 @@ export async function clearStateIfBranchChanged(config: HarnessConfig): Promise<
   const currentBranch = await readJsonField(config.prdPath, "branchName");
   if (state.branchName !== currentBranch) {
     try {
-      await Bun.write(config.statePath, "");
+      await Bun.write(PATHS.state, "");
     } catch {}
   }
 }

@@ -1,0 +1,21 @@
+{
+  "version": "1",
+  "storyId": "US-002",
+  "storyTitle": "Vite + React client with API proxy",
+  "priority": 2,
+  "description": "As a developer, I need the client dev server running with a proxy to Express so the UI can call the API without CORS issues.",
+  "acceptanceCriteria": [
+    "client/ has Vite + React + TypeScript configured",
+    "Vite dev server runs on port 5173",
+    "Vite config proxies /api/* to http://localhost:3000",
+    "Root App component renders a visible heading (e.g. 'TodoApp')",
+    "Client successfully reaches /api/health through the proxy",
+    "Typecheck passes (tsc --noEmit in client/)",
+    "Verify in browser using dev-browser skill"
+  ],
+  "notes": "",
+  "guidance": "The client/ directory is currently empty (just a placeholder dir with no files). Scaffold it as a Vite + React + TypeScript project inside app/client/. Key patterns from prior work: npm workspaces root is app/, devDependencies are hoisted to app/node_modules/ — install React/Vite deps via `npm install --workspace=client` from app/. Create app/client/package.json, app/client/vite.config.ts (with server.proxy: { '/api': 'http://localhost:3000' }), app/client/tsconfig.json, app/client/index.html, app/client/src/main.tsx, and app/client/src/App.tsx. The App component must render a visible heading (e.g. <h1>TodoApp</h1>) and on mount call fetch('/api/health') to confirm the proxy works. Update app/package.json scripts to include the client in typecheck and add a client dev script. After scaffolding, use the dev-browser skill to verify the UI renders the heading and the proxy health check succeeds. Ensure tsc --noEmit passes in app/client/.",
+  "sensorSummary": "",
+  "ranSensors": [],
+  "reasoning": "US-002 is the highest-priority incomplete story (priority 2); its dependency US-001 passed cleanly. Skipping sensors because the previous story passed with no warnings and this is only the second story."
+}

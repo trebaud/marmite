@@ -4,6 +4,25 @@ A harness that drives three agents in a loop to implement a project from a PRD. 
 
 Each iteration: the **orchestrator** picks the next story, runs health sensors, and briefs the builder. The **builder** implements the story and commits. The **verifier** reviews and emits a verdict. A plain **harness** advances state, retries on failure and checkpoints for crash recovery.
 
+## Quickstart
+
+Requires [Bun](https://bun.sh) and the [Claude CLI](https://docs.claude.com/en/docs/claude-code).
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+bunx marmite init     # interactive wizard — asks the right questions and writes config
+bunx marmite cook     # start the agent loop
+```
+
+`marmite init` runs a Claude Code skill that interviews you. It detects whether your repo is greenfield or has existing code, and points sensors at configs you already have. Nothing gets overwritten without your confirmation.
+
+For per-project install:
+
+```bash
+bun add -D marmite
+bun marmite cook
+```
+
 ## Philosophy
 
 A model tends to trust its own output, a fresh verifier has no attachment to the builder's plan, so it catches what's actually broken. When the verifier rejects, the builder resumes its original session to fix it, keeping context.
@@ -44,64 +63,67 @@ flowchart LR
 
 `current-task.json` is the single handoff file between agents. The orchestrator writes the story, guidance, and a `sensorSummary`; the verifier merges in the verdict. The harness reads it after each phase to drive state transitions.
 
-Generated code lives under `app/`.
+Generated code lives where `marmite.json`'s `app` field points (default `./app`).
 
-## Install
+## Project layout after init
 
-Requires [Bun](https://bun.sh).
-
-```bash
-git clone <repo> && cd marmite
-bun install
-export ANTHROPIC_API_KEY=sk-ant-...
+```
+my-project/
+├── package.json          # marmite in devDependencies (if installed locally)
+├── marmite.json          # your config — paths, sensors, models, budgets
+├── prd.json              # the PRD that drives the loop
+├── .marmite/
+│   ├── prompts/          # optional prompt overrides (checked in)
+│   ├── state.json        # gitignored — crash-recovery checkpoint
+│   └── events.jsonl      # gitignored — per-session event log
+└── app/ or apps/web/…    # your code (lint configs live where they always have)
 ```
 
-## Setup
+## Configuration
 
-Marmite works on **greenfield projects** and **existing codebases**. For an existing project, the PRD describes the next batch of stories to implement — the agents will read the existing code and carry on from there.
+`marmite.json` is JSONC. Every field is optional; the example below shows the full surface area.
 
-### 1. Write the PRD
-
-The PRD is the source of truth for what to build. Stories have `id`, `priority` (lower = higher priority), `description`, `acceptanceCriteria`, `dependencies` and a `passes` flag the harness flips as stories land.
-
-- Draft the spec then convert to `prd.json` with the `/to-prd` skill.
-- For an existing project, write stories for the features or improvements you want — the agents will read the existing code as context.
-
-To generate `prd.json` from an existing markdown spec:
-
-```bash
-echo "/to-prd @docs/PRD.md" | claude --print --model claude-opus-4-7 --dangerously-skip-permissions
-```
-
-### 2. Tune the agent prompts
-
-The three prompts in `.harness/prompts/` are project-agnostic defaults. Edit them to bake in stack choices, house style, and any workflow rules specific to your app. For existing projects, add context about the current architecture, conventions, and areas to avoid:
-
-- `orchestrator-prompt.md` — story selection heuristics, when to run sensors, how to brief the builder.
-- `builder-prompt.md` — stack, commit conventions, testing requirements, `progress.txt` format.
-- `verifier-prompt.md` — how strictly to interpret acceptance criteria, what counts as `fail_retry` vs `fail_abort`.
-
-### 3. Configure sensors (optional but recommended)
-
-Sensors are deterministic health checks (linters, type checker, tests, audits) the orchestrator runs selectively to feed objective feedback to the builder.
-
-```bash
-cp sensors/sensors.example.json sensors/sensors.json
-```
-
-Each entry:
-
-```json
+```jsonc
 {
-  "name": "eslint",
-  "type": "debt",
-  "command": "bun run lint",
-  "description": "Code quality debt",
-  "guidance": "Setup: copy `eslintrc.json` next to `app/package.json`. Run the `clean-code` skill to address violations."
+  "app": "./app",                  // where application code lives
+  "prd": "./prd.json",             // the PRD that drives the loop
+
+  // Sensors — deterministic checks the orchestrator runs between stories.
+  // configPath points at an existing config anywhere in the repo (no copying).
+  // guidance is freeform prose passed to the agent invoking the sensor.
+  "sensors": [
+    {
+      "name": "eslint",
+      "type": "debt",
+      "package": "eslint",
+      "configPath": "./app/.eslintrc.json",
+      "guidance": "Run via `bun run lint:strict` in the app workspace."
+    },
+    {
+      "name": "tsc",
+      "type": "pulse",
+      "package": "typescript",
+      "configPath": "./app/tsconfig.json",
+      "guidance": "Use `bun run typecheck` so workspace refs resolve."
+    }
+  ],
+
+  "models": {
+    "default": "claude-sonnet-4-6",
+    "builder": "claude-sonnet-4-6",
+    "verifier": "claude-haiku-4-5",
+    "orchestrator": "claude-sonnet-4-6"
+  },
+
+  "timeouts": { "build": "20m", "verify": "10m", "fix": "15m", "orchestrate": "10m" },
+  "budget":   { "perStory": 15, "total": 100 },
+  "retries":  { "fix": 3, "transient": 2 },
+  "maxIterations": 1000,
+  "resume": true
 }
 ```
 
-The four standard `type`s map to suggested skills the orchestrator recommends to the builder when the sensor fails:
+The four sensor `type`s map to suggested skills the orchestrator recommends to the builder when the sensor fails:
 
 | Type | Purpose | Typical tool | Suggested skill |
 |------|---------|--------------|-----------------|
@@ -110,33 +132,39 @@ The four standard `type`s map to suggested skills the orchestrator recommends to
 | `pulse` | Failing or flaky tests | jest, vitest | `debug` |
 | `safe` | Known CVEs in the dependency tree | npm audit, snyk | `security-review` |
 
-The `guidance` string carries both setup instructions (which config files to copy where) and remediation advice. The orchestrator reads it before briefing the builder, so first-time setup happens automatically.
+## Customizing prompts
 
-Drop supporting config files (e.g. `eslintrc.example.json`, `dependency-cruiser.example.json`) in `sensors/` — agents copy them into `app/` on demand per `guidance`.
-
-The orchestrator runs sensors when a story just failed verification, every 3rd completed story, or when `progress.txt` shows accumulating issues.
-
-### 4. (Optional) Harness config
-
-Override defaults in `harness.config.json` — see `harness.config.example.json` for the schema (models, timeouts, retries, cost budgets).
+The three prompts in `.harness/prompts/` (`builder-prompt.md`, `verifier-prompt.md`, `orchestrator-prompt.md`) ship with the package. To override one, drop a file with the same name into `.marmite/prompts/` in your project — marmite reads the override if it exists, otherwise falls back to the default. Overrides are checked in.
 
 ## Run
 
 ```bash
-bun cook                                                  # default: 1000 iterations, claude-opus-4-7
-bun cook -n 5                                             # custom iteration count
-bun cook --prd ./x.json
-bun cook --model claude-opus-4-7 --cost-budget 10         # per-story cap (USD)
-bun cook --cost-budget-total 100                          # total run cap; halts when exceeded
-bun cook --builder-model claude-opus-4-7 --verifier-model claude-sonnet-4-6
-bun cook --config ./harness.config.json
-bun cook --no-resume                                      # ignore existing .harness/state.json
+marmite cook                                              # default: 1000 iterations
+marmite cook -n 5                                         # custom iteration count
+marmite cook --prd ./x.json
+marmite cook --model claude-opus-4-7 --cost-budget 10     # per-story cap (USD)
+marmite cook --cost-budget-total 100                      # total run cap; halts when exceeded
+marmite cook --builder-model claude-opus-4-7 --verifier-model claude-sonnet-4-6
+marmite cook --config ./marmite.json
+marmite cook --no-resume                                  # ignore existing .marmite/state.json
 ```
+
+`marmite` and `marmite cook` are equivalent — the `cook` subcommand is optional.
 
 ## Operational notes
 
-- `.harness/state.json` checkpoints after every phase; `--resume` (default) picks up a matching PRD + branch.
+- `.marmite/state.json` checkpoints after every phase; `--resume` (default) picks up a matching PRD + branch.
 - Transient errors (429, 5xx, network) retry with exponential backoff; fatal errors abort the iteration.
 - Per-story cost cap halts remaining fix attempts; total-run cap halts before the next iteration.
 - When the PRD branch changes, prior `prd.json` + `progress.txt` move to `archive/YYYY-MM-DD-branchname/`.
 - All protocol files are written atomically (temp + rename).
+
+## Contributing / developing marmite itself
+
+```bash
+git clone <repo> && cd marmite
+bun install
+bun run cook        # runs from this checkout against ./app
+```
+
+Harness internals live in `.harness/core/`. Default prompts live in `.harness/prompts/`. The setup wizard skill lives in `.claude/skills/marmite-init/`.

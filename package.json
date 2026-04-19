@@ -1,12 +1,22 @@
 {
   "name": "marmite",
-  "module": "index.ts",
+  "version": "0.1.0",
+  "description": "Three-agent harness that drives autonomous coding from a PRD.",
   "type": "module",
-  "private": true,
-  "workspaces": ["app/server", "app/client"],
+  "bin": {
+    "marmite": "./index.ts"
+  },
   "scripts": {
-    "cook": "bun run index.ts",
-    "test": "npm run test --workspace=app/server"
+    "cook": "bun run index.ts"
+  },
+  "files": [
+    "index.ts",
+    ".harness/core",
+    ".harness/prompts",
+    ".claude/skills/marmite-init"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
   },
   "devDependencies": {
     "@types/bun": "latest"

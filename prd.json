@@ -16,7 +16,7 @@
         "Typecheck passes (tsc --noEmit in server/)"
       ],
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "notes": "",
       "dependencies": []
     },
@@ -36,7 +36,9 @@
       "priority": 2,
       "passes": false,
       "notes": "",
-      "dependencies": ["US-001"]
+      "dependencies": [
+        "US-001"
+      ]
     },
     {
       "id": "US-003",
@@ -56,7 +58,9 @@
       "priority": 3,
       "passes": false,
       "notes": "",
-      "dependencies": ["US-001"]
+      "dependencies": [
+        "US-001"
+      ]
     },
     {
       "id": "US-004",
@@ -74,7 +78,10 @@
       "priority": 4,
       "passes": false,
       "notes": "",
-      "dependencies": ["US-002", "US-003"]
+      "dependencies": [
+        "US-002",
+        "US-003"
+      ]
     },
     {
       "id": "US-005",
@@ -94,7 +101,9 @@
       "priority": 5,
       "passes": false,
       "notes": "",
-      "dependencies": ["US-004"]
+      "dependencies": [
+        "US-004"
+      ]
     },
     {
       "id": "US-006",
@@ -113,7 +122,9 @@
       "priority": 6,
       "passes": false,
       "notes": "",
-      "dependencies": ["US-003"]
+      "dependencies": [
+        "US-003"
+      ]
     }
   ]
 }

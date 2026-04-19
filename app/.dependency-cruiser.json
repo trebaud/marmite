@@ -1,0 +1,57 @@
+{
+  "$schema": "node_modules/dependency-cruiser/schema/configuration.schema.json",
+  "forbidden": [
+    {
+      "name": "no-circular",
+      "severity": "error",
+      "comment": "Circular dependencies are not allowed",
+      "from": {},
+      "to": {
+        "circular": true
+      }
+    },
+    {
+      "name": "no-orphans",
+      "severity": "warn",
+      "comment": "Modules not imported by anything are likely dead code",
+      "from": {
+        "orphan": true,
+        "pathNot": [
+          "(^|/)\\.[^/]+\\.(js|cjs|mjs|ts|json)$",
+          "\\.d\\.ts$",
+          "(^|/)tsconfig\\.json$",
+          "(^|/)index\\.ts$"
+        ]
+      },
+      "to": {}
+    },
+    {
+      "name": "no-deprecated-core",
+      "severity": "warn",
+      "comment": "Warn when importing deprecated Node.js core modules",
+      "from": {},
+      "to": {
+        "dependencyTypes": ["core"],
+        "path": "^(punycode|domain|constants|sys|_linklist|_stream_wrap)$"
+      }
+    }
+  ],
+  "options": {
+    "doNotFollow": {
+      "path": "node_modules"
+    },
+    "moduleSystems": ["cjs", "es6"],
+    "tsPreCompilationDeps": true,
+    "tsConfig": {
+      "fileName": "server/tsconfig.json"
+    },
+    "reporterOptions": {
+      "dot": {
+        "collapsePattern": "node_modules/[^/]+"
+      },
+      "text": {
+        "highlightFocused": true
+      }
+    }
+  }
+}

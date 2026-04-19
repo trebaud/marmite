@@ -3,6 +3,7 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { HarnessConfig, ModelPricing, SessionOutcome } from "./types.ts";
 import { logMessage, logError } from "./logger.ts";
 import { classifyError, sleep } from "./utils.ts";
+import { PATHS } from "./paths.ts";
 
 const FALLBACK_PRICING: ModelPricing = { inputPerMTok: 15, outputPerMTok: 75, cacheReadPerMTok: 1.5 };
 
@@ -42,7 +43,7 @@ const emptyStats: SessionStatsRaw = {
 
 function baseOptions(config: HarnessConfig, model: string, abort: AbortController) {
   return {
-    cwd: config.projectRoot,
+    cwd: PATHS.projectRoot,
     model,
     settingSources: ["project" as const],
     permissionMode: "bypassPermissions" as const,

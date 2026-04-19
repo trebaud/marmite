@@ -5,7 +5,7 @@ This is the harness root — it orchestrates autonomous agents that build an app
 ## Hard Rules
 
 - **Do not install or update dependencies here.** All dependency changes belong inside `app/` (or its workspaces). Never run `npm install`, `bun add`, `yarn add`, or similar in this directory.
-- **Do not modify harness internals** (`.harness/`, `index.ts`, `harness.config.json`, `sensors/`) unless explicitly asked.
+- **Do not modify harness internals** (`.harness/`, `index.ts`, `marmite.json`, `sensors/`) unless explicitly asked.
 - **Application code lives in `app/`.** All implementation work targets that directory.
 - **Sensor tooling must be installed where the sensor runs.** Configs and dev dependencies for lint / drift / other sensors belong inside each sub-project whose source the sensor inspects — not only at the app root. A root-level aggregator that fans out to sub-projects is fine, but a root-only install that leaves child sub-projects uninstrumented is a setup bug. Silently noting "no script found" and skipping the sensor is never a valid outcome; the orchestrator must either wire the sensor in the missing sub-project or pass explicit wiring instructions to the builder via `guidance`.
 
