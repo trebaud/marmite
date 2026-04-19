@@ -15,6 +15,3 @@ When working on stories in this project, prefer these skills where they apply:
 
 - **`design-qa-checker`** — run before committing any story that touches UI (HTML, JSX/TSX, CSS, Tailwind classes, component styling, layout). Verifies the built UI against the Bitrefill design system. Do not skip on UI-touching stories.
 - **`architect`** — run to resolve violations flagged drift sensors
-- **`clean-code`** / **`refactor`** — run to resolve violations flagged by the debt sensor.
-- **`debug`** — test-first debugging when a `pulse` sensor reports test regressions.
-- **`security-analysis`** / **`security-review`** — when a `safe` sensor reports vulnerabilities.
