@@ -1,6 +1,6 @@
 # Marmite
 
-An autonomous build system that drives three agents in a loop to implement a project from a PRD. Works on greenfield apps and existing codebases alike — drop in a PRD, let it simmer.
+A harness that drives three agents in a loop to implement a project from a PRD. Works on greenfield apps and existing codebases alike — drop in a PRD, let it simmer.
 
 Each iteration: the **orchestrator** picks the next story, runs health sensors, and briefs the builder. The **builder** implements the story and commits. The **verifier** reviews and emits a verdict. A plain **harness** advances state, retries on failure and checkpoints for crash recovery.
 
@@ -8,9 +8,9 @@ Each iteration: the **orchestrator** picks the next story, runs health sensors, 
 
 A model tends to trust its own output, a fresh verifier has no attachment to the builder's plan, so it catches what's actually broken. When the verifier rejects, the builder resumes its original session to fix it, keeping context.
 
-- Each agent has one job. Combining them produces agreeable mush.
-- Agents do the creative work. A plain program handles state transitions, schema validation, `prd.json` writes, and crash recovery.
-- Agents don't call each other. They read and write zod-validated files, so every handoff is inspectable and replayable.
+- Each agent has one job.
+- The harness handles state transitions, schema validation, `prd.json` writes, and crash recovery.
+- Agents communicate through zod-validated files, so every handoff is inspectable and replayable.
 
 ## Architecture
 
@@ -37,14 +37,14 @@ flowchart LR
 
 | Phase | Agent | Writes | Purpose |
 |---|---|---|---|
-| ORCHESTRATE | Orchestrator (fresh) | `current-task.json` | Pick story, run sensors, brief builder |
-| BUILD | Builder (fresh) | `progress.txt`, commit | Implement the story |
-| VERIFY | Verifier (fresh) | `current-task.json` verdict | Approve or reject |
-| FIX | Builder (resumes) | commit | Address verifier feedback |
+| ORCHESTRATE | Orchestrator | `current-task.json` | Pick story, run sensors, brief builder |
+| BUILD | Builder | `progress.txt`, commit | Implement the story |
+| VERIFY | Verifier | `current-task.json` verdict | Approve or reject |
+| FIX | Builder | commit | Address verifier feedback |
 
 `current-task.json` is the single handoff file between agents. The orchestrator writes the story, guidance, and a `sensorSummary`; the verifier merges in the verdict. The harness reads it after each phase to drive state transitions.
 
-The harness is the only writer of `prd.json` — it flips `passes: true` and commits on pass. Generated code lives under `app/`.
+Generated code lives under `app/`.
 
 ## Install
 
@@ -62,10 +62,9 @@ Marmite works on **greenfield projects** and **existing codebases**. For an exis
 
 ### 1. Write the PRD
 
-The PRD is the source of truth for what to build. Stories have `id`, `priority` (lower = higher priority), `description`, `acceptanceCriteria`, and a `passes` flag the harness flips as stories land.
+The PRD is the source of truth for what to build. Stories have `id`, `priority` (lower = higher priority), `description`, `acceptanceCriteria`, `dependencies` and a `passes` flag the harness flips as stories land.
 
-- Draft the spec then convert to `prd.json` with `/to-prd`.
-- Place the file at the repo root (or point to it with `--prd`).
+- Draft the spec then convert to `prd.json` with the `/to-prd` skill.
 - For an existing project, write stories for the features or improvements you want — the agents will read the existing code as context.
 
 To generate `prd.json` from an existing markdown spec:
