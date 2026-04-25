@@ -27,7 +27,7 @@ export interface HarnessConfig {
   costBudgetUsdTotal: number;
   // Fix loop retry cap
   maxFixAttempts: number;
-  // Resume from .harness/state.json if it matches current PRD/branch
+  // Resume from .marmite/state.json if it matches current PRD/branch
   resumeIfAvailable: boolean;
 }
 

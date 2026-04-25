@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 import { resolve, dirname } from "path";
 import { mkdirSync, existsSync, readFileSync } from "fs";
-import type { HarnessConfig, ModelPricing } from "./.harness/core/types.ts";
-import { run } from "./.harness/core/orchestrator.ts";
-import { setUserRoot } from "./.harness/core/paths.ts";
-import { MarmiteConfigSchema, formatConfigError, type MarmiteConfig } from "./.harness/core/config.ts";
-import { runInit } from "./.harness/core/init.ts";
+import type { HarnessConfig, ModelPricing } from "./src/core/types.ts";
+import { run } from "./src/core/orchestrator.ts";
+import { setUserRoot } from "./src/core/paths.ts";
+import { MarmiteConfigSchema, formatConfigError, type MarmiteConfig } from "./src/core/config.ts";
+import { runInit } from "./src/core/init.ts";
 
 const DEFAULTS = {
   maxIterations: 1000,
@@ -205,17 +205,8 @@ if (subcommand === "-h" || subcommand === "--help") usage();
 
 const { cli, configPath } = parseArgs(process.argv);
 
-// Detect legacy filename in CWD and guide users to migrate.
-if (!configPath && !process.env.HARNESS_CONFIG) {
-  const legacy = resolve(process.cwd(), "harness.config.json");
-  const current = resolve(process.cwd(), "marmite.json");
-  if (existsSync(legacy) && !existsSync(current)) {
-    die(`found legacy harness.config.json — rename it to marmite.json and restructure keys (see README).`, 2);
-  }
-}
-
 const resolvedConfigPath = resolve(
-  configPath ?? process.env.HARNESS_CONFIG ?? resolve(process.cwd(), "marmite.json"),
+  configPath ?? resolve(process.cwd(), "marmite.json"),
 );
 const configDir = existsSync(resolvedConfigPath) ? dirname(resolvedConfigPath) : process.cwd();
 const fileCfg = loadConfigFile(resolvedConfigPath);

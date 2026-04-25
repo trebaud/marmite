@@ -140,13 +140,14 @@ vite.config.ts.timestamp-*
 
 .playwright-mcp/
 
-# Marmite runtime state
-.marmite/state.json
-.marmite/events.jsonl
+# Marmite runtime state — these are produced when running marmite, not source.
+# In this repo we also gitignore marmite.json and prd.json, since they belong
+# in a user project, not in the package itself.
+.marmite/
 .last-branch
 current-task.json
+progress.txt
 archive/
+marmite.json
+prd.json
 
-# Legacy locations (pre-package)
-.harness/state.json
-.harness/events.jsonl

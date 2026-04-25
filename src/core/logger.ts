@@ -133,7 +133,7 @@ export function logBranchSetup(branchName: string, action: "created" | "switched
 
 export function logResume(state: { iteration: number; storyId: string; lastPhase: string }): void {
   console.log("");
-  console.log(`Resuming run from .harness/state.json: iteration=${state.iteration} story=${state.storyId} lastPhase=${state.lastPhase}`);
+  console.log(`Resuming run from .marmite/state.json: iteration=${state.iteration} story=${state.storyId} lastPhase=${state.lastPhase}`);
 }
 
 export function logBudgetExceeded(storyId: string, spent: number, budget: number): void {

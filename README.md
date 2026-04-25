@@ -134,7 +134,7 @@ The four sensor `type`s map to suggested skills the orchestrator recommends to t
 
 ## Customizing prompts
 
-The three prompts in `.harness/prompts/` (`builder-prompt.md`, `verifier-prompt.md`, `orchestrator-prompt.md`) ship with the package. To override one, drop a file with the same name into `.marmite/prompts/` in your project — marmite reads the override if it exists, otherwise falls back to the default. Overrides are checked in.
+The three prompts in `src/prompts/` (`builder-prompt.md`, `verifier-prompt.md`, `orchestrator-prompt.md`) ship with the package. To override one, drop a file with the same name into `.marmite/prompts/` in your project — marmite reads the override if it exists, otherwise falls back to the default. Overrides are checked in.
 
 ## Run
 
@@ -164,7 +164,8 @@ marmite cook --no-resume                                  # ignore existing .mar
 ```bash
 git clone <repo> && cd marmite
 bun install
-bun run cook        # runs from this checkout against ./app
 ```
 
-Harness internals live in `.harness/core/`. Default prompts live in `.harness/prompts/`. The setup wizard skill lives in `.claude/skills/marmite-init/`.
+There is no `app/` in this repo — marmite is a harness, not an application. To test changes end-to-end, run `bunx --bun ./index.ts init` in a separate scratch directory (or `bun link` and then `marmite init`), then `marmite cook` from that directory.
+
+Harness internals live in `src/core/`. Default prompts live in `src/prompts/`. The setup wizard skill lives in `.claude/skills/marmite-init/`.

@@ -7,12 +7,12 @@
     "marmite": "./index.ts"
   },
   "scripts": {
-    "cook": "bun run index.ts"
+    "marmite": "bun run index.ts"
   },
   "files": [
     "index.ts",
-    ".harness/core",
-    ".harness/prompts",
+    "src/core",
+    "src/prompts",
     ".claude/skills/marmite-init"
   ],
   "engines": {

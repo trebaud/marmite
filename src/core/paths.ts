@@ -4,14 +4,14 @@ import { existsSync } from "fs";
 
 // Framework paths resolve from the package install location (e.g. node_modules/marmite/...).
 // They reference files that ship with marmite — prompt defaults and the init skill.
-const here = dirname(fileURLToPath(import.meta.url)); // .harness/core
+const here = dirname(fileURLToPath(import.meta.url)); // src/core
 const packageRoot = resolve(here, "../..");
 
 export const FRAMEWORK_PATHS = {
   packageRoot,
-  builderMd:        resolve(packageRoot, ".harness/prompts/builder-prompt.md"),
-  verifierMd:       resolve(packageRoot, ".harness/prompts/verifier-prompt.md"),
-  orchestratorMd:   resolve(packageRoot, ".harness/prompts/orchestrator-prompt.md"),
+  builderMd:        resolve(packageRoot, "src/prompts/builder-prompt.md"),
+  verifierMd:       resolve(packageRoot, "src/prompts/verifier-prompt.md"),
+  orchestratorMd:   resolve(packageRoot, "src/prompts/orchestrator-prompt.md"),
   marmiteInitSkill: resolve(packageRoot, ".claude/skills/marmite-init"),
 } as const;
 
