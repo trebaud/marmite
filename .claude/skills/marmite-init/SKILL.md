@@ -34,6 +34,25 @@ State what you found in 3–5 lines before moving on. Don't dump full file conte
 
 Ask **one question at a time**. Adapt based on previous answers. Always offer sensible defaults derived from what you detected.
 
+### Question formatting rules
+
+- **Always number multi-choice options** as `1.`, `2.`, `3.` so the user can answer with a single digit. Mark the default with `(default)`.
+- **For free-text answers** (paths, names), state the default inline like `default: ./src` and tell the user they can press Enter to accept.
+- **Keep options short** — one line each, no tables. The user prompt that follows is `▶ your answer:` so the question must end cleanly without its own `>` prompt or `Default: …` line (the harness handles that).
+- **Accept loose answers** — if the user types `1` or `src` or just hits Enter, interpret reasonably. Don't force exact strings.
+
+Example:
+
+```
+**Question 1 of 5 — App location**
+
+Where does your application code live?
+
+  1. ./src                  (default — detected)
+  2. ./ (project root)
+  3. somewhere else — type the path
+```
+
 ### Required answers
 
 1. **App location** — where does the user's application code live (or where should it live)?
