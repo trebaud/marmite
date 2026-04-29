@@ -37,6 +37,8 @@ export const PATHS = {
   get events()          { return userPath(".marmite/events.jsonl"); },
   get currentTask()     { return userPath("current-task.json"); },
   get promptOverrides() { return userPath(".marmite/prompts"); },
+  get feedback()        { return userPath(".marmite/feedback.md"); },
+  get feedbackArchive() { return userPath(".marmite/feedback-archive"); },
 };
 
 export type PromptName = "builder" | "verifier" | "orchestrator";

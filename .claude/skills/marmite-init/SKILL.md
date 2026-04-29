@@ -169,6 +169,8 @@ Append only if missing:
 ```
 .marmite/state.json
 .marmite/events.jsonl
+.marmite/feedback.md
+.marmite/feedback-archive/
 progress.txt
 current-task.json
 archive/
@@ -217,6 +219,11 @@ Customizing:
   - Edit marmite.json to tune models, sensors, budgets.
   - Place .marmite/prompts/builder-prompt.md to override the default builder prompt
     (same for verifier-prompt.md, orchestrator-prompt.md).
+
+Steering a long run:
+  - Drop free-form notes into .marmite/feedback.md at any time. The orchestrator
+    picks them up at the start of the next iteration, applies them to story
+    selection / guidance, then archives the file under .marmite/feedback-archive/.
 ```
 
 Then stop. Don't run `marmite cook` for them; let them drive.

@@ -131,6 +131,18 @@ export function logBranchSetup(branchName: string, action: "created" | "switched
   }
 }
 
+export function logFeedbackDetected(bytes: number, preview: string): void {
+  const trimmed = preview.replace(/\s+/g, " ").trim().slice(0, 120);
+  const ellipsis = preview.length > 120 ? "…" : "";
+  console.log("");
+  console.log(`${c.bgCyan}${c.bold} 📝 ASYNC FEEDBACK ${c.reset} ${bytes}B — ${c.white}"${trimmed}${ellipsis}"${c.reset}`);
+  console.log(`${c.dim}  Will be applied this iteration; orchestrator archives after consumption.${c.reset}`);
+}
+
+export function logFeedbackForceArchived(target: string): void {
+  console.log(`  ${c.yellow}[feedback]${c.reset} orchestrator did not archive .marmite/feedback.md — force-archived to ${c.cyan}${target}${c.reset}`);
+}
+
 export function logResume(state: { iteration: number; storyId: string; lastPhase: string }): void {
   console.log("");
   console.log(`Resuming run from .marmite/state.json: iteration=${state.iteration} story=${state.storyId} lastPhase=${state.lastPhase}`);

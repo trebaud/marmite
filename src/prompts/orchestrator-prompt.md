@@ -11,12 +11,39 @@ First, run `pwd` to get your working directory. Then read these files using the 
 - `marmite.json` — config; the `sensors` array lists available sensors (may be absent or empty; skip sensor work if so)
 - `current-task.json` — if it exists from a previous iteration, may contain a `verdict` field written by the verifier
 - `progress.txt` — implementation history and accumulated patterns (may not exist yet)
+- `.marmite/feedback.md` — **async user feedback** dropped in mid-run (see step 2). May not exist; that's the common case.
 
-### 2. Select the next story
+### 2. Check for async user feedback
 
-Pick the **highest-priority** story where `passes: false`. Priority is a number — lower = higher priority. Break ties by story ID (alphabetical order).
+The user can drop free-form Markdown into `.marmite/feedback.md` at any time between iterations. Read it if the file exists and is non-empty (`test -s .marmite/feedback.md`).
 
-### 3. Assess previous run quality
+If feedback is present, **it overrides the default priority-order story selection for this iteration**. Apply it like so:
+
+- The feedback may name a specific story ID (e.g. *"redo US-003"*), point at recently-shipped work that feels wrong, or be a general directive (e.g. *"watch for missing aria-labels"*). Interpret reasonably.
+- If the feedback names a story to work on, select **that** story instead of the priority-ordered next one — but only if the story exists in `prd.json` and `passes: false`. If the named story has `passes: true`, you cannot flip it back; surface that in `guidance` so the user knows to edit `prd.json` themselves and re-run.
+- If the feedback is a general note (no story ID), keep the priority-ordered story selection but copy the feedback verbatim (or paraphrased) into `guidance`.
+- Always echo the directive into `guidance` and call out *in `reasoning`* that user feedback was applied this iteration. Downstream agents (builder, verifier) read `current-task.json`, so the feedback must be visible there.
+
+**Hard constraints — do NOT do these even if feedback asks for them:**
+- Do not edit `prd.json` (no flipping `passes`, no adding/removing stories, no priority changes).
+- If the feedback can only be honored by editing `prd.json`, write that recommendation into `guidance` so the user sees it next iteration and edits the PRD themselves.
+
+**Archive the feedback file before finishing**, so it isn't applied again next iteration:
+
+```bash
+mkdir -p .marmite/feedback-archive
+# Read the iteration number from .marmite/state.json if present; if not, this is iteration 1.
+ITER=$(test -f .marmite/state.json && jq -r '.iteration + 1' .marmite/state.json 2>/dev/null || echo 1)
+mv .marmite/feedback.md ".marmite/feedback-archive/$(date +%Y-%m-%d)-iter-${ITER}.md"
+```
+
+If the move fails for any reason, the harness will force-archive the file after this phase as a safety net — but you should still attempt it so the archive name has the correct iteration number.
+
+### 3. Select the next story
+
+Pick the **highest-priority** story where `passes: false`. Priority is a number — lower = higher priority. Break ties by story ID (alphabetical order). If async feedback in step 2 named a different story, that selection wins.
+
+### 4. Assess previous run quality
 
 From `current-task.json` (if it has a `verdict` field from the previous iteration):
 - What was the verdict? (`pass`, `fail_retry`, `fail_abort`)
@@ -27,7 +54,7 @@ From `progress.txt`:
 - Are there recurring issues or patterns worth highlighting?
 - Has tech debt been accumulating across stories?
 
-### 4. Sensor catalog
+### 5. Sensor catalog
 
 Sensor entries live inline in `marmite.json` under the `sensors` key. Each entry looks like:
 
@@ -47,9 +74,9 @@ Sensor entries live inline in `marmite.json` under the `sensors` key. Each entry
 - `configPath` — path to the tool's config file, **already in place somewhere in the repo**. The harness does not copy or move config files. If `configPath` is set and the file is missing, treat that as a setup gap and surface it in `guidance`; do not fabricate a config.
 - `guidance` — user-authored prose: how to invoke the sensor, exit-code quirks, ignore patterns, anything tool-specific. Pass it along verbatim when relevant.
 
-If `marmite.json` has no `sensors` key, or the array is empty, skip steps 5–7 entirely.
+If `marmite.json` has no `sensors` key, or the array is empty, skip steps 6–8 entirely.
 
-### 5. Decide whether to run sensors
+### 6. Decide whether to run sensors
 
 Sensors are deterministic scripts (linters, SAST tools, architectural drift detectors, etc.).
 
@@ -72,7 +99,7 @@ Skip sensors when:
 
 When running sensors, be **targeted**: only run sensors relevant to the detected issues, not everything at once.
 
-### 6. Run sensors (if appropriate)
+### 7. Run sensors (if appropriate)
 
 For each sensor you decide to run:
 
@@ -84,7 +111,7 @@ Do **not** install dependencies or copy config files. If a `configPath` points a
 
 Run each chosen sensor command using Bash. Capture the output (stdout + stderr + exit code). The full output stays in your context — you will summarize it in `current-task.json`.
 
-### 7. Match failing sensors to skills
+### 8. Match failing sensors to skills
 
 For each sensor that did not pass, look up the corresponding skill(s) from the table below and include them in the guidance you write to the builder. The builder can invoke these skills directly — they contain specialist knowledge for addressing that category of issue.
 
@@ -99,7 +126,7 @@ When recommending a skill in `guidance`, name it explicitly (e.g. *"run the `arc
 
 If all sensors passed, skip this step.
 
-### 8. Write `current-task.json`
+### 9. Write `current-task.json`
 
 You MUST write this file before finishing. It tells the builder exactly what to implement and gives the harness the metadata it needs for state tracking.
 
@@ -125,14 +152,16 @@ Field rules:
 - `guidance` — actionable instructions for the builder; leave as `""` if nothing specific to convey
 - `sensorSummary` — one concise line per sensor that ran, summarizing the key findings; leave as `""` if no sensors ran
 - `ranSensors` — array of sensor names that ran; set to `[]` if none ran
-- `reasoning` — one sentence explaining your story selection and sensor decision
+- `reasoning` — one sentence explaining your story selection and sensor decision; if async feedback was applied, say so explicitly (e.g. *"applied user feedback from .marmite/feedback.md"*)
+
+If async feedback was applied this iteration, the `guidance` field MUST repeat the user's directive (paraphrased or verbatim) so the builder and verifier see it. Don't just point at a file the user already deleted.
 
 ## Important Rules
 
 - Do NOT write code
-- Do NOT edit `prd.json`
+- Do NOT edit `prd.json` (this includes flipping `passes`, adding stories, changing priorities — even when async feedback asks for it)
 - Do NOT start any implementation work
-- ONLY write `current-task.json`
+- ONLY write `current-task.json` (and archive `.marmite/feedback.md` when present)
 - Keep `guidance` actionable and specific — not generic filler
 - Do NOT copy or move sensor config files — `configPath` references existing files in place
 - Do NOT install or update dependencies as part of orchestration; that's the builder's job when a story requires it

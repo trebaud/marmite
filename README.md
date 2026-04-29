@@ -43,7 +43,8 @@ my-project/
 ├── .marmite/
 │   ├── prompts/          # optional prompt overrides (checked in)
 │   ├── state.json        # gitignored — crash-recovery checkpoint
-│   └── events.jsonl      # gitignored — per-session event log
+│   ├── events.jsonl      # gitignored — per-session event log
+│   └── feedback.md       # gitignored — drop async notes here mid-run
 └── app/                  # your code (path is configurable)
 ```
 
@@ -84,6 +85,16 @@ flowchart LR
 | FIX | Builder | Resumes session to address feedback |
 
 `current-task.json` is the single handoff between agents. After every phase the harness checkpoints to `.marmite/state.json`, so `--resume` (default) picks up where the last run stopped.
+
+## Async feedback
+
+Steer a long run without stopping it: drop notes into `.marmite/feedback.md` at any time.
+
+```bash
+echo "the login UI feels too cramped, add vertical spacing on the next pass" > .marmite/feedback.md
+```
+
+At the start of the next iteration, the orchestrator reads the file, applies it to story selection and `guidance` in `current-task.json`, then archives it under `.marmite/feedback-archive/<date>-iter-<N>.md`. The PRD is left untouched — feedback influences the upcoming iteration only. If the orchestrator forgets to archive, the harness force-archives as a safety net.
 
 ## Configuration
 

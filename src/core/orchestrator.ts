@@ -6,13 +6,17 @@ import {
   logBudgetExceeded,
   logComplete,
   logError,
+  logFeedbackDetected,
+  logFeedbackForceArchived,
   logFinalReport,
   logIterationStart,
   logMaxReached,
   logResume,
   logStart,
 } from "./logger.ts";
-import { fileExists, gitCommit, gitEnsureBranch, readJsonField, sleep } from "./utils.ts";
+import { fileExists, formatDate, gitCommit, gitEnsureBranch, readJsonField, sleep } from "./utils.ts";
+import { mkdir, rename } from "fs/promises";
+import { resolve } from "path";
 import { archivePreviousRun, initProgress, trackBranch } from "./archive.ts";
 import {
   STATE_VERSION,
@@ -140,6 +144,8 @@ export async function run(config: HarnessConfig): Promise<void> {
     }
 
     // ── Phase 0: Orchestrate ──
+    await detectAndAnnounceFeedback(i);
+
     await emitEvent("phase_start", { phase: "orchestrate", iteration: i, storyId: nextStory.id });
 
     const orchestratorPrompt = await readPromptFile(resolvePrompt("orchestrator"));
@@ -154,6 +160,8 @@ export async function run(config: HarnessConfig): Promise<void> {
     );
     recordSession(runStats, orchestrate, "orchestrate", i, nextStory.id);
     await emitEvent("phase_end", { phase: "orchestrate", iteration: i, outcome: orchestrate.outcome });
+
+    await forceArchiveFeedbackIfPresent(i);
 
     if (runAbort.signal.aborted) break;
 
@@ -400,4 +408,44 @@ export async function run(config: HarnessConfig): Promise<void> {
   await emitEvent("run_end", { reason: terminated ? "signal" : "max_iterations" });
   logFinalReport(runStats);
   process.exit(terminated ? 130 : 1);
+}
+
+// Async user-feedback channel: user drops Markdown into .marmite/feedback.md at any time;
+// orchestrator picks it up next iteration and archives the file after using it.
+async function detectAndAnnounceFeedback(iteration: number): Promise<void> {
+  if (!(await fileExists(PATHS.feedback))) return;
+  let raw = "";
+  try {
+    raw = await Bun.file(PATHS.feedback).text();
+  } catch (err) {
+    logError(`failed to read ${PATHS.feedback}`, err, "feedback");
+    return;
+  }
+  if (raw.trim() === "") return;
+  const bytes = Buffer.byteLength(raw, "utf8");
+  const preview = raw.slice(0, 200);
+  logFeedbackDetected(bytes, preview);
+  await emitEvent("feedback_detected", { iteration, bytes, preview });
+}
+
+// Defensive: if the orchestrator agent forgot to archive the feedback file,
+// archive it ourselves so the same feedback isn't applied again next iteration.
+async function forceArchiveFeedbackIfPresent(iteration: number): Promise<void> {
+  if (!(await fileExists(PATHS.feedback))) return;
+  // Skip empty leftovers — nothing meaningful to archive.
+  try {
+    const raw = await Bun.file(PATHS.feedback).text();
+    if (raw.trim() === "") return;
+  } catch {
+    return;
+  }
+  try {
+    await mkdir(PATHS.feedbackArchive, { recursive: true });
+    const target = resolve(PATHS.feedbackArchive, `${formatDate()}-iter-${iteration}.md`);
+    await rename(PATHS.feedback, target);
+    logFeedbackForceArchived(target);
+    await emitEvent("feedback_force_archived", { iteration, target });
+  } catch (err) {
+    logError(`failed to force-archive feedback`, err, "feedback");
+  }
 }
