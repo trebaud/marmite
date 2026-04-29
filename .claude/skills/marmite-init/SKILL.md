@@ -91,6 +91,7 @@ I'll write:
   marmite.json    (app=./apps/web, sensors=eslint+tsc, balanced models)
   prd.json        (5 stories seeded from your PRD.md)
   .gitignore      (append .marmite/state.json, .marmite/events.jsonl, …)
+  .claude/skills/ (install helper skills: architect, design-qa-checker, to-prd, prd-generator)
 ```
 
 Ask the user to confirm. If they say no, loop back to whichever step they want to change.
@@ -175,6 +176,23 @@ archive/
 ```
 
 Optional prompt overrides at `.marmite/prompts/*.md` are **not** gitignored — they're user-authored customizations and should be checked in.
+
+### Install helper skills into the host project
+
+The orchestrator and builder prompts reference helper skills (`architect`, `design-qa-checker`, `to-prd`, `prd-generator`). When `marmite cook` runs, the agents use the user's project as `cwd` and only discover skills under `./.claude/skills/` — they cannot see skills inside the marmite package. Copy them in.
+
+The marmite package's skills source path was given to you in the preamble as `MARMITE_SKILLS_SRC=<absolute path>`. Use that path as the source. If for some reason it is missing, derive it: `node -p "require('path').dirname(require.resolve('marmite/package.json'))"` then append `/.claude/skills`.
+
+Procedure:
+
+1. `mkdir -p ./.claude/skills`
+2. For each sub-directory in `$MARMITE_SKILLS_SRC` **except `marmite-init`** (that one stays in the package — it's only used by `marmite init` itself):
+   - target = `./.claude/skills/<skill-name>`
+   - if target does not exist: `cp -R "$MARMITE_SKILLS_SRC/<skill-name>" ./.claude/skills/<skill-name>`
+   - if target exists: leave it alone (assume the user has customized it). Note it as "skipped (already present)" in the summary.
+3. List what you copied vs. skipped in your final summary.
+
+These skills are user-authored content once installed — do **not** add them to `.gitignore`. They should be checked in so the team shares the same helpers.
 
 ---
 

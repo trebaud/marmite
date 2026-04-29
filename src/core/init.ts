@@ -1,4 +1,5 @@
 import { existsSync } from "fs";
+import { resolve } from "path";
 import { createInterface } from "readline";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -16,12 +17,16 @@ export async function runInit(): Promise<void> {
   }
 
   const skillContent = await Bun.file(skillFile).text();
+  const skillsSrc = resolve(FRAMEWORK_PATHS.packageRoot, ".claude/skills");
   const preamble =
     "You are running as the `marmite init` setup wizard for the user's current working directory. " +
     "Follow the instructions below exactly. Use Bash/Read/Write/Edit tools to inspect and modify files. " +
     "Ask the user ONE question at a time and STOP after each question to wait for their reply. " +
     "After they answer, continue to the next step. The session is multi-turn — do not try to answer " +
-    "all questions in a single response.\n\n";
+    "all questions in a single response.\n\n" +
+    `MARMITE_SKILLS_SRC=${skillsSrc}\n` +
+    "(That absolute path is the marmite package's skills directory. The 'install helper skills' " +
+    "step in the wizard copies sub-folders from there into the user's project `.claude/skills/`.)\n\n";
 
   printBanner();
 
