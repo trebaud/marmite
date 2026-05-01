@@ -1,7 +1,7 @@
 import { rename, unlink } from "fs/promises";
 import { resolve } from "path";
 import { spawnSync } from "child_process";
-import { logBranchSetup, logError } from "./logger.ts";
+import type { Reporter } from "./reporter.ts";
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -31,7 +31,6 @@ export async function readJson<T = unknown>(path: string): Promise<ReadState<T>>
     return { kind: "present", value: JSON.parse(raw) as T };
   } catch (err) {
     const e = err instanceof Error ? err : new Error(String(err));
-    console.error(`  [io] malformed JSON at ${path}: ${e.message}`);
     return { kind: "malformed", error: e, raw };
   }
 }
@@ -42,7 +41,6 @@ export async function readTextState(path: string): Promise<ReadState<string>> {
     return { kind: "present", value: await Bun.file(path).text() };
   } catch (err) {
     const e = err instanceof Error ? err : new Error(String(err));
-    console.error(`  [io] failed to read ${path}: ${e.message}`);
     return { kind: "malformed", error: e };
   }
 }
@@ -113,32 +111,32 @@ export function classifyError(err: unknown): { category: ErrorCategory; message:
   return { category: "fatal", message, code };
 }
 
-export function gitEnsureBranch(cwd: string, branchName: string): void {
+export function gitEnsureBranch(cwd: string, branchName: string, reporter: Reporter): void {
   const current = spawnSync("git", ["branch", "--show-current"], { cwd, encoding: "utf8" });
   if (current.stdout?.trim() === branchName) {
-    logBranchSetup(branchName, "already_on");
+    reporter.branchSetup(branchName, "already_on");
     return;
   }
   const exists = spawnSync("git", ["show-ref", "--verify", `refs/heads/${branchName}`], { cwd });
   if (exists.status === 0) {
     const r = spawnSync("git", ["checkout", branchName], { cwd, stdio: "inherit" });
-    if (r.status !== 0) { logError(`git checkout ${branchName}`, `exit ${r.status ?? "?"}`, "git"); return; }
-    logBranchSetup(branchName, "switched");
+    if (r.status !== 0) { reporter.error(`git checkout ${branchName}`, `exit ${r.status ?? "?"}`, "git"); return; }
+    reporter.branchSetup(branchName, "switched");
   } else {
     const r = spawnSync("git", ["checkout", "-b", branchName], { cwd, stdio: "inherit" });
-    if (r.status !== 0) { logError(`git checkout -b ${branchName}`, `exit ${r.status ?? "?"}`, "git"); return; }
-    logBranchSetup(branchName, "created");
+    if (r.status !== 0) { reporter.error(`git checkout -b ${branchName}`, `exit ${r.status ?? "?"}`, "git"); return; }
+    reporter.branchSetup(branchName, "created");
   }
 }
 
-export function gitCommit(cwd: string, path: string, message: string): void {
+export function gitCommit(cwd: string, path: string, message: string, reporter: Reporter): void {
   const add = spawnSync("git", ["add", path], { cwd, stdio: "inherit" });
   if (add.status !== 0) {
-    logError(`git add ${path}`, `exit ${add.status}`, "git");
+    reporter.error(`git add ${path}`, `exit ${add.status}`, "git");
     return;
   }
   const commit = spawnSync("git", ["commit", "-m", message], { cwd, stdio: "inherit" });
   if (commit.status !== 0) {
-    logError(`git commit for ${path}`, `exit ${commit.status}`, "git");
+    reporter.error(`git commit for ${path}`, `exit ${commit.status}`, "git");
   }
 }

@@ -1,6 +1,6 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { SessionStats, RunStats, SessionPhase, StoryOutcome } from "./types.ts";
-import { appendFile } from "fs/promises";
+import type { RunStats, SessionStats } from "../core/types.ts";
+import type { BranchAction, Reporter, ResumeInfo } from "../core/reporter.ts";
 
 const c = {
   reset: "\x1b[0m",
@@ -28,96 +28,65 @@ function tag(label: string): string {
   return `${c.cyan}[${label}]${c.reset}`;
 }
 
-// ── JSONL event log ──────────────────────────────────────────────────────
-
-let eventLogPath: string | null = null;
-
-export function initEventLog(path: string): void {
-  eventLogPath = path;
+function fmtCost(usd: number): string {
+  return `$${usd.toFixed(4)}`;
 }
 
-export async function emitEvent(kind: string, data: Record<string, unknown>): Promise<void> {
-  if (!eventLogPath) return;
-  const entry = { ts: new Date().toISOString(), kind, ...data };
-  try {
-    await appendFile(eventLogPath, JSON.stringify(entry) + "\n");
-  } catch (err) {
-    console.error(`  [events] failed to append: ${err}`);
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${m}m ${rem.toFixed(0)}s`;
+}
+
+function fmtTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+function outcomeBadge(outcome: string): string {
+  switch (outcome) {
+    case "success": return `${c.bgGreen}${c.bold} OK ${c.reset}`;
+    case "timeout": return `${c.bgYellow}${c.bold} TIMEOUT ${c.reset}`;
+    case "transient_error": return `${c.bgYellow}${c.bold} TRANSIENT ${c.reset}`;
+    case "fatal_error": return `${c.bgRed}${c.bold} FATAL ${c.reset}`;
+    case "aborted": return `${c.bgRed}${c.bold} ABORTED ${c.reset}`;
+    default: return outcome;
   }
 }
 
-// ── Anomaly detection ─────────────────────────────────────────────────────
-
-const history: Record<SessionPhase, { cost: number[]; duration: number[] }> = {
-  orchestrate: { cost: [], duration: [] },
-  build: { cost: [], duration: [] },
-  verify: { cost: [], duration: [] },
-  fix: { cost: [], duration: [] },
-};
-
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
-}
-
-function detectAnomalies(stats: SessionStats): string[] {
-  const flags: string[] = [];
-  const h = history[stats.phase];
-  const costMed = median(h.cost);
-  const durMed = median(h.duration);
-  if (h.cost.length >= 3 && costMed > 0 && stats.costUsd > costMed * 3) {
-    flags.push(`cost_${(stats.costUsd / costMed).toFixed(1)}x_median`);
-  }
-  if (h.duration.length >= 3 && durMed > 0 && stats.durationMs > durMed * 3) {
-    flags.push(`duration_${(stats.durationMs / durMed).toFixed(1)}x_median`);
-  }
-  // Track only successful sessions; error sessions skew the baseline.
-  if (stats.outcome === "success") {
-    h.cost.push(stats.costUsd);
-    h.duration.push(stats.durationMs);
-    if (h.cost.length > 50) h.cost.shift();
-    if (h.duration.length > 50) h.duration.shift();
-  }
-  return flags;
-}
-
-export function annotateAnomalies(stats: SessionStats): void {
-  stats.anomalyFlags = detectAnomalies(stats);
-}
-
-// ── Pretty console logging ────────────────────────────────────────────────
-
-export function logStart(maxIterations: number): void {
+function logStart(maxIterations: number): void {
   console.log(`\nStarting Harness - Max iterations: ${maxIterations}`);
 }
 
-export function logIterationStart(i: number, max: number, storyId?: string): void {
+function logIterationStart(i: number, max: number, storyId?: string): void {
   console.log("");
   console.log("===============================================================");
   console.log(`  Harness Iteration ${i} of ${max}${storyId ? ` — ${storyId}` : ""}`);
   console.log("===============================================================");
 }
 
-export function logComplete(iteration: number, max: number): void {
+function logComplete(iteration: number, max: number): void {
   console.log("");
   console.log("Harness completed all tasks!");
   console.log(`Completed at iteration ${iteration} of ${max}`);
 }
 
-export function logMaxReached(max: number): void {
+function logMaxReached(max: number): void {
   console.log("");
   console.log(`Harness reached max iterations (${max}) without completing all tasks.`);
   console.log("Check progress.txt for status.");
 }
 
-export function logArchive(branch: string, folder: string): void {
+function logArchive(branch: string, folder: string): void {
   console.log(`Archiving previous run: ${branch}`);
   console.log(`   Archived to: ${folder}`);
 }
 
-export function logBranchSetup(branchName: string, action: "created" | "switched" | "already_on"): void {
+function logBranchSetup(branchName: string, action: BranchAction): void {
   switch (action) {
     case "created":
       console.log(`Branch ${c.green}created${c.reset}: ${c.cyan}${branchName}${c.reset}`);
@@ -131,7 +100,7 @@ export function logBranchSetup(branchName: string, action: "created" | "switched
   }
 }
 
-export function logFeedbackDetected(bytes: number, preview: string): void {
+function logFeedbackDetected(bytes: number, preview: string): void {
   const trimmed = preview.replace(/\s+/g, " ").trim().slice(0, 120);
   const ellipsis = preview.length > 120 ? "…" : "";
   console.log("");
@@ -139,25 +108,25 @@ export function logFeedbackDetected(bytes: number, preview: string): void {
   console.log(`${c.dim}  Will be applied this iteration; orchestrator archives after consumption.${c.reset}`);
 }
 
-export function logFeedbackForceArchived(target: string): void {
+function logFeedbackForceArchived(target: string): void {
   console.log(`  ${c.yellow}[feedback]${c.reset} orchestrator did not archive .marmite/feedback.md — force-archived to ${c.cyan}${target}${c.reset}`);
 }
 
-export function logResume(state: { iteration: number; storyId: string; lastPhase: string }): void {
+function logResume(state: ResumeInfo): void {
   console.log("");
   console.log(`Resuming run from .marmite/state.json: iteration=${state.iteration} story=${state.storyId} lastPhase=${state.lastPhase}`);
 }
 
-export function logBudgetExceeded(storyId: string, spent: number, budget: number): void {
+function logBudgetExceeded(storyId: string, spent: number, budget: number): void {
   console.log(`  ${c.bgRed}${c.bold} BUDGET ${c.reset} story=${storyId} spent=$${spent.toFixed(4)} budget=$${budget.toFixed(2)} — stopping fix loop`);
 }
 
-export function logError(context: string, err: unknown, category: string): void {
+function logError(context: string, err: unknown, category: string): void {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`  ${c.red}[${category}]${c.reset} ${context}: ${msg}`);
 }
 
-export function logMessage(message: SDKMessage, agentLabel: string = "harness"): void {
+function logMessage(message: SDKMessage, agentLabel: string = "harness"): void {
   const t = tag(agentLabel);
   const time = ts();
 
@@ -274,37 +243,7 @@ export function logMessage(message: SDKMessage, agentLabel: string = "harness"):
   }
 }
 
-function fmtCost(usd: number): string {
-  return `$${usd.toFixed(4)}`;
-}
-
-function fmtDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(1)}s`;
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return `${m}m ${rem.toFixed(0)}s`;
-}
-
-function fmtTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
-  return `${(n / 1_000_000).toFixed(2)}M`;
-}
-
-function outcomeBadge(outcome: string): string {
-  switch (outcome) {
-    case "success": return `${c.bgGreen}${c.bold} OK ${c.reset}`;
-    case "timeout": return `${c.bgYellow}${c.bold} TIMEOUT ${c.reset}`;
-    case "transient_error": return `${c.bgYellow}${c.bold} TRANSIENT ${c.reset}`;
-    case "fatal_error": return `${c.bgRed}${c.bold} FATAL ${c.reset}`;
-    case "aborted": return `${c.bgRed}${c.bold} ABORTED ${c.reset}`;
-    default: return outcome;
-  }
-}
-
-export function logSessionReport(stats: SessionStats): void {
+function logSessionReport(stats: SessionStats): void {
   const label = stats.phase.toUpperCase() + (stats.attempt != null ? ` #${stats.attempt}` : "");
   const line = `${c.cyan}[report]${c.reset}`;
   const flagTxt = stats.anomalyFlags.length > 0
@@ -319,7 +258,7 @@ export function logSessionReport(stats: SessionStats): void {
   console.log(`${line}   Tokens: in=${fmtTokens(stats.inputTokens)} out=${fmtTokens(stats.outputTokens)} cache_read=${fmtTokens(stats.cacheReadTokens)} cache_create=${fmtTokens(stats.cacheCreateTokens)}`);
 }
 
-export function logFinalReport(runStats: RunStats): void {
+function logFinalReport(runStats: RunStats): void {
   const elapsed = Date.now() - runStats.startedAt.getTime();
   const totalCost = runStats.sessions.reduce((sum, s) => sum + s.costUsd, 0);
   const totalDuration = runStats.sessions.reduce((sum, s) => sum + s.durationMs, 0);
@@ -384,6 +323,23 @@ export function logFinalReport(runStats: RunStats): void {
   console.log(`${line} ${c.bold}${sep}${c.reset}`);
 }
 
-export function storyOutcomeFor(outcomes: StoryOutcome[], storyId: string): StoryOutcome | undefined {
-  return outcomes.find((o) => o.storyId === storyId);
-}
+export const consoleReporter: Reporter = {
+  start: logStart,
+  iterationStart: logIterationStart,
+  complete: logComplete,
+  maxReached: logMaxReached,
+  archive: logArchive,
+  branchSetup: logBranchSetup,
+  feedbackDetected: logFeedbackDetected,
+  feedbackForceArchived: logFeedbackForceArchived,
+  resume: logResume,
+  budgetExceeded: logBudgetExceeded,
+  error: logError,
+  message: logMessage,
+  sessionReport: logSessionReport,
+  finalReport: logFinalReport,
+  info: (msg) => console.log(msg),
+  stderr: (line) => {
+    if (line) console.error(`${c.gray}[stderr]${c.reset} ${line}`);
+  },
+};

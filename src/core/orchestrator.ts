@@ -1,23 +1,11 @@
 import type { HarnessConfig, RunStats } from "./types.ts";
+import type { Reporter } from "./reporter.ts";
+import { silentReporter } from "./reporter.ts";
 import { PATHS, resolvePrompt } from "./paths.ts";
-import {
-  emitEvent,
-  initEventLog,
-  logBudgetExceeded,
-  logComplete,
-  logError,
-  logFeedbackDetected,
-  logFeedbackForceArchived,
-  logFinalReport,
-  logIterationStart,
-  logMaxReached,
-  logResume,
-  logStart,
-} from "./logger.ts";
-import { fileExists, formatDate, gitCommit, gitEnsureBranch, readJsonField, sleep } from "./utils.ts";
-import { mkdir, rename } from "fs/promises";
-import { resolve } from "path";
+import { emitEvent, initEventLog } from "./events.ts";
+import { fileExists, gitCommit, gitEnsureBranch, readJsonField, sleep } from "./utils.ts";
 import { archivePreviousRun, initProgress, trackBranch } from "./archive.ts";
+import { detectAndAnnounceFeedback, forceArchiveFeedbackIfPresent } from "./feedback.ts";
 import {
   STATE_VERSION,
   clearStateIfBranchChanged,
@@ -43,7 +31,7 @@ import {
   totalCost,
 } from "./stats.ts";
 
-export async function run(config: HarnessConfig): Promise<void> {
+export async function run(config: HarnessConfig, reporter: Reporter = silentReporter): Promise<void> {
   initEventLog(PATHS.events);
   await emitEvent("run_start", {
     maxIterations: config.maxIterations,
@@ -56,23 +44,23 @@ export async function run(config: HarnessConfig): Promise<void> {
     verifyTimeoutMs: config.verifyTimeoutMs,
   });
 
-  await archivePreviousRun(config);
+  await archivePreviousRun(config, reporter);
   await trackBranch(config);
   const branchName = await readJsonField(config.prdPath, "branchName");
-  if (branchName) gitEnsureBranch(PATHS.projectRoot, branchName);
+  if (branchName) gitEnsureBranch(PATHS.projectRoot, branchName, reporter);
   await initProgress(config);
   await clearStateIfBranchChanged(config);
 
   // Validate prompt + PRD files up front.
   for (const p of [resolvePrompt("orchestrator"), resolvePrompt("builder"), resolvePrompt("verifier")]) {
     if (!(await fileExists(p))) {
-      console.error(`Error: prompt file missing: ${p}`);
+      reporter.error(`prompt file missing`, p, "fatal");
       process.exit(2);
     }
   }
   const initialPrd = await readPrd(config.prdPath);
   if (initialPrd.kind === "parse_error") {
-    console.error(`Error: prd.json parse failure: ${initialPrd.error}`);
+    reporter.error(`prd.json parse failure`, initialPrd.error, "fatal");
     process.exit(2);
   }
 
@@ -90,18 +78,18 @@ export async function run(config: HarnessConfig): Promise<void> {
   const onTerminate = () => {
     if (terminated) return;
     terminated = true;
-    console.log("\n\nReceived termination signal. Aborting in-flight sessions...\n");
+    reporter.info("\n\nReceived termination signal. Aborting in-flight sessions...\n");
     runAbort.abort();
     emitEvent("run_abort", { reason: "signal" });
     setTimeout(() => {
-      logFinalReport(runStats);
+      reporter.finalReport(runStats);
       process.exit(130);
     }, 500);
   };
   process.on("SIGINT", onTerminate);
   process.on("SIGTERM", onTerminate);
 
-  logStart(config.maxIterations);
+  reporter.start(config.maxIterations);
 
   // ── Resume support ──
   let startIteration = 1;
@@ -110,7 +98,7 @@ export async function run(config: HarnessConfig): Promise<void> {
     if (state) {
       const currentBranch = await readJsonField(config.prdPath, "branchName");
       if (state.branchName === currentBranch) {
-        logResume(state);
+        reporter.resume(state);
         startIteration = state.iteration + 1;
         await emitEvent("run_resume", { iteration: state.iteration, storyId: state.storyId });
       }
@@ -123,28 +111,28 @@ export async function run(config: HarnessConfig): Promise<void> {
     // Total cost gate
     if (config.costBudgetUsdTotal > 0 && totalCost(runStats) >= config.costBudgetUsdTotal) {
       const spent = totalCost(runStats);
-      console.log(`Total cost budget reached: spent=$${spent.toFixed(4)} budget=$${config.costBudgetUsdTotal.toFixed(2)} — halting run.`);
+      reporter.info(`Total cost budget reached: spent=$${spent.toFixed(4)} budget=$${config.costBudgetUsdTotal.toFixed(2)} — halting run.`);
       await emitEvent("run_done", { reason: "total_budget_exceeded", spent, budget: config.costBudgetUsdTotal });
-      logFinalReport(runStats);
+      reporter.finalReport(runStats);
       process.exit(0);
     }
 
     // Pre-check: any story left? If not, exit successfully.
     const prdState = await readPrd(config.prdPath);
     if (prdState.kind === "parse_error") {
-      logError(`prd.json became unreadable mid-run`, prdState.error, "fatal");
+      reporter.error(`prd.json became unreadable mid-run`, prdState.error, "fatal");
       break;
     }
     const nextStory = pickNextStory(prdState.stories);
     if (!nextStory) {
-      logComplete(i - 1, config.maxIterations);
+      reporter.complete(i - 1, config.maxIterations);
       await emitEvent("run_done", { reason: "all_stories_passing" });
-      logFinalReport(runStats);
+      reporter.finalReport(runStats);
       process.exit(0);
     }
 
     // ── Phase 0: Orchestrate ──
-    await detectAndAnnounceFeedback(i);
+    await detectAndAnnounceFeedback(i, reporter);
 
     await emitEvent("phase_start", { phase: "orchestrate", iteration: i, storyId: nextStory.id });
 
@@ -155,13 +143,14 @@ export async function run(config: HarnessConfig): Promise<void> {
       config.orchestrateTimeoutMs,
       undefined,
       runAbort.signal,
+      reporter,
       config.orchestratorModel,
       "orchestrator",
     );
-    recordSession(runStats, orchestrate, "orchestrate", i, nextStory.id);
+    recordSession(runStats, orchestrate, "orchestrate", i, nextStory.id, reporter);
     await emitEvent("phase_end", { phase: "orchestrate", iteration: i, outcome: orchestrate.outcome });
 
-    await forceArchiveFeedbackIfPresent(i);
+    await forceArchiveFeedbackIfPresent(i, reporter);
 
     if (runAbort.signal.aborted) break;
 
@@ -175,7 +164,7 @@ export async function run(config: HarnessConfig): Promise<void> {
       if (decidedStory) {
         currentStory = decidedStory;
       } else {
-        logError(
+        reporter.error(
           `orchestrator picked unknown story '${decision.storyId}', falling back to priority order`,
           undefined,
           "orchestrate",
@@ -185,12 +174,12 @@ export async function run(config: HarnessConfig): Promise<void> {
         await emitEvent("sensors_ran", { iteration: i, storyId: currentStory.id, sensors: decision.ranSensors });
       }
     } else if (decisionParsed.kind === "malformed") {
-      logError(`current-task.json malformed after orchestrate`, decisionParsed.error, "orchestrate");
+      reporter.error(`current-task.json malformed after orchestrate`, decisionParsed.error, "orchestrate");
     } else {
-      console.log("  current-task.json not found after orchestrate — using priority-order story selection.");
+      reporter.info("  current-task.json not found after orchestrate — using priority-order story selection.");
     }
 
-    logIterationStart(i, config.maxIterations, currentStory.id);
+    reporter.iterationStart(i, config.maxIterations, currentStory.id);
     await emitEvent("iteration_start", { iteration: i, storyId: currentStory.id, title: currentStory.title });
 
     // ── Phase 1: Build ──
@@ -205,8 +194,8 @@ export async function run(config: HarnessConfig): Promise<void> {
       updatedAt: new Date().toISOString(),
     });
 
-    console.log("  Phase: BUILD");
-    console.log("===============================================================");
+    reporter.info("  Phase: BUILD");
+    reporter.info("===============================================================");
     await emitEvent("phase_start", { phase: "build", iteration: i, storyId: currentStory.id });
 
     const builderPrompt = await readPromptFile(resolvePrompt("builder"));
@@ -216,10 +205,11 @@ export async function run(config: HarnessConfig): Promise<void> {
       config.buildTimeoutMs,
       undefined,
       runAbort.signal,
+      reporter,
       config.builderModel,
       "builder",
     );
-    recordSession(runStats, build, "build", i, currentStory.id);
+    recordSession(runStats, build, "build", i, currentStory.id, reporter);
     await emitEvent("phase_end", { phase: "build", iteration: i, outcome: build.outcome });
 
     if (runAbort.signal.aborted) break;
@@ -244,15 +234,15 @@ export async function run(config: HarnessConfig): Promise<void> {
 
       // Cost budget check
       if (config.costBudgetUsdPerStory > 0 && iterationCost(runStats, i) > config.costBudgetUsdPerStory) {
-        logBudgetExceeded(currentStory.id, iterationCost(runStats, i), config.costBudgetUsdPerStory);
+        reporter.budgetExceeded(currentStory.id, iterationCost(runStats, i), config.costBudgetUsdPerStory);
         failReason = "budget_exceeded";
         break;
       }
 
-      console.log("");
-      console.log("---------------------------------------------------------------");
-      console.log(`  Phase: VERIFY (iteration ${i}, attempt ${fix + 1})`);
-      console.log("---------------------------------------------------------------");
+      reporter.info("");
+      reporter.info("---------------------------------------------------------------");
+      reporter.info(`  Phase: VERIFY (iteration ${i}, attempt ${fix + 1})`);
+      reporter.info("---------------------------------------------------------------");
       await emitEvent("phase_start", { phase: "verify", iteration: i, attempt: fix + 1 });
 
       const verifierPrompt = await readPromptFile(resolvePrompt("verifier"));
@@ -262,16 +252,17 @@ export async function run(config: HarnessConfig): Promise<void> {
         config.verifyTimeoutMs,
         undefined,
         runAbort.signal,
+        reporter,
         config.verifierModel,
         "verifier",
       );
-      recordSession(runStats, verify, "verify", i, currentStory.id, fix + 1);
+      recordSession(runStats, verify, "verify", i, currentStory.id, reporter, fix + 1);
       await emitEvent("phase_end", { phase: "verify", iteration: i, attempt: fix + 1, outcome: verify.outcome });
 
       // Distinguish verifier crash from legitimate "no fixes will help" verdict.
       if (verify.outcome !== "success") {
         if (fix < config.maxFixAttempts && !runAbort.signal.aborted) {
-          logError(
+          reporter.error(
             `verify session did not succeed (${verify.outcome}), treating as transient; continuing`,
             verify.errorMessage,
             "verify",
@@ -285,12 +276,12 @@ export async function run(config: HarnessConfig): Promise<void> {
 
       const parsed = await readVerificationResultFile();
       if (parsed.kind === "missing") {
-        console.log("  No verdict in current-task.json — verifier did not write results.");
+        reporter.info("  No verdict in current-task.json — verifier did not write results.");
         failReason = "missing_results";
         break;
       }
       if (parsed.kind === "malformed") {
-        logError(`current-task.json verdict malformed`, parsed.error, "verify");
+        reporter.error(`current-task.json verdict malformed`, parsed.error, "verify");
         failReason = "malformed_results";
         break;
       }
@@ -309,7 +300,7 @@ export async function run(config: HarnessConfig): Promise<void> {
         break;
       }
       if (v.verdict === "fail_abort") {
-        console.log("  Verifier verdict=fail_abort — not retrying.");
+        reporter.info("  Verifier verdict=fail_abort — not retrying.");
         failReason = "fail_abort";
         break;
       }
@@ -319,16 +310,16 @@ export async function run(config: HarnessConfig): Promise<void> {
         break;
       }
       if (!lastBuildSessionId) {
-        console.log("  No build session to resume. Stopping fix loop.");
+        reporter.info("  No build session to resume. Stopping fix loop.");
         failReason = "no_session";
         break;
       }
 
       fixAttempts++;
-      console.log("");
-      console.log("---------------------------------------------------------------");
-      console.log(`  Phase: FIX (iteration ${i}, fix ${fixAttempts} of ${config.maxFixAttempts})`);
-      console.log("---------------------------------------------------------------");
+      reporter.info("");
+      reporter.info("---------------------------------------------------------------");
+      reporter.info(`  Phase: FIX (iteration ${i}, fix ${fixAttempts} of ${config.maxFixAttempts})`);
+      reporter.info("---------------------------------------------------------------");
       await emitEvent("phase_start", { phase: "fix", iteration: i, attempt: fixAttempts });
 
       await persistState(config, {
@@ -349,10 +340,11 @@ export async function run(config: HarnessConfig): Promise<void> {
         config.fixTimeoutMs,
         lastBuildSessionId,
         runAbort.signal,
+        reporter,
         config.builderModel,
         "fixer",
       );
-      recordSession(runStats, fixResult, "fix", i, currentStory.id, fix + 1);
+      recordSession(runStats, fixResult, "fix", i, currentStory.id, reporter, fix + 1);
       await emitEvent("phase_end", { phase: "fix", iteration: i, attempt: fixAttempts, outcome: fixResult.outcome });
 
       if (fixResult.sessionId) lastBuildSessionId = fixResult.sessionId;
@@ -366,15 +358,15 @@ export async function run(config: HarnessConfig): Promise<void> {
     // ── Finalize iteration ──
     runStats.iterationsCompleted = i;
     if (passed) {
-      const marked = await markStoryPassing(config, currentStory.id);
+      const marked = await markStoryPassing(config, currentStory.id, reporter);
       if (marked) {
-        gitCommit(PATHS.projectRoot, config.prdPath, `verify: ${currentStory.id} - passed verification`);
+        gitCommit(PATHS.projectRoot, config.prdPath, `verify: ${currentStory.id} - passed verification`, reporter);
       }
       finalizeStoryOutcome(runStats, currentStory.id, i, true);
-      console.log(`Story ${currentStory.id} passed verification at iteration ${i}.`);
+      reporter.info(`Story ${currentStory.id} passed verification at iteration ${i}.`);
     } else {
       finalizeStoryOutcome(runStats, currentStory.id, i, false, failReason);
-      console.log(`Story ${currentStory.id} did NOT pass (${failReason ?? "unknown"}) after ${fixAttempts} fix attempt(s). Moving on.`);
+      reporter.info(`Story ${currentStory.id} did NOT pass (${failReason ?? "unknown"}) after ${fixAttempts} fix attempt(s). Moving on.`);
     }
 
     await persistState(config, {
@@ -391,61 +383,21 @@ export async function run(config: HarnessConfig): Promise<void> {
     // Exit early if PRD is now complete.
     const done = await allStoriesPassingOrError(config.prdPath);
     if (done.kind === "done") {
-      logComplete(i, config.maxIterations);
+      reporter.complete(i, config.maxIterations);
       await emitEvent("run_done", { reason: "all_stories_passing", iteration: i });
-      logFinalReport(runStats);
+      reporter.finalReport(runStats);
       process.exit(0);
     }
     if (done.kind === "error") {
-      logError(`prd.json became unreadable after iteration ${i}`, done.message, "fatal");
+      reporter.error(`prd.json became unreadable after iteration ${i}`, done.message, "fatal");
       break;
     }
 
     await sleep(2000);
   }
 
-  logMaxReached(config.maxIterations);
+  reporter.maxReached(config.maxIterations);
   await emitEvent("run_end", { reason: terminated ? "signal" : "max_iterations" });
-  logFinalReport(runStats);
+  reporter.finalReport(runStats);
   process.exit(terminated ? 130 : 1);
-}
-
-// Async user-feedback channel: user drops Markdown into .marmite/feedback.md at any time;
-// orchestrator picks it up next iteration and archives the file after using it.
-async function detectAndAnnounceFeedback(iteration: number): Promise<void> {
-  if (!(await fileExists(PATHS.feedback))) return;
-  let raw = "";
-  try {
-    raw = await Bun.file(PATHS.feedback).text();
-  } catch (err) {
-    logError(`failed to read ${PATHS.feedback}`, err, "feedback");
-    return;
-  }
-  if (raw.trim() === "") return;
-  const bytes = Buffer.byteLength(raw, "utf8");
-  const preview = raw.slice(0, 200);
-  logFeedbackDetected(bytes, preview);
-  await emitEvent("feedback_detected", { iteration, bytes, preview });
-}
-
-// Defensive: if the orchestrator agent forgot to archive the feedback file,
-// archive it ourselves so the same feedback isn't applied again next iteration.
-async function forceArchiveFeedbackIfPresent(iteration: number): Promise<void> {
-  if (!(await fileExists(PATHS.feedback))) return;
-  // Skip empty leftovers — nothing meaningful to archive.
-  try {
-    const raw = await Bun.file(PATHS.feedback).text();
-    if (raw.trim() === "") return;
-  } catch {
-    return;
-  }
-  try {
-    await mkdir(PATHS.feedbackArchive, { recursive: true });
-    const target = resolve(PATHS.feedbackArchive, `${formatDate()}-iter-${iteration}.md`);
-    await rename(PATHS.feedback, target);
-    logFeedbackForceArchived(target);
-    await emitEvent("feedback_force_archived", { iteration, target });
-  } catch (err) {
-    logError(`failed to force-archive feedback`, err, "feedback");
-  }
 }

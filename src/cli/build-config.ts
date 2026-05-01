@@ -1,0 +1,59 @@
+import { resolve } from "path";
+import type { HarnessConfig, ModelPricing } from "../core/types.ts";
+import type { MarmiteConfig } from "../core/config.ts";
+import type { CliOverrides } from "./args.ts";
+import { parseDuration } from "./args.ts";
+
+export const DEFAULTS = {
+  maxIterations: 1000,
+  model: "claude-sonnet-4-6",
+  timeouts: { build: "20m", verify: "10m", fix: "15m", orchestrate: "10m" },
+  budget: { perStory: 15, total: 0 },
+  retries: { fix: 3, transient: 2 },
+  resume: true,
+  app: "./app",
+  prd: "./prd.json",
+};
+
+export const PRICING: Record<string, ModelPricing> = {
+  "claude-opus-4-7":   { inputPerMTok: 15, outputPerMTok: 75, cacheReadPerMTok: 1.5 },
+  "claude-opus-4-6":   { inputPerMTok: 5,  outputPerMTok: 25, cacheReadPerMTok: 0.5 },
+  "claude-sonnet-4-6": { inputPerMTok: 3,  outputPerMTok: 15, cacheReadPerMTok: 0.3 },
+  "claude-haiku-4-5":  { inputPerMTok: 1,  outputPerMTok: 5,  cacheReadPerMTok: 0.1 },
+};
+
+function fromConfig<T>(value: T | undefined, fallback: T): T {
+  return value ?? fallback;
+}
+
+export function composeConfig(
+  cli: CliOverrides,
+  fileCfg: MarmiteConfig,
+  configDir: string,
+): HarnessConfig {
+  const resolveFromConfig = (p: string) => resolve(configDir, p);
+
+  const model = cli.model ?? fileCfg.models?.default ?? DEFAULTS.model;
+  const appPath = resolveFromConfig(fromConfig(fileCfg.app, DEFAULTS.app));
+  const prdPath = cli.prd ?? (fileCfg.prd ? resolveFromConfig(fileCfg.prd) : resolveFromConfig(DEFAULTS.prd));
+
+  return {
+    maxIterations: cli.maxIterations ?? fromConfig(fileCfg.maxIterations, DEFAULTS.maxIterations),
+    appPath,
+    prdPath,
+    model,
+    builderModel: cli.builderModel ?? fileCfg.models?.builder ?? model,
+    verifierModel: cli.verifierModel ?? fileCfg.models?.verifier ?? model,
+    orchestratorModel: fileCfg.models?.orchestrator ?? model,
+    pricing: PRICING,
+    buildTimeoutMs: cli.buildTimeoutMs ?? parseDuration("timeouts.build", fileCfg.timeouts?.build) ?? parseDuration("", DEFAULTS.timeouts.build)!,
+    verifyTimeoutMs: cli.verifyTimeoutMs ?? parseDuration("timeouts.verify", fileCfg.timeouts?.verify) ?? parseDuration("", DEFAULTS.timeouts.verify)!,
+    fixTimeoutMs: cli.fixTimeoutMs ?? parseDuration("timeouts.fix", fileCfg.timeouts?.fix) ?? parseDuration("", DEFAULTS.timeouts.fix)!,
+    orchestrateTimeoutMs: parseDuration("timeouts.orchestrate", fileCfg.timeouts?.orchestrate) ?? parseDuration("", DEFAULTS.timeouts.orchestrate)!,
+    maxTransientRetries: cli.transientRetries ?? fromConfig(fileCfg.retries?.transient, DEFAULTS.retries.transient),
+    costBudgetUsdPerStory: cli.perStoryBudget ?? fromConfig(fileCfg.budget?.perStory, DEFAULTS.budget.perStory),
+    costBudgetUsdTotal: cli.totalBudget ?? fromConfig(fileCfg.budget?.total, DEFAULTS.budget.total),
+    maxFixAttempts: cli.maxFixAttempts ?? fromConfig(fileCfg.retries?.fix, DEFAULTS.retries.fix),
+    resumeIfAvailable: cli.resume ?? fromConfig(fileCfg.resume, DEFAULTS.resume),
+  };
+}

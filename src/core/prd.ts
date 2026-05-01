@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { HarnessConfig } from "./types.ts";
-import { logError } from "./logger.ts";
+import type { Reporter } from "./reporter.ts";
 import { readJson, writeAtomicJson } from "./utils.ts";
 
 const PrdStorySchema = z.object({
@@ -45,10 +45,14 @@ export function pickNextStory(stories: PrdStory[]): PrdStory | null {
   return open[0]!;
 }
 
-export async function markStoryPassing(config: HarnessConfig, storyId: string): Promise<boolean> {
+export async function markStoryPassing(
+  config: HarnessConfig,
+  storyId: string,
+  reporter: Reporter,
+): Promise<boolean> {
   const read = await readJson<Record<string, unknown>>(config.prdPath);
   if (read.kind !== "present") {
-    logError(
+    reporter.error(
       `could not update prd.json for ${storyId}`,
       read.kind === "malformed" ? read.error.message : "missing",
       "prd",
@@ -66,7 +70,7 @@ export async function markStoryPassing(config: HarnessConfig, storyId: string): 
     }
   }
   if (!matched) {
-    logError(`story ${storyId} not found in prd.json`, "", "prd");
+    reporter.error(`story ${storyId} not found in prd.json`, "", "prd");
     return false;
   }
   await writeAtomicJson(config.prdPath, prd);

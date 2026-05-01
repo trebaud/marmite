@@ -1,5 +1,7 @@
 import type { RunStats, SessionPhase, SessionStats, StoryOutcome } from "./types.ts";
-import { annotateAnomalies, emitEvent, logSessionReport } from "./logger.ts";
+import type { Reporter } from "./reporter.ts";
+import { annotateAnomalies } from "./anomaly.ts";
+import { emitEvent } from "./events.ts";
 import type { SessionResult } from "./session.ts";
 
 export function recordSession(
@@ -8,6 +10,7 @@ export function recordSession(
   phase: SessionPhase,
   iteration: number,
   storyId: string,
+  reporter: Reporter,
   attempt?: number,
 ): SessionStats {
   const stats: SessionStats = {
@@ -22,7 +25,7 @@ export function recordSession(
   };
   annotateAnomalies(stats);
   runStats.sessions.push(stats);
-  logSessionReport(stats);
+  reporter.sessionReport(stats);
   emitEvent("session_result", {
     phase,
     iteration,

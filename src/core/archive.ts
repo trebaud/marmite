@@ -1,7 +1,7 @@
 import { resolve } from "path";
 import { mkdir } from "fs/promises";
 import type { HarnessConfig } from "./types.ts";
-import { logArchive } from "./logger.ts";
+import type { Reporter } from "./reporter.ts";
 import { PATHS } from "./paths.ts";
 import {
   fileExists,
@@ -13,7 +13,7 @@ import {
 
 // Detects when the PRD switched to a new branch and archives the old run's
 // prd.json + progress.txt so they aren't overwritten by the new project.
-export async function archivePreviousRun(config: HarnessConfig): Promise<void> {
+export async function archivePreviousRun(config: HarnessConfig, reporter: Reporter): Promise<void> {
   const prdExists = await fileExists(config.prdPath);
   const lastBranchExists = await fileExists(PATHS.lastBranch);
   if (!prdExists || !lastBranchExists) return;
@@ -32,7 +32,7 @@ export async function archivePreviousRun(config: HarnessConfig): Promise<void> {
   const folderName = lastBranch.replace(/[^\w.-]/g, "_");
   const archiveFolder = resolve(PATHS.archiveDir, `${date}-${folderName}`);
 
-  logArchive(lastBranch, archiveFolder);
+  reporter.archive(lastBranch, archiveFolder);
   await mkdir(archiveFolder, { recursive: true });
   await writeAtomic(resolve(archiveFolder, "prd.json"), prdBuf);
   if (progressBuf) {

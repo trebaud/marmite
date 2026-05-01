@@ -1,7 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { HarnessConfig, ModelPricing, SessionOutcome } from "./types.ts";
-import { logMessage, logError } from "./logger.ts";
+import type { Reporter } from "./reporter.ts";
 import { classifyError, sleep } from "./utils.ts";
 import { PATHS } from "./paths.ts";
 
@@ -41,7 +41,7 @@ const emptyStats: SessionStatsRaw = {
   cacheCreateTokens: 0,
 };
 
-function baseOptions(config: HarnessConfig, model: string, abort: AbortController) {
+function baseOptions(config: HarnessConfig, model: string, abort: AbortController, reporter: Reporter) {
   return {
     cwd: PATHS.projectRoot,
     model,
@@ -57,7 +57,7 @@ function baseOptions(config: HarnessConfig, model: string, abort: AbortControlle
     },
     stderr: (data: string) => {
       const line = data.trim();
-      if (line) console.error(`\x1b[90m[stderr]\x1b[0m ${line}`);
+      if (line) reporter.stderr(line);
     },
   };
 }
@@ -80,12 +80,13 @@ async function drain(
   model: string,
   q: AsyncIterable<SDKMessage>,
   agentLabel: string,
+  reporter: Reporter,
 ): Promise<{ result: string; sessionId: string; stats: SessionStatsRaw }> {
   let result = "";
   let sessionId = "";
   let stats: SessionStatsRaw = { ...emptyStats };
   for await (const message of q) {
-    logMessage(message, agentLabel);
+    reporter.message(message, agentLabel);
     if (message.type === "result") {
       const r = message as any;
       if (message.subtype === "success") {
@@ -116,6 +117,7 @@ export async function runQuery(
   config: HarnessConfig,
   prompt: string,
   timeoutMs: number,
+  reporter: Reporter,
   resumeId?: string,
   parentSignal?: AbortSignal,
   model: string = config.model,
@@ -139,11 +141,11 @@ export async function runQuery(
 
   try {
     const options = {
-      ...baseOptions(config, model, abort),
+      ...baseOptions(config, model, abort, reporter),
       ...(resumeId ? { resume: resumeId } : {}),
     };
     const q = query({ prompt, options });
-    const drained = await drain(config, model, q, agentLabel);
+    const drained = await drain(config, model, q, agentLabel, reporter);
     return {
       result: drained.result,
       sessionId: drained.sessionId,
@@ -175,18 +177,19 @@ export async function runQueryWithRetry(
   timeoutMs: number,
   resumeId: string | undefined,
   parentSignal: AbortSignal,
+  reporter: Reporter,
   model: string = config.model,
   agentLabel: string = "harness",
 ): Promise<SessionResult> {
   let lastResult: SessionResult | null = null;
   for (let attempt = 1; attempt <= config.maxTransientRetries + 1; attempt++) {
-    const result = await runQuery(config, prompt, timeoutMs, resumeId, parentSignal, model, agentLabel);
+    const result = await runQuery(config, prompt, timeoutMs, reporter, resumeId, parentSignal, model, agentLabel);
     lastResult = result;
     if (result.outcome !== "transient_error" && result.outcome !== "timeout") return result;
     if (parentSignal.aborted) return result;
     if (attempt > config.maxTransientRetries) return result;
     const delay = Math.min(30_000, 1_000 * 2 ** (attempt - 1));
-    logError(
+    reporter.error(
       `${result.outcome} on attempt ${attempt}, retrying in ${delay}ms`,
       result.errorMessage,
       "retry",

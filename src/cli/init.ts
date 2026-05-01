@@ -3,7 +3,7 @@ import { resolve } from "path";
 import { createInterface } from "readline";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { FRAMEWORK_PATHS } from "./paths.ts";
+import { FRAMEWORK_PATHS } from "../core/paths.ts";
 
 // `marmite init` shim. Runs the marmite-init skill as an interactive agent session
 // using the same SDK as the cook loop. The wizard text lives in SKILL.md;
