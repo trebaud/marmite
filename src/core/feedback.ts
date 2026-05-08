@@ -1,12 +1,11 @@
-import { mkdir, rename } from "fs/promises";
-import { resolve } from "path";
+import { unlink } from "fs/promises";
 import { PATHS } from "./paths.ts";
 import { emitEvent } from "./events.ts";
-import { fileExists, formatDate } from "./utils.ts";
+import { fileExists } from "./utils.ts";
 import type { Reporter } from "./reporter.ts";
 
 // Async user-feedback channel: user drops Markdown into .marmite/feedback.md at any time;
-// orchestrator picks it up next iteration and archives the file after using it.
+// orchestrator picks it up next iteration and deletes the file after using it.
 export async function detectAndAnnounceFeedback(iteration: number, reporter: Reporter): Promise<void> {
   if (!(await fileExists(PATHS.feedback))) return;
   let raw = "";
@@ -23,11 +22,11 @@ export async function detectAndAnnounceFeedback(iteration: number, reporter: Rep
   await emitEvent("feedback_detected", { iteration, bytes, preview });
 }
 
-// Defensive: if the orchestrator agent forgot to archive the feedback file,
-// archive it ourselves so the same feedback isn't applied again next iteration.
-export async function forceArchiveFeedbackIfPresent(iteration: number, reporter: Reporter): Promise<void> {
+// Defensive: if the orchestrator agent forgot to delete the feedback file,
+// delete it ourselves so the same feedback isn't applied again next iteration.
+export async function forceClearFeedbackIfPresent(iteration: number, reporter: Reporter): Promise<void> {
   if (!(await fileExists(PATHS.feedback))) return;
-  // Skip empty leftovers — nothing meaningful to archive.
+  // Skip empty leftovers — nothing meaningful to clear.
   try {
     const raw = await Bun.file(PATHS.feedback).text();
     if (raw.trim() === "") return;
@@ -35,12 +34,10 @@ export async function forceArchiveFeedbackIfPresent(iteration: number, reporter:
     return;
   }
   try {
-    await mkdir(PATHS.feedbackArchive, { recursive: true });
-    const target = resolve(PATHS.feedbackArchive, `${formatDate()}-iter-${iteration}.md`);
-    await rename(PATHS.feedback, target);
-    reporter.feedbackForceArchived(target);
-    await emitEvent("feedback_force_archived", { iteration, target });
+    await unlink(PATHS.feedback);
+    reporter.feedbackForceCleared();
+    await emitEvent("feedback_force_cleared", { iteration });
   } catch (err) {
-    reporter.error(`failed to force-archive feedback`, err, "feedback");
+    reporter.error(`failed to force-clear feedback`, err, "feedback");
   }
 }

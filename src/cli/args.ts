@@ -13,7 +13,6 @@ export interface CliOverrides {
   totalBudget?: number;
   maxFixAttempts?: number;
   transientRetries?: number;
-  resume?: boolean;
 }
 
 export function usage(): never {
@@ -21,6 +20,7 @@ export function usage(): never {
   marmite                            Run the agent loop in the current project (alias: marmite cook)
   marmite cook [options]             Run the agent loop
   marmite init                       Set up marmite in the current project (interactive wizard)
+  marmite to-prd <PRD.md>            Convert a markdown PRD into .marmite/prd.json
 
 Options for cook:
   -c, --config <path>         Path to JSON config file (default: ./marmite.json)
@@ -36,7 +36,6 @@ Options for cook:
       --cost-budget-total <usd>  Total run cost budget, 0 disables
       --max-fix-attempts <n>  Fix attempts per story
       --retries <n>           Transient retries per session
-      --resume / --no-resume  Resume from .marmite/state.json if available
   -h, --help                  Show this help
 
 Layer order (low → high precedence):
@@ -106,8 +105,6 @@ export function parseArgs(argv: string[]): { cli: CliOverrides; configPath: stri
       case "--cost-budget-total": cli.totalBudget = parseFloatOrExit("--cost-budget-total", next()); break;
       case "--max-fix-attempts":  cli.maxFixAttempts = parseIntOrExit("--max-fix-attempts", next(), 0); break;
       case "--retries":           cli.transientRetries = parseIntOrExit("--retries", next(), 0); break;
-      case "--resume":    cli.resume = true; break;
-      case "--no-resume": cli.resume = false; break;
       default: {
         const n = parseInt(arg, 10);
         if (!isNaN(n) && n > 0) cli.maxIterations = n;

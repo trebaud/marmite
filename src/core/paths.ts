@@ -1,18 +1,21 @@
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { existsSync } from "fs";
 
 // Framework paths resolve from the package install location (e.g. node_modules/marmite/...).
-// They reference files that ship with marmite — prompt defaults and the init skill.
+//
+//   src/skills/   — marmite-internal skills loaded directly by the CLI (init, to-prd).
+//   templates/    — assets copied into the user's project at `marmite init`:
+//                     templates/prompts/  → <user>/.marmite/prompts/
+//                     templates/skills/   → <user>/.claude/skills/
 const here = dirname(fileURLToPath(import.meta.url)); // src/core
 const packageRoot = resolve(here, "../..");
 
 export const FRAMEWORK_PATHS = {
   packageRoot,
-  builderMd:        resolve(packageRoot, "src/prompts/builder-prompt.md"),
-  verifierMd:       resolve(packageRoot, "src/prompts/verifier-prompt.md"),
-  orchestratorMd:   resolve(packageRoot, "src/prompts/orchestrator-prompt.md"),
-  marmiteInitSkill: resolve(packageRoot, ".claude/skills/marmite-init"),
+  internalSkills:   resolve(packageRoot, "src/skills"),
+  templates:        resolve(packageRoot, "templates"),
+  templatesPrompts: resolve(packageRoot, "templates/prompts"),
+  templatesSkills:  resolve(packageRoot, "templates/skills"),
 } as const;
 
 // User paths live in the user's project (where they ran `marmite cook`).
@@ -29,28 +32,20 @@ function userPath(p: string): string {
 }
 
 export const PATHS = {
-  get projectRoot()     { return userRoot; },
-  get progress()        { return userPath("progress.txt"); },
-  get archiveDir()      { return userPath("archive"); },
-  get lastBranch()      { return userPath(".last-branch"); },
-  get state()           { return userPath(".marmite/state.json"); },
-  get events()          { return userPath(".marmite/events.jsonl"); },
-  get currentTask()     { return userPath("current-task.json"); },
-  get promptOverrides() { return userPath(".marmite/prompts"); },
-  get feedback()        { return userPath(".marmite/feedback.md"); },
-  get feedbackArchive() { return userPath(".marmite/feedback-archive"); },
+  get projectRoot() { return userRoot; },
+  get progress()    { return userPath(".marmite/progress.txt"); },
+  get events()      { return userPath(".marmite/events.jsonl"); },
+  get currentTask() { return userPath(".marmite/current-task.json"); },
+  get prompts()     { return userPath(".marmite/prompts"); },
+  get prd()         { return userPath(".marmite/prd.json"); },
+  get feedback()    { return userPath(".marmite/feedback.md"); },
 };
 
 export type PromptName = "builder" | "verifier" | "orchestrator";
 
-// Returns the path to a prompt file. Checks `.marmite/prompts/<name>-prompt.md`
-// in the user's project first; falls back to the package default.
+// Agent prompts always live at `.marmite/prompts/<name>-prompt.md` in the user's project.
+// `marmite init` copies the packaged templates there; callers must handle missing files
+// (the orchestrator validates this up front and points the user at `marmite init`).
 export function resolvePrompt(name: PromptName): string {
-  const override = resolve(PATHS.promptOverrides, `${name}-prompt.md`);
-  if (existsSync(override)) return override;
-  switch (name) {
-    case "builder": return FRAMEWORK_PATHS.builderMd;
-    case "verifier": return FRAMEWORK_PATHS.verifierMd;
-    case "orchestrator": return FRAMEWORK_PATHS.orchestratorMd;
-  }
+  return resolve(PATHS.prompts, `${name}-prompt.md`);
 }

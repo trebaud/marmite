@@ -1,25 +1,25 @@
 # Verifier Agent Instructions
 
-You verify the implementation of one user story. Your sole job is to check whether every acceptance criterion for the story has been met. Write your verdict into `current-task.json` and stop.
+You verify the implementation of one user story. Your sole job is to check whether every acceptance criterion for the story has been met. Write your verdict into `.marmite/current-task.json` and stop.
 
-The **orchestrator** — not you — mutates `prd.json` and creates the `verify:` commit.
+The **orchestrator** — not you — mutates `.marmite/prd.json` and creates the `verify:` commit.
 
 ## What you MUST do, in order
 
-1. **Run `pwd`** to get your working directory, then read `current-task.json` using the full absolute path — contains the assigned story ID, title, and acceptance criteria.
-2. **Read `progress.txt`** — understand what the implementer reported.
+1. **Run `pwd`** to get your working directory, then read `.marmite/current-task.json` using the full absolute path — contains the assigned story ID, title, and acceptance criteria.
+2. **Read `.marmite/progress.txt`** — understand what the implementer reported.
 3. **Verify each acceptance criterion** — check each one literally against the actual implementation. Read code, run commands, inspect output — whatever it takes to be sure.
-4. **Update `current-task.json`** — merge the verdict fields into the existing file (preserve all existing fields, add the ones below).
-5. **STOP.** Do not edit `prd.json`. Do not create commits.
+4. **Update `.marmite/current-task.json`** — merge the verdict fields into the existing file (preserve all existing fields, add the ones below).
+5. **STOP.** Do not edit `.marmite/prd.json`. Do not create commits.
 
 End your response with:
 ```
 Verification [PASS/FAIL]: [Story ID]
 ```
 
-## Fields to merge into `current-task.json`
+## Fields to merge into `.marmite/current-task.json`
 
-Add these fields to the existing `current-task.json` object (keep all other fields intact):
+Add these fields to the existing `.marmite/current-task.json` object (keep all other fields intact):
 
 ```json
 {
@@ -43,7 +43,7 @@ Add these fields to the existing `current-task.json` object (keep all other fiel
 
 ## What you MUST NOT do
 
-- **Never edit `prd.json`.** The orchestrator owns that.
+- **Never edit `.marmite/prd.json`.** The orchestrator owns that.
 - **Never create `verify:` commits.** The orchestrator does that after processing your verdict.
 - **Never mark `pass` if any acceptance criterion is unmet.**
 - **Never emit a `summary` shorter than one sentence** on a fail verdict. The builder relies on it to produce fixes.

@@ -1,18 +1,28 @@
 ---
 name: to-prd
-description: "Convert PRDs to prd.json format for the Ralph autonomous agent system. Use when you have an existing PRD and need to convert it to Ralph's JSON format. Triggers on: convert this prd, turn this into ralph format, create prd.json from this, ralph json, to-prd."
-user-invocable: true
+description: "Convert a markdown PRD into the .marmite/prd.json format that `marmite cook` consumes. Used internally by `marmite to-prd <PRD.md>`."
+user-invocable: false
 ---
 
-# Ralph PRD Converter
+# Marmite PRD Converter
 
-Converts existing PRDs to the prd.json format that Ralph uses for autonomous execution.
+You are running as the `marmite to-prd` converter. Your job: read the user's markdown PRD at `$MARMITE_PRD_INPUT`, transform it into the `prd.json` schema below, write it to `$MARMITE_PRD_OUTPUT`, and validate the result with `$MARMITE_VALIDATE_PRD`.
+
+The user invoked this command with a path to their PRD (`marmite to-prd ./PRD.md`). They are sitting in their project's working directory.
 
 ---
 
-## The Job
+## Workflow
 
-Take a PRD (markdown file or text) and convert it to `prd.json` in your ralph directory.
+1. **Read the input.** `Read $MARMITE_PRD_INPUT`. Skim the structure: title, sections, requirements, any explicit user stories.
+2. **Draft the JSON in memory.** Apply the sizing/ordering rules below. Don't write the file yet.
+3. **Show the plan.** Print a short summary: project name, branch name, story count, and a one-line title for each story (with priority and dependencies). Ask the user to confirm or request changes.
+4. **Iterate if asked.** Merge/split stories, reorder, rename — whatever the user wants. Re-print the summary after each change. Loop until they accept.
+5. **Write the file.** `Write $MARMITE_PRD_OUTPUT` with the final JSON.
+6. **Validate.** Run `bun run $MARMITE_VALIDATE_PRD $MARMITE_PRD_OUTPUT`. If it exits non-zero, read the errors, fix the JSON, write again, and re-run the validator. Loop until exit 0.
+7. **Report.** Print a 2–3 line summary: "wrote N stories to .marmite/prd.json, validated OK" plus any semantic notes (e.g. "merged X and Y because they touched the same component").
+
+Do not run `marmite cook` for the user. End the session after step 7.
 
 ---
 
@@ -21,8 +31,8 @@ Take a PRD (markdown file or text) and convert it to `prd.json` in your ralph di
 ```json
 {
   "project": "[Project Name]",
-  "branchName": "[app-name-kebab-case]",
-  "description": "[Feature description from PRD title/intro]",
+  "branchName": "[kebab-case-from-project]",
+  "description": "[One-line feature description from PRD title/intro]",
   "userStories": [
     {
       "id": "US-001",
@@ -42,47 +52,43 @@ Take a PRD (markdown file or text) and convert it to `prd.json` in your ralph di
 }
 ```
 
-The `dependencies` field is **optional**. Omit it or leave it as `[]` when the story has no dependencies. When a story depends on previous stories, list their IDs:
-
-```json
-"dependencies": ["US-001", "US-002"]
-```
-
-Use this to communicate execution order intent — Ralph runs stories sequentially by priority, but `dependencies` makes the dependency graph explicit so humans reviewing the plan can spot ordering issues.
-```
+The `dependencies` field is optional. Use it to communicate execution order intent — marmite runs stories sequentially by priority, but `dependencies` makes the dependency graph explicit so humans reviewing the plan can spot ordering issues. Dependencies must point at stories with **lower priority numbers** (the validator enforces this).
 
 ---
 
 ## Story Size: Optimize for Total Iterations
 
-**Each Ralph iteration is expensive.** Too many small stories = too many iterations. Too few large stories = context overflow and broken code. The goal is a balanced list of **medium-complexity stories**.
+**Each marmite iteration is expensive.** Too many small stories = too many iterations. Too few large stories = context overflow and broken code. The goal is a balanced list of medium-complexity stories.
 
-### The calibration target
+### Calibration target
 
 Aim for stories that a skilled developer could implement in **2–4 hours**. Each story should represent a coherent slice of work — not a single line change, and not an entire subsystem.
 
-### Right-sized stories (group related work):
+### Right-sized (group related work)
+
 - Schema migration + server actions that use it (backend slice)
 - A full UI section: component + data fetching + error state
 - A complete CRUD flow for a small entity
 - A feature toggle + the UI that respects it
 - A set of closely related filter/sort options on a list
 
-### Too small (merge these):
+### Too small (merge these)
+
 - "Add a database column" alone — combine with the server action that uses it
 - "Display X badge" alone — combine with the toggle that changes it
 - "Add dropdown" alone — combine with the filter logic it triggers
 
-### Too big (split these):
+### Too big (split these)
+
 - "Build the entire dashboard" — split by major panel or data domain
 - "Add authentication" — split into: schema + middleware, login/register UI, session/redirect logic
 - "Refactor the API" — split by resource or concern, not endpoint-by-endpoint
 
 ### Rule of thumb
 
-If the story touches **more than two distinct layers** (e.g., DB + backend + two separate UI pages), split it. If it touches **less than one coherent feature** (single column, single button), merge it with its natural neighbour.
+If the story touches **more than two distinct layers** (e.g. DB + backend + two separate UI pages), split it. If it touches **less than one coherent feature** (single column, single button), merge it with its natural neighbour.
 
-**Target list length:** For a medium PRD, aim for **5–12 stories total**. Fewer than 5 usually means stories are too big; more than 15 usually means over-splitting.
+**Target list length:** for a medium PRD, aim for **5–12 stories total**. Fewer than 5 usually means stories are too big; more than 15 usually means over-splitting.
 
 ---
 
@@ -90,36 +96,39 @@ If the story touches **more than two distinct layers** (e.g., DB + backend + two
 
 Stories execute in priority order. Earlier stories must not depend on later ones.
 
-**Correct order:**
+**Correct:**
 1. Schema/database changes (migrations)
 2. Server actions / backend logic
 3. UI components that use the backend
 4. Dashboard/summary views that aggregate data
 
-**Wrong order:**
-1. UI component (depends on schema that does not exist yet)
+**Wrong:**
+1. UI component (depends on schema that doesn't exist yet)
 2. Schema change
 
 ---
 
 ## Acceptance Criteria: Must Be Verifiable
 
-Each criterion must be something Ralph can CHECK, not something vague.
+Each criterion must be something a verifier can CHECK, not something vague.
 
-### Good criteria (verifiable):
+### Good (verifiable)
+
 - "Add `status` column to tasks table with default 'pending'"
 - "Filter dropdown has options: All, Active, Completed"
 - "Clicking delete shows confirmation dialog"
 - "Typecheck passes"
 - "Tests pass"
 
-### Bad criteria (vague):
+### Bad (vague)
+
 - "Works correctly"
 - "User can do X easily"
 - "Good UX"
 - "Handles edge cases"
 
-### Always include as final criterion:
+### Always include as final criterion
+
 ```
 "Typecheck passes"
 ```
@@ -129,27 +138,27 @@ For stories with testable logic, also include:
 "Tests pass"
 ```
 
-### For stories that change UI, also include:
+For UI stories, also include:
 ```
 "Verify in browser using dev-browser skill"
 ```
 
-Frontend stories are NOT complete until visually verified. Ralph will use the dev-browser skill to navigate to the page, interact with the UI, and confirm changes work.
+Frontend stories are NOT complete until visually verified.
 
 ---
 
 ## Conversion Rules
 
-1. **Each user story becomes one JSON entry**
-2. **IDs**: Sequential (US-001, US-002, etc.)
-3. **Priority**: Based on dependency order, then document order
-4. **All stories**: `passes: false` and empty `notes`
-5. **branchName**: Derive from the project name as kebab-case (e.g., `"TodoApp"` → `"todo-app"`, `"My App"` → `"my-app"`)
-6. **Always add**: "Typecheck passes" to every story's acceptance criteria
+1. **Each user story becomes one JSON entry.**
+2. **IDs**: sequential `US-001`, `US-002`, … (the validator enforces the `US-###` format).
+3. **Priority**: based on dependency order, then document order.
+4. **All stories**: `passes: false`, `notes: ""`. The validator rejects stories with `passes: true` in a freshly-generated PRD.
+5. **branchName**: derive from the project name as kebab-case (`"TodoApp"` → `"todo-app"`, `"My App"` → `"my-app"`).
+6. **Always add** "Typecheck passes" to every story's acceptance criteria.
 
 ---
 
-## Splitting and Grouping PRDs
+## Splitting and Grouping
 
 Group logically related work into medium-complexity stories. Neither atomize everything nor lump everything together.
 
@@ -170,7 +179,7 @@ Group logically related work into medium-complexity stories. Neither atomize eve
 3. US-003: Mark-as-read + unread count badge (interaction + state)
 4. US-004: Notification preferences page (settings UI + persistence)
 
-Four iterations instead of six, each story is a complete vertical slice.
+Four iterations instead of six, each story a complete vertical slice.
 
 ---
 
@@ -193,8 +202,8 @@ Add ability to mark tasks with different statuses.
 ```json
 {
   "project": "TaskApp",
-  "branchName": "ralph/task-status",
-  "description": "Task Status Feature - Track task progress with status indicators",
+  "branchName": "task-status",
+  "description": "Track task progress with status indicators on the task list.",
   "userStories": [
     {
       "id": "US-001",
@@ -246,36 +255,22 @@ Add ability to mark tasks with different statuses.
 }
 ```
 
-Note: the original 4 stories are now 3 by merging badge display and status toggle (both touch the same task row component).
+The original 4 requirements collapsed into 3 stories by merging badge display and status toggle (both touch the same task row component).
 
 ---
 
-## Archiving Previous Runs
+## Pre-write checklist
 
-**Before writing a new prd.json, check if there is an existing one from a different feature:**
+Before calling `Write` on `$MARMITE_PRD_OUTPUT`, verify:
 
-1. Read the current `prd.json` if it exists
-2. Check if `project` differs from the new feature's project name
-3. If different AND `progress.txt` has content beyond the header:
-   - Create archive folder: `archive/YYYY-MM-DD-feature-name/`
-   - Copy current `prd.json` and `progress.txt` to archive
-   - Reset `progress.txt` with fresh header
+- [ ] Story count balanced: **5–12 stories** for a medium PRD.
+- [ ] Each story groups logically related work (not a single micro-change, not a whole subsystem).
+- [ ] Stories ordered by dependency (schema → backend → UI).
+- [ ] IDs match `US-###`, sequential, no duplicates.
+- [ ] Every story has `passes: false`, `notes: ""`, `dependencies: []` (or non-empty array of valid prior IDs).
+- [ ] `dependencies` only reference IDs with strictly lower `priority`.
+- [ ] Every story has "Typecheck passes" as a criterion.
+- [ ] UI stories have "Verify in browser using dev-browser skill" as a criterion.
+- [ ] Acceptance criteria are verifiable (not vague).
 
-**The ralph.sh script handles this automatically** when you run it, but if you are manually updating prd.json between runs, archive first.
-
----
-
-## Checklist Before Saving
-
-Before writing prd.json, verify:
-
-- [ ] **Previous run archived** (if prd.json exists with different project name, archive it first)
-- [ ] Story count is balanced: **5–12 stories** for a medium PRD (fewer = too big, more = over-split)
-- [ ] Each story groups logically related work (not a single micro-change, not a whole subsystem)
-- [ ] Stories are ordered by dependency (schema to backend to UI)
-- [ ] Every story has a `dependencies` field (empty array `[]` if none)
-- [ ] `dependencies` only reference stories with lower priority numbers (no forward references)
-- [ ] Every story has "Typecheck passes" as criterion
-- [ ] UI stories have "Verify in browser using dev-browser skill" as criterion
-- [ ] Acceptance criteria are verifiable (not vague)
-- [ ] No story depends on a later story
+After writing, **always** run `bun run $MARMITE_VALIDATE_PRD $MARMITE_PRD_OUTPUT` and fix any errors before declaring done.

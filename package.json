@@ -11,10 +11,8 @@
   },
   "files": [
     "index.ts",
-    "src/cli",
-    "src/core",
-    "src/prompts",
-    ".claude/skills"
+    "src",
+    "templates"
   ],
   "engines": {
     "bun": ">=1.0.0"

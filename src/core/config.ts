@@ -47,7 +47,6 @@ export const MarmiteConfigSchema = z.object({
     })
     .optional(),
   maxIterations: z.number().int().positive().optional(),
-  resume: z.boolean().optional(),
 });
 export type MarmiteConfig = z.infer<typeof MarmiteConfigSchema>;
 

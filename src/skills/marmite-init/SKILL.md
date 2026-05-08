@@ -1,14 +1,16 @@
 ---
 name: marmite-init
-description: "Set up marmite in a project by interviewing the user. Detects greenfield vs brownfield, asks the right questions, and writes marmite.json + prd.json + .gitignore entries non-destructively."
+description: "Set up marmite in a project by interviewing the user. Detects greenfield vs brownfield, asks the right questions, and writes marmite.json + installs templates non-destructively. PRD generation is a separate step (`marmite to-prd`)."
 user-invocable: true
 ---
 
 # Marmite Setup Wizard
 
-You are guiding a user through setting up [marmite](https://github.com/) in their project. Marmite is a harness that drives three Claude agents in a loop (orchestrator → builder → verifier) to implement features described in a `prd.json`. Your job is to interview the user and produce the configuration files marmite needs to run.
+You are guiding a user through setting up [marmite](https://github.com/) in their project. Marmite is a harness that drives three Claude agents in a loop (orchestrator → builder → verifier) to implement features described in a `.marmite/prd.json`. Your job is to interview the user and produce the configuration files marmite needs to run.
 
 The user just ran `marmite init` (or `bunx marmite init`). They are sitting in their project's working directory. Take it from here.
+
+**Scope.** Init only sets up the harness — `marmite.json`, agent prompts, helper skills. Generating `.marmite/prd.json` is a separate command (`marmite to-prd <PRD.md>`); do not produce a PRD here. Mention it in the next-steps block at the end.
 
 ---
 
@@ -38,20 +40,8 @@ Ask **one question at a time**. Adapt based on previous answers. Always offer se
 
 - **Always number multi-choice options** as `1.`, `2.`, `3.` so the user can answer with a single digit. Mark the default with `(default)`.
 - **For free-text answers** (paths, names), state the default inline like `default: ./src` and tell the user they can press Enter to accept.
-- **Keep options short** — one line each, no tables. The user prompt that follows is `▶ your answer:` so the question must end cleanly without its own `>` prompt or `Default: …` line (the harness handles that).
+- **Keep options short** — one line each, no tables. The harness draws a divider line and a `▶` prompt on its own line after your message, so end the question cleanly without your own `>` prompt or `Default: …` line.
 - **Accept loose answers** — if the user types `1` or `src` or just hits Enter, interpret reasonably. Don't force exact strings.
-
-Example:
-
-```
-**Question 1 of 5 — App location**
-
-Where does your application code live?
-
-  1. ./src                  (default — detected)
-  2. ./ (project root)
-  3. somewhere else — type the path
-```
 
 ### Required answers
 
@@ -59,24 +49,20 @@ Where does your application code live?
    - Greenfield: default `./app`, but offer "the project root" as an option.
    - Brownfield: derive from detected workspaces. If it's a monorepo, ask which workspace marmite should target.
 
-2. **PRD source** — how should `prd.json` be seeded?
-   - **Import from markdown**: ask for a path; invoke the `to-prd` skill on it.
-   - **Interactive**: ask 3–6 questions about what they want to build next and produce a starter prd.json with 3–5 stories.
-   - **Skip**: write a placeholder `prd.json` with one example story and a comment explaining the schema.
-
-3. **Sensors** — which deterministic checks should marmite run between stories?
+2. **Sensors** — which deterministic checks should marmite run between stories?
    - For brownfield, propose entries that **point at the user's existing configs** (`./.eslintrc.json`, `./tsconfig.json`, etc.). Detect what's there; don't ask the user to type paths.
    - For greenfield, offer a small default set keyed off the chosen stack (eslint + tsc for TS projects, ruff + pytest for Python, etc.). Each entry must have `name`, `type` (`drift|debt|pulse|safe`), and a `configPath` if a config is expected. Add a `guidance` field with the run command and any tool-specific notes.
    - Always allow "skip" — sensors are optional.
 
-4. **Models** — which Claude models for each role?
+3. **Models** — which Claude models for each role?
    - Default to `{ default: claude-sonnet-4-6, builder: claude-sonnet-4-6, verifier: claude-haiku-4-5, orchestrator: claude-sonnet-4-6 }` and just confirm.
    - Offer a "thorough" preset (Opus for builder) and a "fast" preset (Haiku everywhere) for users who want them.
 
-5. **Budgets** — per-story USD cap and total run cap. Default `{ perStory: 15, total: 100 }`. One question, two numbers; users almost always accept defaults.
+4. **Budgets** — per-story USD cap and total run cap. Default `{ perStory: 15, total: 100 }`. One question, two numbers; users almost always accept defaults.
 
 ### Don't ask about
 
+- The PRD — that's `marmite to-prd`'s job. Mention it in the next-steps block.
 - Timeouts, retries, max iterations, resume — keep marmite's defaults.
 - API key — that's an env var (`ANTHROPIC_API_KEY`), not config.
 
@@ -88,10 +74,9 @@ Before writing anything, summarize what you're about to do:
 
 ```
 I'll write:
-  marmite.json    (app=./apps/web, sensors=eslint+tsc, balanced models)
-  prd.json        (5 stories seeded from your PRD.md)
-  .gitignore      (append .marmite/state.json, .marmite/events.jsonl, …)
-  .claude/skills/ (install helper skills: architect, design-qa-checker, to-prd, prd-generator)
+  marmite.json         (app=./apps/web, sensors=eslint+tsc, balanced models)
+  .marmite/prompts/    (install agent prompts: builder, verifier, orchestrator)
+  .claude/skills/      (install helper skills: architect, design-qa-checker, prd-generator, …)
 ```
 
 Ask the user to confirm. If they say no, loop back to whichever step they want to change.
@@ -104,7 +89,7 @@ Ask the user to confirm. If they say no, loop back to whichever step they want t
 
 - For each file you'd write, check if it already exists. If yes, **show the diff** and ask before overwriting.
 - Never `rm` a user file.
-- `.gitignore` edits are idempotent: read it, append only the entries that aren't already present.
+- Do **not** modify `.gitignore`. The user manages their own ignore rules.
 
 ### `marmite.json` shape
 
@@ -113,7 +98,7 @@ JSONC (comments allowed). Inline structure:
 ```jsonc
 {
   "app": "./apps/web",
-  "prd": "./prd.json",
+  "prd": "./.marmite/prd.json",
   "sensors": [
     {
       "name": "eslint",
@@ -132,69 +117,43 @@ JSONC (comments allowed). Inline structure:
   "timeouts": { "build": "20m", "verify": "10m", "fix": "15m", "orchestrate": "10m" },
   "budget": { "perStory": 15, "total": 100 },
   "retries": { "fix": 3, "transient": 2 },
-  "maxIterations": 1000,
-  "resume": true
+  "maxIterations": 1000
 }
 ```
 
 Only emit keys the user explicitly chose; let marmite's defaults handle the rest. A minimal config is fine.
 
-### `prd.json` shape
+### Install templates from `$MARMITE_TEMPLATES`
 
-Use the `to-prd` skill if importing from markdown. Otherwise produce:
+The marmite package's templates tree was given to you in the preamble as `MARMITE_TEMPLATES=<absolute path>`. The tree mirrors what gets installed:
 
-```json
-{
-  "project": "<project name>",
-  "branchName": "<kebab-case>",
-  "description": "<one-line>",
-  "userStories": [
-    {
-      "id": "US-001",
-      "title": "...",
-      "description": "As a ..., I want ..., so that ...",
-      "acceptanceCriteria": ["...", "..."],
-      "priority": 1,
-      "passes": false
-    }
-  ]
-}
 ```
-
-Stories should be 2–4 hours of work each. 3–5 stories is a healthy starter set; users can edit later.
-
-### `.gitignore` entries
-
-Append only if missing:
+$MARMITE_TEMPLATES/
+├── prompts/                 → ./.marmite/prompts/
+│   ├── builder-prompt.md
+│   ├── verifier-prompt.md
+│   └── orchestrator-prompt.md
+└── skills/                  → ./.claude/skills/
+    ├── architect/
+    ├── design-qa-checker/
+    └── prd-generator/
+    (… any other skill folders present)
 ```
-.marmite/state.json
-.marmite/events.jsonl
-.marmite/feedback.md
-.marmite/feedback-archive/
-progress.txt
-current-task.json
-archive/
-.last-branch
-```
-
-Optional prompt overrides at `.marmite/prompts/*.md` are **not** gitignored — they're user-authored customizations and should be checked in.
-
-### Install helper skills into the host project
-
-The orchestrator and builder prompts reference helper skills (`architect`, `design-qa-checker`, `to-prd`, `prd-generator`). When `marmite cook` runs, the agents use the user's project as `cwd` and only discover skills under `./.claude/skills/` — they cannot see skills inside the marmite package. Copy them in.
-
-The marmite package's skills source path was given to you in the preamble as `MARMITE_SKILLS_SRC=<absolute path>`. Use that path as the source. If for some reason it is missing, derive it: `node -p "require('path').dirname(require.resolve('marmite/package.json'))"` then append `/.claude/skills`.
 
 Procedure:
 
-1. `mkdir -p ./.claude/skills`
-2. For each sub-directory in `$MARMITE_SKILLS_SRC` **except `marmite-init`** (that one stays in the package — it's only used by `marmite init` itself):
+1. `mkdir -p ./.marmite/prompts ./.claude/skills`
+2. For each file under `$MARMITE_TEMPLATES/prompts/`:
+   - target = `./.marmite/prompts/<filename>`
+   - if target does not exist: `cp "$MARMITE_TEMPLATES/prompts/<filename>" "$target"`
+   - if target exists: leave it alone (user has customized it). Note "skipped (already present)" in the summary.
+3. For each sub-directory under `$MARMITE_TEMPLATES/skills/`:
    - target = `./.claude/skills/<skill-name>`
-   - if target does not exist: `cp -R "$MARMITE_SKILLS_SRC/<skill-name>" ./.claude/skills/<skill-name>`
-   - if target exists: leave it alone (assume the user has customized it). Note it as "skipped (already present)" in the summary.
-3. List what you copied vs. skipped in your final summary.
+   - if target does not exist: `cp -R "$MARMITE_TEMPLATES/skills/<skill-name>" "$target"`
+   - if target exists: leave it alone. Note "skipped (already present)" in the summary.
+4. List what you copied vs. skipped in your final summary.
 
-These skills are user-authored content once installed — do **not** add them to `.gitignore`. They should be checked in so the team shares the same helpers.
+Both prompts and helper skills are user-authored content once installed — they should be checked in so the team shares the same agent behavior.
 
 ---
 
@@ -208,8 +167,8 @@ Done. Next steps:
   1. Set your API key:
        export ANTHROPIC_API_KEY=sk-ant-...
 
-  2. Verify (optional but recommended):
-       marmite cook --dry-run     # not yet implemented; skip if it errors
+  2. Generate your PRD:
+       marmite to-prd ./PRD.md    # converts a markdown PRD into .marmite/prd.json
 
   3. Run marmite:
        marmite cook -n 1          # one iteration first
@@ -217,16 +176,18 @@ Done. Next steps:
 
 Customizing:
   - Edit marmite.json to tune models, sensors, budgets.
-  - Place .marmite/prompts/builder-prompt.md to override the default builder prompt
-    (same for verifier-prompt.md, orchestrator-prompt.md).
+  - Edit .marmite/prompts/{builder,verifier,orchestrator}-prompt.md to
+    customize agent behavior.
 
 Steering a long run:
   - Drop free-form notes into .marmite/feedback.md at any time. The orchestrator
     picks them up at the start of the next iteration, applies them to story
-    selection / guidance, then archives the file under .marmite/feedback-archive/.
+    selection / guidance, then deletes the file.
+
+Happy building! You can now quit the wizard.
 ```
 
-Then stop. Don't run `marmite cook` for them; let them drive.
+Then stop. Don't run `marmite to-prd` or `marmite cook` for them; let them drive.
 
 ---
 
@@ -235,6 +196,7 @@ Then stop. Don't run `marmite cook` for them; let them drive.
 - **One question at a time.** Don't dump a wall of multi-part questions.
 - **Detect first, ask second.** Reading `package.json` and showing a one-line summary beats asking the user to type their stack.
 - **Never overwrite without showing a diff and getting confirmation.**
-- **Schema-validate before writing.** marmite validates `marmite.json` and `prd.json` on `cook` startup; if you produce invalid JSON the user sees an error on the very first run. Double-check your output before writing.
+- **Schema-validate before writing.** marmite validates `marmite.json` on `cook` startup; if you produce invalid JSON the user sees an error on the very first run. Double-check your output before writing.
+- **Don't generate `.marmite/prd.json` here.** That's `marmite to-prd`'s job — keep init focused on harness setup.
 - **Don't install dependencies during init.** Adding sensor packages (`bun add -d eslint`) is the user's call after init; mention it as a follow-up if they don't already have the tools installed.
-- **Don't run `marmite cook` yourself.** End the session after writing files and printing next steps.
+- **Don't run `marmite cook` or `marmite to-prd` yourself.** End the session after writing files and printing next steps.

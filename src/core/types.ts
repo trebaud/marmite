@@ -27,8 +27,6 @@ export interface HarnessConfig {
   costBudgetUsdTotal: number;
   // Fix loop retry cap
   maxFixAttempts: number;
-  // Resume from .marmite/state.json if it matches current PRD/branch
-  resumeIfAvailable: boolean;
 }
 
 export type SessionPhase = "orchestrate" | "build" | "verify" | "fix";
@@ -75,13 +73,3 @@ export interface RunStats {
   storiesFailed: number;
 }
 
-export interface HarnessState {
-  version: string;
-  branchName: string;
-  iteration: number;
-  storyId: string;
-  buildSessionId: string;
-  fixAttempts: number;
-  lastPhase: SessionPhase | "idle";
-  updatedAt: string;
-}

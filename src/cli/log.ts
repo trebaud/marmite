@@ -1,6 +1,6 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { RunStats, SessionStats } from "../core/types.ts";
-import type { BranchAction, Reporter, ResumeInfo } from "../core/reporter.ts";
+import type { BranchAction, Reporter } from "../core/reporter.ts";
 
 const c = {
   reset: "\x1b[0m",
@@ -78,12 +78,7 @@ function logComplete(iteration: number, max: number): void {
 function logMaxReached(max: number): void {
   console.log("");
   console.log(`Harness reached max iterations (${max}) without completing all tasks.`);
-  console.log("Check progress.txt for status.");
-}
-
-function logArchive(branch: string, folder: string): void {
-  console.log(`Archiving previous run: ${branch}`);
-  console.log(`   Archived to: ${folder}`);
+  console.log("Check .marmite/progress.txt for status.");
 }
 
 function logBranchSetup(branchName: string, action: BranchAction): void {
@@ -105,16 +100,11 @@ function logFeedbackDetected(bytes: number, preview: string): void {
   const ellipsis = preview.length > 120 ? "…" : "";
   console.log("");
   console.log(`${c.bgCyan}${c.bold} 📝 ASYNC FEEDBACK ${c.reset} ${bytes}B — ${c.white}"${trimmed}${ellipsis}"${c.reset}`);
-  console.log(`${c.dim}  Will be applied this iteration; orchestrator archives after consumption.${c.reset}`);
+  console.log(`${c.dim}  Will be applied this iteration; orchestrator deletes after consumption.${c.reset}`);
 }
 
-function logFeedbackForceArchived(target: string): void {
-  console.log(`  ${c.yellow}[feedback]${c.reset} orchestrator did not archive .marmite/feedback.md — force-archived to ${c.cyan}${target}${c.reset}`);
-}
-
-function logResume(state: ResumeInfo): void {
-  console.log("");
-  console.log(`Resuming run from .marmite/state.json: iteration=${state.iteration} story=${state.storyId} lastPhase=${state.lastPhase}`);
+function logFeedbackForceCleared(): void {
+  console.log(`  ${c.yellow}[feedback]${c.reset} orchestrator did not delete .marmite/feedback.md — force-cleared`);
 }
 
 function logBudgetExceeded(storyId: string, spent: number, budget: number): void {
@@ -328,11 +318,9 @@ export const consoleReporter: Reporter = {
   iterationStart: logIterationStart,
   complete: logComplete,
   maxReached: logMaxReached,
-  archive: logArchive,
   branchSetup: logBranchSetup,
   feedbackDetected: logFeedbackDetected,
-  feedbackForceArchived: logFeedbackForceArchived,
-  resume: logResume,
+  feedbackForceCleared: logFeedbackForceCleared,
   budgetExceeded: logBudgetExceeded,
   error: logError,
   message: logMessage,

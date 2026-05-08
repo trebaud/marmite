@@ -141,13 +141,9 @@ vite.config.ts.timestamp-*
 .playwright-mcp/
 
 # Marmite runtime state — these are produced when running marmite, not source.
-# In this repo we also gitignore marmite.json and prd.json, since they belong
-# in a user project, not in the package itself.
+# In this repo we also gitignore marmite.json (it belongs in a user project,
+# not in the package itself). Everything else lives under .marmite/.
 .marmite/
-.last-branch
-current-task.json
-progress.txt
-archive/
 marmite.json
-prd.json
 
+.claude/

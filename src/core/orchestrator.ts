@@ -3,15 +3,8 @@ import type { Reporter } from "./reporter.ts";
 import { silentReporter } from "./reporter.ts";
 import { PATHS, resolvePrompt } from "./paths.ts";
 import { emitEvent, initEventLog } from "./events.ts";
-import { fileExists, gitCommit, gitEnsureBranch, readJsonField, sleep } from "./utils.ts";
-import { archivePreviousRun, initProgress, trackBranch } from "./archive.ts";
-import { detectAndAnnounceFeedback, forceArchiveFeedbackIfPresent } from "./feedback.ts";
-import {
-  STATE_VERSION,
-  clearStateIfBranchChanged,
-  loadState,
-  persistState,
-} from "./state.ts";
+import { fileExists, gitCommit, gitEnsureBranch, readJsonField, sleep, writeAtomic } from "./utils.ts";
+import { detectAndAnnounceFeedback, forceClearFeedbackIfPresent } from "./feedback.ts";
 import {
   allStoriesPassingOrError,
   markStoryPassing,
@@ -44,17 +37,21 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     verifyTimeoutMs: config.verifyTimeoutMs,
   });
 
-  await archivePreviousRun(config, reporter);
-  await trackBranch(config);
   const branchName = await readJsonField(config.prdPath, "branchName");
   if (branchName) gitEnsureBranch(PATHS.projectRoot, branchName, reporter);
-  await initProgress(config);
-  await clearStateIfBranchChanged(config);
+  if (!(await fileExists(PATHS.progress))) {
+    await writeAtomic(
+      PATHS.progress,
+      `# Harness Progress Log\nStarted: ${new Date().toString()}\n---\n`,
+    );
+  }
 
-  // Validate prompt + PRD files up front.
+  // Validate prompt + PRD files up front. Prompts are installed by `marmite init`
+  // into `.marmite/prompts/`; if any are missing the user likely skipped init or
+  // deleted them — fail fast with a hint.
   for (const p of [resolvePrompt("orchestrator"), resolvePrompt("builder"), resolvePrompt("verifier")]) {
     if (!(await fileExists(p))) {
-      reporter.error(`prompt file missing`, p, "fatal");
+      reporter.error(`prompt file missing — run \`marmite init\` to install agent prompts`, p, "fatal");
       process.exit(2);
     }
   }
@@ -91,21 +88,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
   reporter.start(config.maxIterations);
 
-  // ── Resume support ──
-  let startIteration = 1;
-  if (config.resumeIfAvailable) {
-    const state = await loadState(config);
-    if (state) {
-      const currentBranch = await readJsonField(config.prdPath, "branchName");
-      if (state.branchName === currentBranch) {
-        reporter.resume(state);
-        startIteration = state.iteration + 1;
-        await emitEvent("run_resume", { iteration: state.iteration, storyId: state.storyId });
-      }
-    }
-  }
-
-  for (let i = startIteration; i <= config.maxIterations; i++) {
+  for (let i = 1; i <= config.maxIterations; i++) {
     if (runAbort.signal.aborted) break;
 
     // Total cost gate
@@ -150,7 +133,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     recordSession(runStats, orchestrate, "orchestrate", i, nextStory.id, reporter);
     await emitEvent("phase_end", { phase: "orchestrate", iteration: i, outcome: orchestrate.outcome });
 
-    await forceArchiveFeedbackIfPresent(i, reporter);
+    await forceClearFeedbackIfPresent(i, reporter);
 
     if (runAbort.signal.aborted) break;
 
@@ -183,17 +166,6 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     await emitEvent("iteration_start", { iteration: i, storyId: currentStory.id, title: currentStory.title });
 
     // ── Phase 1: Build ──
-    await persistState(config, {
-      version: STATE_VERSION,
-      branchName: (await readJsonField(config.prdPath, "branchName")) || "",
-      iteration: i,
-      storyId: currentStory.id,
-      buildSessionId: "",
-      fixAttempts: 0,
-      lastPhase: "build",
-      updatedAt: new Date().toISOString(),
-    });
-
     reporter.info("  Phase: BUILD");
     reporter.info("===============================================================");
     await emitEvent("phase_start", { phase: "build", iteration: i, storyId: currentStory.id });
@@ -322,17 +294,6 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       reporter.info("---------------------------------------------------------------");
       await emitEvent("phase_start", { phase: "fix", iteration: i, attempt: fixAttempts });
 
-      await persistState(config, {
-        version: STATE_VERSION,
-        branchName: (await readJsonField(config.prdPath, "branchName")) || "",
-        iteration: i,
-        storyId: currentStory.id,
-        buildSessionId: lastBuildSessionId,
-        fixAttempts,
-        lastPhase: "fix",
-        updatedAt: new Date().toISOString(),
-      });
-
       const fixPrompt = buildFixPrompt(v.summary);
       const fixResult = await runQueryWithRetry(
         config,
@@ -368,17 +329,6 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       finalizeStoryOutcome(runStats, currentStory.id, i, false, failReason);
       reporter.info(`Story ${currentStory.id} did NOT pass (${failReason ?? "unknown"}) after ${fixAttempts} fix attempt(s). Moving on.`);
     }
-
-    await persistState(config, {
-      version: STATE_VERSION,
-      branchName: (await readJsonField(config.prdPath, "branchName")) || "",
-      iteration: i,
-      storyId: currentStory.id,
-      buildSessionId: lastBuildSessionId,
-      fixAttempts,
-      lastPhase: "idle",
-      updatedAt: new Date().toISOString(),
-    });
 
     // Exit early if PRD is now complete.
     const done = await allStoriesPassingOrError(config.prdPath);

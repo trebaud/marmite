@@ -10,9 +10,8 @@ export const DEFAULTS = {
   timeouts: { build: "20m", verify: "10m", fix: "15m", orchestrate: "10m" },
   budget: { perStory: 15, total: 0 },
   retries: { fix: 3, transient: 2 },
-  resume: true,
   app: "./app",
-  prd: "./prd.json",
+  prd: "./.marmite/prd.json",
 };
 
 export const PRICING: Record<string, ModelPricing> = {
@@ -54,6 +53,5 @@ export function composeConfig(
     costBudgetUsdPerStory: cli.perStoryBudget ?? fromConfig(fileCfg.budget?.perStory, DEFAULTS.budget.perStory),
     costBudgetUsdTotal: cli.totalBudget ?? fromConfig(fileCfg.budget?.total, DEFAULTS.budget.total),
     maxFixAttempts: cli.maxFixAttempts ?? fromConfig(fileCfg.retries?.fix, DEFAULTS.retries.fix),
-    resumeIfAvailable: cli.resume ?? fromConfig(fileCfg.resume, DEFAULTS.resume),
   };
 }

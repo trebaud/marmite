@@ -7,22 +7,14 @@ import type { RunStats, SessionStats } from "./types.ts";
 
 export type BranchAction = "created" | "switched" | "already_on";
 
-export interface ResumeInfo {
-  iteration: number;
-  storyId: string;
-  lastPhase: string;
-}
-
 export interface Reporter {
   start(maxIterations: number): void;
   iterationStart(iteration: number, max: number, storyId?: string): void;
   complete(iteration: number, max: number): void;
   maxReached(max: number): void;
-  archive(branch: string, folder: string): void;
   branchSetup(branch: string, action: BranchAction): void;
   feedbackDetected(bytes: number, preview: string): void;
-  feedbackForceArchived(target: string): void;
-  resume(state: ResumeInfo): void;
+  feedbackForceCleared(): void;
   budgetExceeded(storyId: string, spent: number, budget: number): void;
   error(context: string, err: unknown, category: string): void;
   message(msg: SDKMessage, agentLabel: string): void;
@@ -39,11 +31,9 @@ export const silentReporter: Reporter = {
   iterationStart: () => {},
   complete: () => {},
   maxReached: () => {},
-  archive: () => {},
   branchSetup: () => {},
   feedbackDetected: () => {},
-  feedbackForceArchived: () => {},
-  resume: () => {},
+  feedbackForceCleared: () => {},
   budgetExceeded: () => {},
   error: () => {},
   message: () => {},

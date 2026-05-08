@@ -5,13 +5,18 @@ import { setUserRoot } from "../core/paths.ts";
 import { parseArgs, usage } from "./args.ts";
 import { loadConfigFile } from "./config-loader.ts";
 import { composeConfig } from "./build-config.ts";
-import { runInit } from "./init.ts";
+import { runInit } from "./commands/init.ts";
+import { runToPrd } from "./commands/to-prd.ts";
 import { consoleReporter } from "./log.ts";
 
 // ── Subcommand dispatch ──
 const subcommand = process.argv[2];
 if (subcommand === "init") {
   await runInit();
+  process.exit(0);
+}
+if (subcommand === "to-prd") {
+  await runToPrd(process.argv);
   process.exit(0);
 }
 if (subcommand === "-h" || subcommand === "--help") usage();

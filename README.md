@@ -42,7 +42,6 @@ my-project/
 ├── prd.json              # the PRD that drives the loop
 ├── .marmite/
 │   ├── prompts/          # optional prompt overrides (checked in)
-│   ├── state.json        # gitignored — crash-recovery checkpoint
 │   ├── events.jsonl      # gitignored — per-session event log
 │   └── feedback.md       # gitignored — drop async notes here mid-run
 └── app/                  # your code (path is configurable)
@@ -58,7 +57,6 @@ marmite cook --model claude-opus-4-7
 marmite cook --cost-budget 10                         # per-story cap (USD)
 marmite cook --cost-budget-total 100                  # halts when total exceeded
 marmite cook --builder-model claude-opus-4-7 --verifier-model claude-sonnet-4-6
-marmite cook --no-resume                              # ignore existing checkpoint
 ```
 
 `marmite` and `marmite cook` are equivalent.
@@ -84,7 +82,7 @@ flowchart LR
 | VERIFY | Verifier | Approves or rejects |
 | FIX | Builder | Resumes session to address feedback |
 
-`current-task.json` is the single handoff between agents. After every phase the harness checkpoints to `.marmite/state.json`, so `--resume` (default) picks up where the last run stopped.
+`current-task.json` is the single handoff between agents. If a run is interrupted, restarting `marmite cook` resumes naturally — the orchestrator picks the next non-passing story from `prd.json`, and any in-progress story (no `verify:` commit yet) gets re-attempted.
 
 ## Async feedback
 
@@ -94,7 +92,7 @@ Steer a long run without stopping it: drop notes into `.marmite/feedback.md` at 
 echo "the login UI feels too cramped, add vertical spacing on the next pass" > .marmite/feedback.md
 ```
 
-At the start of the next iteration, the orchestrator reads the file, applies it to story selection and `guidance` in `current-task.json`, then archives it under `.marmite/feedback-archive/<date>-iter-<N>.md`. The PRD is left untouched — feedback influences the upcoming iteration only. If the orchestrator forgets to archive, the harness force-archives as a safety net.
+At the start of the next iteration, the orchestrator reads the file, applies it to story selection and `guidance` in `current-task.json`, then deletes it. The PRD is left untouched — feedback influences the upcoming iteration only. If the orchestrator forgets to delete, the harness force-clears as a safety net.
 
 ## Configuration
 
@@ -166,6 +164,13 @@ git clone <repo> && cd marmite
 bun install
 ```
 
-There is no `app/` in this repo; marmite is a harness, not an application. To test end-to-end, run `bunx --bun ./index.ts init` in a scratch directory (or `bun link`, then `marmite init`), then `marmite cook`.
+Marmite is a harness, not an application — there's no application code in this repo. To test end-to-end, run `bunx --bun ./index.ts init` in a scratch directory (or `bun link`, then `marmite init`), then `marmite cook`.
 
-Harness internals live in `src/core/`. Default prompts are in `src/prompts/`. The setup wizard skill is in `.claude/skills/marmite-init/`.
+Layout:
+
+- `src/core/` — harness engine (orchestrator, session, schemas).
+- `src/cli/` — CLI commands (`init`, `cook`, `to-prd`) and shared skill-runner.
+- `src/skills/` — internal skills used by the CLI (`marmite-init`, `to-prd`). Not copied to user projects.
+- `templates/` — assets installed into the user's project at `marmite init`:
+  - `templates/prompts/` → `<project>/.marmite/prompts/`
+  - `templates/skills/` → `<project>/.claude/skills/`
