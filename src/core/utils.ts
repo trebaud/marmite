@@ -119,24 +119,30 @@ export function gitEnsureBranch(cwd: string, branchName: string, reporter: Repor
   }
   const exists = spawnSync("git", ["show-ref", "--verify", `refs/heads/${branchName}`], { cwd });
   if (exists.status === 0) {
-    const r = spawnSync("git", ["checkout", branchName], { cwd, stdio: "inherit" });
-    if (r.status !== 0) { reporter.error(`git checkout ${branchName}`, `exit ${r.status ?? "?"}`, "git"); return; }
+    const r = spawnSync("git", ["checkout", branchName], { cwd, encoding: "utf8" });
+    if (r.status !== 0) { reporter.error(`git checkout ${branchName}`, (r.stderr ?? "").trim() || `exit ${r.status ?? "?"}`, "git"); return; }
     reporter.branchSetup(branchName, "switched");
   } else {
-    const r = spawnSync("git", ["checkout", "-b", branchName], { cwd, stdio: "inherit" });
-    if (r.status !== 0) { reporter.error(`git checkout -b ${branchName}`, `exit ${r.status ?? "?"}`, "git"); return; }
+    const r = spawnSync("git", ["checkout", "-b", branchName], { cwd, encoding: "utf8" });
+    if (r.status !== 0) { reporter.error(`git checkout -b ${branchName}`, (r.stderr ?? "").trim() || `exit ${r.status ?? "?"}`, "git"); return; }
     reporter.branchSetup(branchName, "created");
   }
 }
 
 export function gitCommit(cwd: string, path: string, message: string, reporter: Reporter): void {
-  const add = spawnSync("git", ["add", path], { cwd, stdio: "inherit" });
+  const add = spawnSync("git", ["add", path], { cwd, encoding: "utf8" });
   if (add.status !== 0) {
-    reporter.error(`git add ${path}`, `exit ${add.status}`, "git");
+    reporter.error(`git add ${path}`, (add.stderr ?? "").trim() || `exit ${add.status}`, "git");
     return;
   }
-  const commit = spawnSync("git", ["commit", "-m", message], { cwd, stdio: "inherit" });
+  const commit = spawnSync("git", ["commit", "-m", message], { cwd, encoding: "utf8" });
   if (commit.status !== 0) {
-    reporter.error(`git commit for ${path}`, `exit ${commit.status}`, "git");
+    reporter.error(`git commit for ${path}`, (commit.stderr ?? "").trim() || `exit ${commit.status}`, "git");
+    return;
   }
+  // First line of `git commit` output looks like `[branch sha] message`. Pull
+  // the short sha out so the reporter can render its own line; the rest of
+  // the subprocess output is suppressed (verbose mode can hook stderr).
+  const match = /\[\S+\s+([0-9a-f]+)\]/.exec((commit.stdout ?? "").split("\n")[0] ?? "");
+  reporter.gitCommit(match?.[1] ?? "", message);
 }

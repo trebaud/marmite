@@ -1,6 +1,12 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { RunStats, SessionStats } from "../core/types.ts";
-import type { BranchAction, Reporter } from "../core/reporter.ts";
+import type {
+  BranchAction,
+  IterationEndOpts,
+  Phase,
+  PhaseStartOpts,
+  Reporter,
+} from "../core/reporter.ts";
 
 const c = {
   reset: "\x1b[0m",
@@ -58,30 +64,79 @@ function outcomeBadge(outcome: string): string {
   }
 }
 
-function logStart(maxIterations: number): void {
+// ───────────────────────────── Verbose reporter ─────────────────────────────
+// Raw, timestamped firehose: every SDK message, every session stat. Useful for
+// debugging the harness itself.
+
+function vStart(maxIterations: number): void {
   console.log(`\nStarting Harness - Max iterations: ${maxIterations}`);
 }
 
-function logIterationStart(i: number, max: number, storyId?: string): void {
+function vIterationStart(i: number, max: number, storyId?: string, storyTitle?: string): void {
+  const titleSuffix = storyId ? ` — ${storyId}${storyTitle ? `: ${storyTitle}` : ""}` : "";
   console.log("");
   console.log("===============================================================");
-  console.log(`  Harness Iteration ${i} of ${max}${storyId ? ` — ${storyId}` : ""}`);
+  console.log(`  Harness Iteration ${i} of ${max}${titleSuffix}`);
   console.log("===============================================================");
 }
 
-function logComplete(iteration: number, max: number): void {
+function vIterationEnd(opts: IterationEndOpts): void {
+  if (opts.passed) {
+    console.log(`Story ${opts.storyId} passed verification at iteration ${opts.iteration} (${fmtDuration(opts.durationMs)}, ${fmtCost(opts.costUsd)}).`);
+  } else {
+    console.log(`Story ${opts.storyId} did NOT pass (${opts.reason ?? "unknown"}) after ${opts.fixAttempts} fix attempt(s) (${fmtDuration(opts.durationMs)}, ${fmtCost(opts.costUsd)}). Moving on.`);
+  }
+}
+
+function vAborted(): void {
+  console.log("");
+  console.log(`${c.bgRed}${c.bold} ABORTED ${c.reset} run interrupted by signal`);
+}
+
+function vGitCommit(sha: string, message: string): void {
+  const tag = sha ? `${c.gray}[${sha}]${c.reset} ` : "";
+  console.log(`  ${c.cyan}[git]${c.reset} ${tag}${message}`);
+}
+
+function vPhaseStart(phase: Phase, opts: PhaseStartOpts): void {
+  switch (phase) {
+    case "orchestrate":
+      console.log("");
+      console.log(`  Phase: ORCHESTRATE (iteration ${opts.iteration})`);
+      console.log("===============================================================");
+      return;
+    case "build":
+      console.log("  Phase: BUILD");
+      console.log("===============================================================");
+      return;
+    case "verify":
+      console.log("");
+      console.log("---------------------------------------------------------------");
+      console.log(`  Phase: VERIFY (iteration ${opts.iteration}, attempt ${opts.attempt})`);
+      console.log("---------------------------------------------------------------");
+      return;
+    case "fix":
+      console.log("");
+      console.log("---------------------------------------------------------------");
+      console.log(`  Phase: FIX (iteration ${opts.iteration}, fix ${opts.attempt} of ${opts.maxAttempts})`);
+      console.log("---------------------------------------------------------------");
+      return;
+  }
+}
+
+function vComplete(iteration: number, max: number): void {
   console.log("");
   console.log("Harness completed all tasks!");
   console.log(`Completed at iteration ${iteration} of ${max}`);
 }
 
-function logMaxReached(max: number): void {
+function vMaxReached(max: number): void {
   console.log("");
   console.log(`Harness reached max iterations (${max}) without completing all tasks.`);
   console.log("Check .marmite/progress.txt for status.");
 }
 
-function logBranchSetup(branchName: string, action: BranchAction): void {
+function vBranchSetup(branchName: string, action: BranchAction): void {
   switch (action) {
     case "created":
       console.log(`Branch ${c.green}created${c.reset}: ${c.cyan}${branchName}${c.reset}`);
@@ -95,7 +150,7 @@ function logBranchSetup(branchName: string, action: BranchAction): void {
   }
 }
 
-function logFeedbackDetected(bytes: number, preview: string): void {
+function vFeedbackDetected(bytes: number, preview: string): void {
   const trimmed = preview.replace(/\s+/g, " ").trim().slice(0, 120);
   const ellipsis = preview.length > 120 ? "…" : "";
   console.log("");
@@ -103,20 +158,20 @@ function logFeedbackDetected(bytes: number, preview: string): void {
   console.log(`${c.dim}  Will be applied this iteration; orchestrator deletes after consumption.${c.reset}`);
 }
 
-function logFeedbackForceCleared(): void {
+function vFeedbackForceCleared(): void {
   console.log(`  ${c.yellow}[feedback]${c.reset} orchestrator did not delete .marmite/feedback.md — force-cleared`);
 }
 
-function logBudgetExceeded(storyId: string, spent: number, budget: number): void {
+function vBudgetExceeded(storyId: string, spent: number, budget: number): void {
   console.log(`  ${c.bgRed}${c.bold} BUDGET ${c.reset} story=${storyId} spent=$${spent.toFixed(4)} budget=$${budget.toFixed(2)} — stopping fix loop`);
 }
 
-function logError(context: string, err: unknown, category: string): void {
+function vError(context: string, err: unknown, category: string): void {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`  ${c.red}[${category}]${c.reset} ${context}: ${msg}`);
 }
 
-function logMessage(message: SDKMessage, agentLabel: string = "harness"): void {
+function vMessage(message: SDKMessage, agentLabel: string = "harness"): void {
   const t = tag(agentLabel);
   const time = ts();
 
@@ -233,7 +288,7 @@ function logMessage(message: SDKMessage, agentLabel: string = "harness"): void {
   }
 }
 
-function logSessionReport(stats: SessionStats): void {
+function vSessionReport(stats: SessionStats): void {
   const label = stats.phase.toUpperCase() + (stats.attempt != null ? ` #${stats.attempt}` : "");
   const line = `${c.cyan}[report]${c.reset}`;
   const flagTxt = stats.anomalyFlags.length > 0
@@ -248,7 +303,7 @@ function logSessionReport(stats: SessionStats): void {
   console.log(`${line}   Tokens: in=${fmtTokens(stats.inputTokens)} out=${fmtTokens(stats.outputTokens)} cache_read=${fmtTokens(stats.cacheReadTokens)} cache_create=${fmtTokens(stats.cacheCreateTokens)}`);
 }
 
-function logFinalReport(runStats: RunStats): void {
+function vFinalReport(runStats: RunStats): void {
   const elapsed = Date.now() - runStats.startedAt.getTime();
   const totalCost = runStats.sessions.reduce((sum, s) => sum + s.costUsd, 0);
   const totalDuration = runStats.sessions.reduce((sum, s) => sum + s.durationMs, 0);
@@ -313,21 +368,248 @@ function logFinalReport(runStats: RunStats): void {
   console.log(`${line} ${c.bold}${sep}${c.reset}`);
 }
 
-export const consoleReporter: Reporter = {
-  start: logStart,
-  iterationStart: logIterationStart,
-  complete: logComplete,
-  maxReached: logMaxReached,
-  branchSetup: logBranchSetup,
-  feedbackDetected: logFeedbackDetected,
-  feedbackForceCleared: logFeedbackForceCleared,
-  budgetExceeded: logBudgetExceeded,
-  error: logError,
-  message: logMessage,
-  sessionReport: logSessionReport,
-  finalReport: logFinalReport,
+export const verboseReporter: Reporter = {
+  start: vStart,
+  iterationStart: vIterationStart,
+  iterationEnd: vIterationEnd,
+  phaseStart: vPhaseStart,
+  complete: vComplete,
+  maxReached: vMaxReached,
+  aborted: vAborted,
+  branchSetup: vBranchSetup,
+  gitCommit: vGitCommit,
+  feedbackDetected: vFeedbackDetected,
+  feedbackForceCleared: vFeedbackForceCleared,
+  budgetExceeded: vBudgetExceeded,
+  error: vError,
+  message: vMessage,
+  sessionReport: vSessionReport,
+  finalReport: vFinalReport,
   info: (msg) => console.log(msg),
   stderr: (line) => {
     if (line) console.error(`${c.gray}[stderr]${c.reset} ${line}`);
   },
 };
+
+// ───────────────────────────── Terse reporter ─────────────────────────────
+// Append-only progression of named steps. The active step animates a spinner
+// on the bottom line; completed steps stay in the scrollback as ✓/✗ entries.
+// Anything else from the SDK (raw messages, per-session stats) is hidden;
+// re-run with --verbose to surface it.
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+let spinnerTimer: ReturnType<typeof setInterval> | null = null;
+let spinnerFrame = 0;
+let spinnerLabel = "";
+let spinnerStartedAt = 0;
+// Cumulative cost across all completed sessions in this run; rendered next to
+// the active spinner so the user always sees how much the run has spent.
+let runCostUsd = 0;
+
+function drawSpinner(): void {
+  const elapsed = Date.now() - spinnerStartedAt;
+  const meta: string[] = [];
+  if (elapsed > 1500) meta.push(fmtDuration(elapsed));
+  if (runCostUsd > 0) meta.push(`$${runCostUsd.toFixed(2)}`);
+  const metaTxt = meta.length ? ` ${c.dim}${meta.join(" · ")}${c.reset}` : "";
+  process.stdout.write(`\r\x1b[K  ${c.cyan}${SPINNER_FRAMES[spinnerFrame]}${c.reset} ${spinnerLabel}${metaTxt}`);
+}
+
+function startSpinner(label: string): void {
+  spinnerLabel = label;
+  spinnerStartedAt = Date.now();
+  if (spinnerTimer) {
+    drawSpinner();
+    return;
+  }
+  spinnerFrame = 0;
+  drawSpinner();
+  spinnerTimer = setInterval(() => {
+    spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
+    drawSpinner();
+  }, 100);
+}
+
+function clearSpinner(): void {
+  if (spinnerTimer) {
+    clearInterval(spinnerTimer);
+    spinnerTimer = null;
+  }
+  process.stdout.write("\r\x1b[K");
+}
+
+// Append a permanent line to the transcript without losing the active spinner.
+function emitLine(line: string): void {
+  const wasActive = spinnerTimer != null;
+  const savedLabel = spinnerLabel;
+  clearSpinner();
+  process.stdout.write(line + "\n");
+  if (wasActive) startSpinner(savedLabel);
+}
+
+let terseMaxIterations = 0;
+
+function tStart(maxIterations: number): void {
+  terseMaxIterations = maxIterations;
+  runCostUsd = 0;
+  emitLine("");
+  emitLine(`${c.bold}marmite${c.reset} ${c.dim}cook${c.reset}  ${c.gray}max ${maxIterations} iterations · Ctrl+C to abort${c.reset}`);
+}
+
+function tIterationStart(_iteration: number, _max: number, storyId?: string, storyTitle?: string): void {
+  // Fires after orchestrate, before build. Surface the chosen story so the
+  // build/verify lines below have context.
+  if (!storyId) return;
+  const title = storyTitle ? `  ${c.dim}${storyTitle}${c.reset}` : "";
+  emitLine(`  ${c.cyan}▸${c.reset} ${c.bold}${storyId}${c.reset}${title}`);
+}
+
+function tIterationEnd(opts: IterationEndOpts): void {
+  clearSpinner();
+  const sym = opts.passed ? `${c.green}✓${c.reset}` : `${c.red}✗${c.reset}`;
+  const verb = opts.passed
+    ? `${c.green}passed${c.reset}`
+    : `${c.red}failed${c.reset}${opts.reason ? ` ${c.dim}(${opts.reason})${c.reset}` : ""}`;
+  const fixSuffix = !opts.passed && opts.fixAttempts > 0 ? ` ${c.dim}after ${opts.fixAttempts} fix${opts.fixAttempts === 1 ? "" : "es"}${c.reset}` : "";
+  emitLine(`  ${sym} Iteration ${opts.iteration} — ${c.bold}${opts.storyId}${c.reset} ${verb} ${c.dim}(${fmtDuration(opts.durationMs)}, ${fmtCost(opts.costUsd)})${c.reset}${fixSuffix}`);
+}
+
+function phaseLabel(phase: Phase, opts: PhaseStartOpts): string {
+  switch (phase) {
+    case "orchestrate":
+      return `orchestrating ${c.dim}(picking next story)${c.reset}`;
+    case "build":
+      return `building ${c.bold}${opts.storyId ?? ""}${c.reset}`;
+    case "verify":
+      return `verifying ${c.bold}${opts.storyId ?? ""}${c.reset} ${c.dim}(attempt ${opts.attempt})${c.reset}`;
+    case "fix":
+      return `fixing ${c.bold}${opts.storyId ?? ""}${c.reset} ${c.dim}(${opts.attempt}/${opts.maxAttempts})${c.reset}`;
+  }
+}
+
+function tPhaseStart(phase: Phase, opts: PhaseStartOpts): void {
+  if (phase === "orchestrate") {
+    emitLine("");
+    const max = terseMaxIterations || opts.iteration;
+    emitLine(`${c.bold}━━ Iteration ${opts.iteration}${max ? ` of ${max}` : ""} ━━${c.reset}`);
+  }
+  startSpinner(phaseLabel(phase, opts));
+}
+
+function tComplete(iteration: number, max: number): void {
+  clearSpinner();
+  emitLine("");
+  emitLine(`${c.green}${c.bold}✓ all stories passing${c.reset} ${c.dim}— done at iteration ${iteration} of ${max}${c.reset}`);
+}
+
+function tMaxReached(max: number): void {
+  clearSpinner();
+  emitLine("");
+  emitLine(`${c.yellow}${c.bold}⚠ stopped${c.reset} ${c.dim}— reached max iterations (${max}) without finishing all stories${c.reset}`);
+}
+
+function tAborted(): void {
+  clearSpinner();
+  emitLine("");
+  emitLine(`${c.yellow}${c.bold}⊘ aborted${c.reset} ${c.dim}— interrupted by user${c.reset}`);
+}
+
+function tGitCommit(sha: string, _message: string): void {
+  const tag = sha ? `${c.cyan}${sha}${c.reset}` : "";
+  emitLine(`    ${c.dim}↳ committed${c.reset} ${tag}`);
+}
+
+function tBranchSetup(branchName: string, action: BranchAction): void {
+  const verb = action === "created" ? "created" : action === "switched" ? "switched to" : "on";
+  emitLine(`  ${c.gray}branch ${verb}${c.reset} ${c.cyan}${branchName}${c.reset}`);
+}
+
+function tFeedbackDetected(bytes: number, preview: string): void {
+  const trimmed = preview.replace(/\s+/g, " ").trim().slice(0, 80);
+  const ellipsis = preview.length > 80 ? "…" : "";
+  emitLine(`  ${c.cyan}📝 feedback${c.reset} ${c.dim}${bytes}B${c.reset} "${trimmed}${ellipsis}"`);
+}
+
+function tFeedbackForceCleared(): void {
+  // Skipped in terse — surface only via --verbose.
+}
+
+function tBudgetExceeded(storyId: string, spent: number, budget: number): void {
+  emitLine(`  ${c.red}✗ budget${c.reset} ${c.dim}${storyId} spent=$${spent.toFixed(4)} / $${budget.toFixed(2)} — stopping fix loop${c.reset}`);
+}
+
+function tError(context: string, err: unknown, category: string): void {
+  const msg = err instanceof Error ? err.message : err ? String(err) : "";
+  const tail = msg ? `: ${msg}` : "";
+  emitLine(`  ${c.red}✗ ${category}${c.reset} ${context}${tail}`);
+}
+
+function tSessionReport(stats: SessionStats): void {
+  // End of a phase. Stop the active spinner and append a permanent line.
+  clearSpinner();
+  runCostUsd += stats.costUsd;
+  const attempt = stats.attempt != null ? ` ${c.dim}#${stats.attempt}${c.reset}` : "";
+  if (stats.outcome === "aborted") {
+    process.stdout.write(`  ${c.yellow}⊘${c.reset} ${stats.phase}${attempt} ${c.dim}aborted${c.reset}\n`);
+    return;
+  }
+  const ok = stats.outcome === "success";
+  const sym = ok ? `${c.green}✓${c.reset}` : `${c.red}✗${c.reset}`;
+  const dur = fmtDuration(stats.durationMs);
+  const cost = fmtCost(stats.costUsd);
+  const outcome = ok ? "" : ` ${c.red}${stats.outcome}${c.reset}`;
+  process.stdout.write(`  ${sym} ${stats.phase}${attempt} ${c.dim}(${dur}, ${cost})${c.reset}${outcome}\n`);
+}
+
+function tFinalReport(runStats: RunStats): void {
+  clearSpinner();
+  const elapsed = Date.now() - runStats.startedAt.getTime();
+  const totalCost = runStats.sessions.reduce((sum, s) => sum + s.costUsd, 0);
+  const passed = runStats.storiesPassed;
+  const failed = runStats.storiesFailed;
+  emitLine("");
+  emitLine(`${c.dim}───────────────────────────────${c.reset}`);
+  emitLine(`  ${c.green}${passed} passed${c.reset}${failed > 0 ? `, ${c.red}${failed} failed${c.reset}` : ""}  ${c.dim}· ${fmtCost(totalCost)} · ${fmtDuration(elapsed)} · ${runStats.sessions.length} sessions${c.reset}`);
+  if (runStats.storyOutcomes.length > 0) {
+    for (const o of runStats.storyOutcomes) {
+      const sym = o.passed ? `${c.green}✓${c.reset}` : `${c.red}✗${c.reset}`;
+      const reason = !o.passed && o.reason ? ` ${c.dim}(${o.reason})${c.reset}` : "";
+      emitLine(`    ${sym} ${o.storyId.padEnd(12)} ${c.dim}${fmtCost(o.costUsd)}${c.reset}${reason}`);
+    }
+  }
+  emitLine(`${c.dim}───────────────────────────────${c.reset}`);
+}
+
+function tInfo(msg: string): void {
+  const trimmed = msg.replace(/\s+$/, "");
+  if (!trimmed.trim()) return;
+  // Drop legacy banner shapes if any caller still emits them.
+  const t = trimmed.trim();
+  if (/^={3,}$/.test(t) || /^-{3,}$/.test(t)) return;
+  emitLine(`  ${c.dim}${trimmed.replace(/^\s+/, "")}${c.reset}`);
+}
+
+export const terseReporter: Reporter = {
+  start: tStart,
+  iterationStart: tIterationStart,
+  iterationEnd: tIterationEnd,
+  phaseStart: tPhaseStart,
+  complete: tComplete,
+  maxReached: tMaxReached,
+  aborted: tAborted,
+  branchSetup: tBranchSetup,
+  gitCommit: tGitCommit,
+  feedbackDetected: tFeedbackDetected,
+  feedbackForceCleared: tFeedbackForceCleared,
+  budgetExceeded: tBudgetExceeded,
+  error: tError,
+  message: () => {},
+  sessionReport: tSessionReport,
+  finalReport: tFinalReport,
+  info: tInfo,
+  stderr: () => {},
+};
+
+export function pickReporter(verbose: boolean): Reporter {
+  return verbose ? verboseReporter : terseReporter;
+}

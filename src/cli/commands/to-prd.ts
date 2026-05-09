@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from "fs";
 import { resolve } from "path";
 import { spawnSync } from "child_process";
 import { FRAMEWORK_PATHS, PATHS, setUserRoot } from "../../core/paths.ts";
-import { runSkillSession } from "../skill-runner.ts";
+import { runWizard } from "../wizard.ts";
 
 // `marmite to-prd <PRD.md>` — converts a markdown PRD into .marmite/prd.json
 // using the to-prd skill. After the session, runs validate-prd.ts as a final
@@ -51,7 +51,7 @@ about story splits before writing.`);
     "`bun run $MARMITE_VALIDATE_PRD $MARMITE_PRD_OUTPUT`. If validation fails, fix the issues and re-validate " +
     "until the script exits 0 before declaring done.)\n\n";
 
-  await runSkillSession({
+  await runWizard({
     skillName: "to-prd",
     command: "marmite to-prd",
     preamble,

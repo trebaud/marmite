@@ -90,6 +90,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
   for (let i = 1; i <= config.maxIterations; i++) {
     if (runAbort.signal.aborted) break;
+    const iterationStartedAtMs = Date.now();
 
     // Total cost gate
     if (config.costBudgetUsdTotal > 0 && totalCost(runStats) >= config.costBudgetUsdTotal) {
@@ -118,6 +119,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     await detectAndAnnounceFeedback(i, reporter);
 
     await emitEvent("phase_start", { phase: "orchestrate", iteration: i, storyId: nextStory.id });
+    reporter.phaseStart("orchestrate", { iteration: i, storyId: nextStory.id });
 
     const orchestratorPrompt = await readPromptFile(resolvePrompt("orchestrator"));
     const orchestrate = await runQueryWithRetry(
@@ -162,13 +164,12 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       reporter.info("  current-task.json not found after orchestrate — using priority-order story selection.");
     }
 
-    reporter.iterationStart(i, config.maxIterations, currentStory.id);
+    reporter.iterationStart(i, config.maxIterations, currentStory.id, currentStory.title);
     await emitEvent("iteration_start", { iteration: i, storyId: currentStory.id, title: currentStory.title });
 
     // ── Phase 1: Build ──
-    reporter.info("  Phase: BUILD");
-    reporter.info("===============================================================");
     await emitEvent("phase_start", { phase: "build", iteration: i, storyId: currentStory.id });
+    reporter.phaseStart("build", { iteration: i, storyId: currentStory.id });
 
     const builderPrompt = await readPromptFile(resolvePrompt("builder"));
     const build = await runQueryWithRetry(
@@ -211,11 +212,8 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
         break;
       }
 
-      reporter.info("");
-      reporter.info("---------------------------------------------------------------");
-      reporter.info(`  Phase: VERIFY (iteration ${i}, attempt ${fix + 1})`);
-      reporter.info("---------------------------------------------------------------");
       await emitEvent("phase_start", { phase: "verify", iteration: i, attempt: fix + 1 });
+      reporter.phaseStart("verify", { iteration: i, storyId: currentStory.id, attempt: fix + 1 });
 
       const verifierPrompt = await readPromptFile(resolvePrompt("verifier"));
       const verify = await runQueryWithRetry(
@@ -288,11 +286,13 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       }
 
       fixAttempts++;
-      reporter.info("");
-      reporter.info("---------------------------------------------------------------");
-      reporter.info(`  Phase: FIX (iteration ${i}, fix ${fixAttempts} of ${config.maxFixAttempts})`);
-      reporter.info("---------------------------------------------------------------");
       await emitEvent("phase_start", { phase: "fix", iteration: i, attempt: fixAttempts });
+      reporter.phaseStart("fix", {
+        iteration: i,
+        storyId: currentStory.id,
+        attempt: fixAttempts,
+        maxAttempts: config.maxFixAttempts,
+      });
 
       const fixPrompt = buildFixPrompt(v.summary);
       const fixResult = await runQueryWithRetry(
@@ -324,11 +324,20 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
         gitCommit(PATHS.projectRoot, config.prdPath, `verify: ${currentStory.id} - passed verification`, reporter);
       }
       finalizeStoryOutcome(runStats, currentStory.id, i, true);
-      reporter.info(`Story ${currentStory.id} passed verification at iteration ${i}.`);
     } else {
       finalizeStoryOutcome(runStats, currentStory.id, i, false, failReason);
-      reporter.info(`Story ${currentStory.id} did NOT pass (${failReason ?? "unknown"}) after ${fixAttempts} fix attempt(s). Moving on.`);
     }
+
+    reporter.iterationEnd({
+      iteration: i,
+      storyId: currentStory.id,
+      storyTitle: currentStory.title,
+      passed,
+      reason: failReason,
+      durationMs: Date.now() - iterationStartedAtMs,
+      costUsd: iterationCost(runStats, i),
+      fixAttempts,
+    });
 
     // Exit early if PRD is now complete.
     const done = await allStoriesPassingOrError(config.prdPath);
@@ -346,7 +355,8 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     await sleep(2000);
   }
 
-  reporter.maxReached(config.maxIterations);
+  if (terminated) reporter.aborted();
+  else reporter.maxReached(config.maxIterations);
   await emitEvent("run_end", { reason: terminated ? "signal" : "max_iterations" });
   reporter.finalReport(runStats);
   process.exit(terminated ? 130 : 1);

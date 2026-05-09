@@ -136,7 +136,7 @@ There is no `app/` in this repo; marmite is a harness, not an application. To sm
 
 ```
 src/core/        harness engine: orchestrator, session, schemas
-src/cli/         CLI commands (init, cook, to-prd) and skill-runner
+src/cli/         CLI commands (init, cook, to-prd) and wizard
 src/skills/      internal skills used by the CLI (not shipped to users)
 templates/       installed into user projects by `marmite init`:
                    prompts/ goes to <project>/.marmite/prompts/

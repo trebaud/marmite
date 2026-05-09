@@ -13,6 +13,7 @@ export interface CliOverrides {
   totalBudget?: number;
   maxFixAttempts?: number;
   transientRetries?: number;
+  verbose?: boolean;
 }
 
 export function usage(): never {
@@ -36,6 +37,7 @@ Options for cook:
       --cost-budget-total <usd>  Total run cost budget, 0 disables
       --max-fix-attempts <n>  Fix attempts per story
       --retries <n>           Transient retries per session
+  -v, --verbose               Verbose log output (raw SDK messages and stats)
   -h, --help                  Show this help
 
 Layer order (low → high precedence):
@@ -105,6 +107,7 @@ export function parseArgs(argv: string[]): { cli: CliOverrides; configPath: stri
       case "--cost-budget-total": cli.totalBudget = parseFloatOrExit("--cost-budget-total", next()); break;
       case "--max-fix-attempts":  cli.maxFixAttempts = parseIntOrExit("--max-fix-attempts", next(), 0); break;
       case "--retries":           cli.transientRetries = parseIntOrExit("--retries", next(), 0); break;
+      case "-v": case "--verbose": cli.verbose = true; break;
       default: {
         const n = parseInt(arg, 10);
         if (!isNaN(n) && n > 0) cli.maxIterations = n;

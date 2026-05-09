@@ -2,7 +2,7 @@ import { appendFile } from "fs/promises";
 
 // JSONL event log. The harness writes structured events here so external tools
 // (dashboards, post-run analyzers) can consume the run's history. Distinct from
-// the human-readable console output, which lives in src/cli/log.ts.
+// the human-readable console output, which lives in src/cli/logger.ts.
 
 let eventLogPath: string | null = null;
 

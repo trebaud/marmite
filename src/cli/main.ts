@@ -3,11 +3,10 @@ import { mkdirSync, existsSync } from "fs";
 import { run } from "../core/orchestrator.ts";
 import { setUserRoot } from "../core/paths.ts";
 import { parseArgs, usage } from "./args.ts";
-import { loadConfigFile } from "./config-loader.ts";
-import { composeConfig } from "./build-config.ts";
+import { loadConfigFile, composeConfig } from "./config.ts";
 import { runInit } from "./commands/init.ts";
 import { runToPrd } from "./commands/to-prd.ts";
-import { consoleReporter } from "./log.ts";
+import { pickReporter } from "./logger.ts";
 
 // ── Subcommand dispatch ──
 const subcommand = process.argv[2];
@@ -36,4 +35,4 @@ mkdirSync(resolve(configDir, ".marmite"), { recursive: true });
 
 const config = composeConfig(cli, fileCfg, configDir);
 
-await run(config, consoleReporter);
+await run(config, pickReporter(cli.verbose === true));

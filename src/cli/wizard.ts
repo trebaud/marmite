@@ -5,11 +5,11 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { FRAMEWORK_PATHS } from "../core/paths.ts";
 
-// Shared driver for `marmite init` and `marmite to-prd`. Loads an internal
-// skill's SKILL.md, opens an interactive SDK session in the user's cwd, and
-// streams assistant text + spinners to the terminal until the conversation
-// ends or the user aborts.
-export interface SkillSessionOptions {
+// Shared interactive wizard for `marmite init` and `marmite to-prd`. Loads an
+// internal skill's SKILL.md, opens an interactive SDK session in the user's
+// cwd, and streams assistant text + spinners to the terminal until the
+// conversation ends or the user aborts.
+export interface WizardOptions {
   // Name of the directory under src/skills/ holding SKILL.md.
   skillName: string;
   // Command label used in error messages and in the abort hint
@@ -23,7 +23,7 @@ export interface SkillSessionOptions {
   model?: string;
 }
 
-export async function runSkillSession(opts: SkillSessionOptions): Promise<void> {
+export async function runWizard(opts: WizardOptions): Promise<void> {
   const skillFile = resolve(FRAMEWORK_PATHS.internalSkills, opts.skillName, "SKILL.md");
   if (!existsSync(skillFile)) {
     console.error(`Error: ${opts.skillName} skill not found at ${skillFile}`);

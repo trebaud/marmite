@@ -1,5 +1,5 @@
 import { FRAMEWORK_PATHS } from "../../core/paths.ts";
-import { runSkillSession } from "../skill-runner.ts";
+import { runWizard } from "../wizard.ts";
 
 // `marmite init` — interactive setup wizard. Loads src/skills/marmite-init/SKILL.md
 // and runs it as an SDK session in the user's cwd. The skill is responsible for
@@ -19,7 +19,7 @@ export async function runInit(): Promise<void> {
     "  $MARMITE_TEMPLATES/skills/<name>/ → ./.claude/skills/<name>/\n" +
     "Skip files that already exist in the target — they may be user-customized.)\n\n";
 
-  await runSkillSession({
+  await runWizard({
     skillName: "marmite-init",
     command: "marmite init",
     preamble,
