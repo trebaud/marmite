@@ -17,6 +17,13 @@ const DurationSchema = z.union([z.string(), z.number()]);
 export const MarmiteConfigSchema = z.object({
   app: z.string().optional(),
   prd: z.string().optional(),
+  // Workflow controls which agent prompts were installed at init time and which
+  // optional behaviors the orchestrator runs (e.g. opening PRs and halting). The
+  // harness does not act on this field directly — it reads prompts from
+  // `.marmite/prompts/`. The orchestrator prompt may read `workflowConfig` at
+  // runtime (e.g. pr-on-checkpoint reads `kind` and `stories`).
+  workflow: z.string().optional(),
+  workflowConfig: z.record(z.string(), z.unknown()).optional(),
   sensors: z.array(SensorEntrySchema).optional(),
   models: z
     .object({

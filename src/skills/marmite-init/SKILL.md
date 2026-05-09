@@ -46,19 +46,37 @@ Ask **one question at a time**. Adapt based on previous answers. Always offer se
 ### Required answers
 
 1. **App location** — where does the user's application code live (or where should it live)?
-   - Greenfield: default `./app`, but offer "the project root" as an option.
-   - Brownfield: derive from detected workspaces. If it's a monorepo, ask which workspace marmite should target.
+   - Always include "the project root (`.`)" as one of the options, regardless of greenfield/brownfield.
+   - Greenfield: default `./app`, with the project root offered as an alternative.
+   - Brownfield: derive other choices from detected workspaces. If it's a monorepo, list the workspaces alongside the project root so the user can target the whole repo or a specific workspace.
 
-2. **Sensors** — which deterministic checks should marmite run between stories?
+2. **Workflow** — which workflow should marmite use? Each workflow ships its own three agent prompts; the choice determines what gets installed under `.marmite/prompts/` and how the orchestrator behaves.
+
+   List the choices by reading `$MARMITE_TEMPLATES/workflows/*/workflow.json`:
+
+   ```bash
+   for f in $MARMITE_TEMPLATES/workflows/*/workflow.json; do cat "$f"; echo; done
+   ```
+
+   Each `workflow.json` has `name`, `label`, `description`, and an optional `default: true`. Show the user a numbered list with the labels and one-line descriptions, default-marked. The default choice has `default: true` (currently `one-shot`); if multiple or none are flagged, fall back to `one-shot`.
+
+   Save the chosen workflow's `name` value (e.g. `"one-shot"`, `"pr-on-checkpoint"`, `"tdd"`) for later — both the install step (step 4) and `marmite.json` (the `workflow` key) need it.
+
+   - If the user picked `pr-on-checkpoint`, ask one follow-up: **checkpoint trigger**. Two options:
+     - `every` (default) — open a PR after every N passing stories. Ask for N (default `1`, which is one PR per story). Save as `workflowConfig: { "kind": "every", "stories": N }`.
+     - `epic` — open a PR after the last story of each PRD epic passes. Save as `workflowConfig: { "kind": "epic" }`. Mention that the user must tag stories in `.marmite/prd.json` with an `epic` field for this to do anything useful (`marmite to-prd` supports it).
+   - If the user picked `pr-on-checkpoint`, run `gh auth status` to verify the GitHub CLI is installed and authenticated. If it isn't, mention it as a follow-up step the user must complete before `marmite cook` will work — but don't block init on it.
+
+3. **Sensors** — which deterministic checks should marmite run between stories?
    - For brownfield, propose entries that **point at the user's existing configs** (`./.eslintrc.json`, `./tsconfig.json`, etc.). Detect what's there; don't ask the user to type paths.
    - For greenfield, offer a small default set keyed off the chosen stack (eslint + tsc for TS projects, ruff + pytest for Python, etc.). Each entry must have `name`, `type` (`drift|debt|pulse|safe`), and a `configPath` if a config is expected. Add a `guidance` field with the run command and any tool-specific notes.
    - Always allow "skip" — sensors are optional.
 
-3. **Models** — which Claude models for each role?
+4. **Models** — which Claude models for each role?
    - Default to `{ default: claude-sonnet-4-6, builder: claude-sonnet-4-6, verifier: claude-haiku-4-5, orchestrator: claude-sonnet-4-6 }` and just confirm.
    - Offer a "thorough" preset (Opus for builder) and a "fast" preset (Haiku everywhere) for users who want them.
 
-4. **Budgets** — per-story USD cap and total run cap. Default `{ perStory: 15, total: 100 }`. One question, two numbers; users almost always accept defaults.
+5. **Budgets** — per-story USD cap and total run cap. Default `{ perStory: 15, total: 100 }`. One question, two numbers; users almost always accept defaults.
 
 ### Don't ask about
 
@@ -74,8 +92,8 @@ Before writing anything, summarize what you're about to do:
 
 ```
 I'll write:
-  marmite.json         (app=./apps/web, sensors=eslint+tsc, balanced models)
-  .marmite/prompts/    (install agent prompts: builder, verifier, orchestrator)
+  marmite.json         (app=./apps/web, workflow=one-shot, sensors=eslint+tsc, balanced models)
+  .marmite/prompts/    (install agent prompts from workflows/one-shot/: builder, verifier, orchestrator)
   .claude/skills/      (install helper skills: architect, design-qa-checker, prd-generator, …)
 ```
 
@@ -99,6 +117,10 @@ JSONC (comments allowed). Inline structure:
 {
   "app": "./apps/web",
   "prd": "./.marmite/prd.json",
+  "workflow": "one-shot",
+  // Only emit `workflowConfig` when the chosen workflow uses it (today: pr-on-checkpoint).
+  // "workflowConfig": { "kind": "every", "stories": 3 },
+  // "workflowConfig": { "kind": "epic" },
   "sensors": [
     {
       "name": "eslint",
@@ -129,29 +151,34 @@ The marmite package's templates tree was given to you in the preamble as `MARMIT
 
 ```
 $MARMITE_TEMPLATES/
-├── prompts/                 → ./.marmite/prompts/
-│   ├── builder-prompt.md
-│   ├── verifier-prompt.md
-│   └── orchestrator-prompt.md
-└── skills/                  → ./.claude/skills/
+├── workflows/                                          (one subdir per workflow)
+│   ├── one-shot/
+│   │   ├── workflow.json
+│   │   └── prompts/        → ./.marmite/prompts/       (only the chosen workflow)
+│   │       ├── builder-prompt.md
+│   │       ├── verifier-prompt.md
+│   │       └── orchestrator-prompt.md
+│   ├── pr-on-checkpoint/{ workflow.json, prompts/ }
+│   └── tdd/{ workflow.json, prompts/ }
+└── skills/                  → ./.claude/skills/         (always installed)
     ├── architect/
     ├── design-qa-checker/
     └── prd-generator/
     (… any other skill folders present)
 ```
 
-Procedure:
+Procedure (let `WF` be the workflow name selected in step 2):
 
 1. `mkdir -p ./.marmite/prompts ./.claude/skills`
-2. For each file under `$MARMITE_TEMPLATES/prompts/`:
+2. For each file under `$MARMITE_TEMPLATES/workflows/$WF/prompts/`:
    - target = `./.marmite/prompts/<filename>`
-   - if target does not exist: `cp "$MARMITE_TEMPLATES/prompts/<filename>" "$target"`
+   - if target does not exist: `cp "$MARMITE_TEMPLATES/workflows/$WF/prompts/<filename>" "$target"`
    - if target exists: leave it alone (user has customized it). Note "skipped (already present)" in the summary.
 3. For each sub-directory under `$MARMITE_TEMPLATES/skills/`:
    - target = `./.claude/skills/<skill-name>`
    - if target does not exist: `cp -R "$MARMITE_TEMPLATES/skills/<skill-name>" "$target"`
    - if target exists: leave it alone. Note "skipped (already present)" in the summary.
-4. List what you copied vs. skipped in your final summary.
+4. List what you copied vs. skipped in your final summary, and call out which workflow's prompts were installed.
 
 Both prompts and helper skills are user-authored content once installed — they should be checked in so the team shares the same agent behavior.
 

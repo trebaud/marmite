@@ -46,13 +46,16 @@ Do not run `marmite cook` for the user. End the session after step 7.
       "priority": 1,
       "passes": false,
       "notes": "",
-      "dependencies": []
+      "dependencies": [],
+      "epic": "auth"
     }
   ]
 }
 ```
 
 The `dependencies` field is optional. Use it to communicate execution order intent — marmite runs stories sequentially by priority, but `dependencies` makes the dependency graph explicit so humans reviewing the plan can spot ordering issues. Dependencies must point at stories with **lower priority numbers** (the validator enforces this).
+
+The `epic` field is optional. It groups related stories under a shared label (e.g. `"auth"`, `"dashboard"`, `"checkout"`). Stories in the same epic should be contiguous in priority order. The `pr-on-checkpoint` workflow with `kind: "epic"` uses this field to decide when to open a PR — once every story in an epic has passed, the next orchestrator iteration cuts a PR for the whole epic. Stories without an `epic` are treated as their own one-story epic.
 
 ---
 
@@ -269,6 +272,7 @@ Before calling `Write` on `$MARMITE_PRD_OUTPUT`, verify:
 - [ ] IDs match `US-###`, sequential, no duplicates.
 - [ ] Every story has `passes: false`, `notes: ""`, `dependencies: []` (or non-empty array of valid prior IDs).
 - [ ] `dependencies` only reference IDs with strictly lower `priority`.
+- [ ] If using epics, stories sharing an `epic` value are contiguous in priority order.
 - [ ] Every story has "Typecheck passes" as a criterion.
 - [ ] UI stories have "Verify in browser using dev-browser skill" as a criterion.
 - [ ] Acceptance criteria are verifiable (not vague).

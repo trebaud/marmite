@@ -106,7 +106,21 @@ For each sensor you decide to run:
 
 Do **not** install dependencies or copy config files. If a `configPath` points at a missing file, or a tool isn't installed, record the gap in `.marmite/current-task.json`'s `guidance` for the builder to address as part of the story.
 
-Run each chosen sensor command using Bash. Capture the output (stdout + stderr + exit code). The full output stays in your context — you will summarize it in `.marmite/current-task.json`.
+**Surface each sensor in the harness logger** by wrapping its run with `marmite emit-event`:
+
+<!-- marmite:contract start — the harness tails .marmite/events.jsonl during this phase; without these emits the live sensor feed in the CLI goes silent and `sensors_ran` is never recorded -->
+```bash
+marmite emit-event sensor-start --sensor eslint --type debt
+START_MS=$(date +%s%3N)
+bun run lint:strict; EXIT=$?
+DURATION_MS=$(( $(date +%s%3N) - START_MS ))
+marmite emit-event sensor-end --sensor eslint --type debt --duration-ms "$DURATION_MS" --exit-code "$EXIT"
+```
+
+Emit `sensor-start` *before* the tool runs and `sensor-end` *after*, even on failure. `--type` is one of `drift|debt|pulse|safe`.
+<!-- marmite:contract end -->
+
+Capture the full output (stdout + stderr + exit code). The full output stays in your context — you will summarize it in `.marmite/current-task.json`.
 
 ### 8. Match failing sensors to skills
 
@@ -129,6 +143,7 @@ You MUST write this file before finishing. It tells the builder exactly what to 
 
 Copy the full story from `.marmite/prd.json` and populate all fields:
 
+<!-- marmite:contract start — the harness parses storyId/storyTitle/ranSensors from this file (src/core/protocol.ts); missing or wrong-typed fields make the orchestrator step crash with "current-task.json malformed" -->
 ```json
 {
   "version": "1",
@@ -148,8 +163,9 @@ Copy the full story from `.marmite/prd.json` and populate all fields:
 Field rules:
 - `guidance` — actionable instructions for the builder; leave as `""` if nothing specific to convey
 - `sensorSummary` — one concise line per sensor that ran, summarizing the key findings; leave as `""` if no sensors ran
-- `ranSensors` — array of sensor names that ran; set to `[]` if none ran
+- `ranSensors` — array of sensor names that ran; set to `[]` if none ran (the harness emits `sensors_ran` from this array)
 - `reasoning` — one sentence explaining your story selection and sensor decision; if async feedback was applied, say so explicitly (e.g. *"applied user feedback from .marmite/feedback.md"*)
+<!-- marmite:contract end -->
 
 If async feedback was applied this iteration, the `guidance` field MUST repeat the user's directive (paraphrased or verbatim) so the builder and verifier see it. Don't just point at a file the user already deleted.
 

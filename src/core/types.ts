@@ -1,3 +1,5 @@
+import type { VerificationVerdict } from "./protocol.ts";
+
 export interface ModelPricing {
   inputPerMTok: number;
   outputPerMTok: number;
@@ -72,4 +74,83 @@ export interface RunStats {
   storiesPassed: number;
   storiesFailed: number;
 }
+
+// Discriminated union of every event the harness emits. Add a variant here when
+// introducing a new `emitEvent` call site so the call is type-checked end-to-end.
+export type HarnessEvent =
+  | {
+      kind: "run_start";
+      maxIterations: number;
+      model: string;
+      builderModel: string;
+      verifierModel: string;
+      costBudgetUsdPerStory: number;
+      costBudgetUsdTotal: number;
+      buildTimeoutMs: number;
+      verifyTimeoutMs: number;
+    }
+  | { kind: "run_abort"; reason: "signal" }
+  | { kind: "run_done"; reason: "total_budget_exceeded"; spent: number; budget: number }
+  | { kind: "run_done"; reason: "all_stories_passing"; iteration?: number }
+  | { kind: "run_end"; reason: "signal" | "max_iterations" }
+  | {
+      kind: "run_halt";
+      iteration: number;
+      reason: "awaiting_pr";
+      prNum: number | undefined;
+      branch: string | undefined;
+    }
+  | {
+      kind: "phase_start";
+      phase: SessionPhase;
+      iteration: number;
+      storyId?: string;
+      attempt?: number;
+    }
+  | {
+      kind: "phase_end";
+      phase: SessionPhase;
+      iteration: number;
+      attempt?: number;
+      outcome: SessionOutcome;
+    }
+  | { kind: "iteration_start"; iteration: number; storyId: string; title: string }
+  | { kind: "sensors_ran"; iteration: number; storyId: string; sensors: string[] }
+  // Emitted by the orchestrator agent (via `marmite emit-event`) before/after
+  // each sensor it runs. Surfaced in the logger so the user sees real-time
+  // sensor activity during the orchestrate phase.
+  | { kind: "sensor_start"; sensor: string; sensorType?: string }
+  | {
+      kind: "sensor_end";
+      sensor: string;
+      sensorType?: string;
+      durationMs: number;
+      exitCode: number;
+    }
+  | {
+      kind: "verification_verdict";
+      iteration: number;
+      storyId: string;
+      verdict: VerificationVerdict;
+      qaPass: number;
+      qaFail: number;
+    }
+  | { kind: "feedback_detected"; iteration: number; bytes: number; preview: string }
+  | { kind: "feedback_force_cleared"; iteration: number }
+  | {
+      kind: "session_result";
+      phase: SessionPhase;
+      iteration: number;
+      attempt: number | undefined;
+      storyId: string;
+      outcome: SessionOutcome;
+      costUsd: number;
+      durationMs: number;
+      numTurns: number;
+      anomalyFlags: string[];
+      errorMessage: string | undefined;
+    }
+  | ({ kind: "story_outcome" } & StoryOutcome);
+
+export type HarnessEventKind = HarnessEvent["kind"];
 

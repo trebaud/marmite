@@ -1,0 +1,6 @@
+{
+  "name": "one-shot",
+  "label": "One-shot",
+  "description": "Implements every story end-to-end in one continuous run. No external gates. Default.",
+  "default": true
+}

@@ -1,0 +1,5 @@
+{
+  "name": "pr-on-checkpoint",
+  "label": "PR on checkpoint",
+  "description": "Halts and opens a GitHub PR whenever a configured checkpoint is reached. `workflowConfig.kind` selects the trigger: `every` (after N passing stories) or `epic` (after the last story of a PRD epic passes). Requires `gh` (authenticated)."
+}

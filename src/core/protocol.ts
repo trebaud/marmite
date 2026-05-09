@@ -71,16 +71,30 @@ export async function readVerificationResultFile(): Promise<ParsedVerification> 
 }
 
 
+// Halt instruction written by the orchestrator when a workflow needs to stop the
+// harness mid-run (e.g. waiting on a human PR merge in pr-on-checkpoint).
+// The harness reads this after the orchestrate phase and exits 0 cleanly. Only
+// `kind: "awaiting_pr"` is used today, but the discriminator leaves room.
+const HaltSchema = z.object({
+  kind: z.literal("awaiting_pr"),
+  prNum: z.number().int().positive(),
+  branch: z.string().optional(),
+  baseBranch: z.string().optional(),
+});
+export type Halt = z.infer<typeof HaltSchema>;
+
 const CurrentTaskDecisionSchema = z
   .object({
     storyId: z.string().min(1, "missing storyId"),
     storyTitle: z.string().optional(),
     ranSensors: z.array(z.string()).default([]),
+    halt: HaltSchema.optional(),
   })
   .transform((r) => ({
     storyId: r.storyId,
     storyTitle: r.storyTitle ?? "",
     ranSensors: r.ranSensors,
+    halt: r.halt,
   }));
 
 export type CurrentTaskDecision = z.infer<typeof CurrentTaskDecisionSchema>;

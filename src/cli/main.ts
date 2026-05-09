@@ -6,6 +6,8 @@ import { parseArgs, usage } from "./args.ts";
 import { loadConfigFile, composeConfig } from "./config.ts";
 import { runInit } from "./commands/init.ts";
 import { runToPrd } from "./commands/to-prd.ts";
+import { runEmitEvent } from "./commands/emit-event.ts";
+import { runDoctor } from "./commands/doctor.ts";
 import { pickReporter } from "./logger.ts";
 
 // ── Subcommand dispatch ──
@@ -17,6 +19,17 @@ if (subcommand === "init") {
 if (subcommand === "to-prd") {
   await runToPrd(process.argv);
   process.exit(0);
+}
+if (subcommand === "emit-event") {
+  // Anchor PATHS.events to the cwd's .marmite/ — the agent invokes us from
+  // inside the user's project root, so cwd is the right anchor here.
+  setUserRoot(process.cwd());
+  await runEmitEvent(process.argv);
+  process.exit(0);
+}
+if (subcommand === "doctor") {
+  await runDoctor(process.argv);
+  // runDoctor calls process.exit itself with the right code.
 }
 if (subcommand === "-h" || subcommand === "--help") usage();
 

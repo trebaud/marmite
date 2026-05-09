@@ -2,7 +2,7 @@ import type { HarnessConfig, RunStats } from "./types.ts";
 import type { Reporter } from "./reporter.ts";
 import { silentReporter } from "./reporter.ts";
 import { PATHS, resolvePrompt } from "./paths.ts";
-import { emitEvent, initEventLog } from "./events.ts";
+import { emitEvent, initEventLog, tailEvents } from "./events.ts";
 import { fileExists, gitCommit, gitEnsureBranch, readJsonField, sleep, writeAtomic } from "./utils.ts";
 import { detectAndAnnounceFeedback, forceClearFeedbackIfPresent } from "./feedback.ts";
 import {
@@ -121,6 +121,15 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     await emitEvent("phase_start", { phase: "orchestrate", iteration: i, storyId: nextStory.id });
     reporter.phaseStart("orchestrate", { iteration: i, storyId: nextStory.id });
 
+    // Tail events.jsonl during the orchestrate session so sensor_start /
+    // sensor_end events emitted by the agent (via `marmite emit-event`)
+    // show up in the logger in real time.
+    const tailAbort = new AbortController();
+    tailEvents(PATHS.events, (evt) => {
+      if (evt.kind === "sensor_start") reporter.sensorStart(evt.sensor, evt.sensorType);
+      else if (evt.kind === "sensor_end") reporter.sensorEnd(evt.sensor, evt.sensorType, evt.durationMs, evt.exitCode);
+    }, tailAbort.signal);
+
     const orchestratorPrompt = await readPromptFile(resolvePrompt("orchestrator"));
     const orchestrate = await runQueryWithRetry(
       config,
@@ -132,6 +141,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       config.orchestratorModel,
       "orchestrator",
     );
+    tailAbort.abort();
     recordSession(runStats, orchestrate, "orchestrate", i, nextStory.id, reporter);
     await emitEvent("phase_end", { phase: "orchestrate", iteration: i, outcome: orchestrate.outcome });
 
@@ -145,6 +155,25 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
     if (decisionParsed.kind === "present") {
       const decision = decisionParsed.value;
+      // Workflow-driven halt (e.g. pr-on-checkpoint waiting for PR merge). The
+      // orchestrator agent writes this; the harness exits 0 so the next
+      // `marmite cook` invocation resumes from the same current-task.json.
+      if (decision.halt) {
+        reporter.info(
+          `\nHalting: workflow requested ${decision.halt.kind}` +
+            (decision.halt.kind === "awaiting_pr" ? ` for PR #${decision.halt.prNum}` : "") +
+            `. Re-run \`marmite cook\` once the gate clears.`,
+        );
+        await emitEvent("run_halt", {
+          iteration: i,
+          reason: decision.halt.kind,
+          prNum: decision.halt.kind === "awaiting_pr" ? decision.halt.prNum : undefined,
+          branch: decision.halt.branch,
+        });
+        runStats.iterationsCompleted = i - 1;
+        reporter.finalReport(runStats);
+        process.exit(0);
+      }
       const decidedStory = prdState.stories.find((s) => s.id === decision.storyId);
       if (decidedStory) {
         currentStory = decidedStory;

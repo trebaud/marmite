@@ -21,6 +21,7 @@ const StorySchema = z.object({
   passes: z.boolean(),
   notes: z.string().optional(),
   dependencies: z.array(z.string()).optional(),
+  epic: z.string().min(1).optional(),
 });
 
 const PrdSchema = z.object({

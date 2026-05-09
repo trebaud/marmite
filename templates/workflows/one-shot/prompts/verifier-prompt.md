@@ -21,6 +21,7 @@ Verification [PASS/FAIL]: [Story ID]
 
 Add these fields to the existing `.marmite/current-task.json` object (keep all other fields intact):
 
+<!-- marmite:contract start — the harness parses verdict/summary/qaResults from this file (src/core/protocol.ts) to decide pass/fail_retry/fail_abort and emit `verification_verdict`; missing or wrong-typed fields make the verify step crash with "current-task.json verdict malformed" -->
 ```json
 {
   "verdict": "pass" | "fail_retry" | "fail_abort",
@@ -32,6 +33,7 @@ Add these fields to the existing `.marmite/current-task.json` object (keep all o
   "verifiedAt": "[ISO timestamp]"
 }
 ```
+<!-- marmite:contract end -->
 
 ### Choosing the verdict
 

@@ -22,6 +22,9 @@ export function usage(): never {
   marmite cook [options]             Run the agent loop
   marmite init                       Set up marmite in the current project (interactive wizard)
   marmite to-prd <PRD.md>            Convert a markdown PRD into .marmite/prd.json
+  marmite doctor                     Preflight check — config, prompts, contract fences, sensors
+  marmite emit-event <kind> [...]    Append a structured event to .marmite/events.jsonl
+                                     (used by the orchestrator agent around sensor runs)
 
 Options for cook:
   -c, --config <path>         Path to JSON config file (default: ./marmite.json)

@@ -15,9 +15,10 @@ export async function runInit(): Promise<void> {
     `MARMITE_TEMPLATES=${FRAMEWORK_PATHS.templates}\n` +
     "(Absolute path to the marmite package's templates tree. The 'install templates' step copies " +
     "this tree into the user's project, preserving structure:\n" +
-    "  $MARMITE_TEMPLATES/prompts/*.md  → ./.marmite/prompts/\n" +
-    "  $MARMITE_TEMPLATES/skills/<name>/ → ./.claude/skills/<name>/\n" +
-    "Skip files that already exist in the target — they may be user-customized.)\n\n";
+    "  $MARMITE_TEMPLATES/workflows/<chosen>/prompts/*.md → ./.marmite/prompts/\n" +
+    "  $MARMITE_TEMPLATES/skills/<name>/                  → ./.claude/skills/<name>/\n" +
+    "The workflow choice is part of the wizard interview. Skip files that already exist in the " +
+    "target — they may be user-customized.)\n\n";
 
   await runWizard({
     skillName: "marmite-init",

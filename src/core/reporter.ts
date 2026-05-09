@@ -46,6 +46,10 @@ export interface Reporter {
   gitCommit(sha: string, message: string): void;
   feedbackDetected(bytes: number, preview: string): void;
   feedbackForceCleared(): void;
+  // Surfaced from events.jsonl during the orchestrate phase (the agent emits
+  // these around each sensor it runs via `marmite emit-event`).
+  sensorStart(sensor: string, sensorType?: string): void;
+  sensorEnd(sensor: string, sensorType: string | undefined, durationMs: number, exitCode: number): void;
   budgetExceeded(storyId: string, spent: number, budget: number): void;
   error(context: string, err: unknown, category: string): void;
   message(msg: SDKMessage, agentLabel: string): void;
@@ -69,6 +73,8 @@ export const silentReporter: Reporter = {
   gitCommit: () => {},
   feedbackDetected: () => {},
   feedbackForceCleared: () => {},
+  sensorStart: () => {},
+  sensorEnd: () => {},
   budgetExceeded: () => {},
   error: () => {},
   message: () => {},

@@ -1,0 +1,5 @@
+{
+  "name": "tdd",
+  "label": "Test-driven (test-first)",
+  "description": "Builder writes failing tests for each acceptance criterion before implementation. Verifier confirms tests existed and failed before the implementation commit."
+}

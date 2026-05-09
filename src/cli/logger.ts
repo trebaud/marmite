@@ -162,6 +162,19 @@ function vFeedbackForceCleared(): void {
   console.log(`  ${c.yellow}[feedback]${c.reset} orchestrator did not delete .marmite/feedback.md — force-cleared`);
 }
 
+function vSensorStart(sensor: string, sensorType?: string): void {
+  const typeTag = sensorType ? ` ${c.dim}(${sensorType})${c.reset}` : "";
+  console.log(`  ${c.cyan}[sensor]${c.reset} ▸ ${c.bold}${sensor}${c.reset}${typeTag} running…`);
+}
+
+function vSensorEnd(sensor: string, sensorType: string | undefined, durationMs: number, exitCode: number): void {
+  const typeTag = sensorType ? ` ${c.dim}(${sensorType})${c.reset}` : "";
+  const ok = exitCode === 0;
+  const sym = ok ? `${c.green}✓${c.reset}` : `${c.red}✗${c.reset}`;
+  const exitTxt = ok ? "" : ` ${c.red}exit=${exitCode}${c.reset}`;
+  console.log(`  ${c.cyan}[sensor]${c.reset} ${sym} ${c.bold}${sensor}${c.reset}${typeTag} ${c.dim}(${fmtDuration(durationMs)})${c.reset}${exitTxt}`);
+}
+
 function vBudgetExceeded(storyId: string, spent: number, budget: number): void {
   console.log(`  ${c.bgRed}${c.bold} BUDGET ${c.reset} story=${storyId} spent=$${spent.toFixed(4)} budget=$${budget.toFixed(2)} — stopping fix loop`);
 }
@@ -380,6 +393,8 @@ export const verboseReporter: Reporter = {
   gitCommit: vGitCommit,
   feedbackDetected: vFeedbackDetected,
   feedbackForceCleared: vFeedbackForceCleared,
+  sensorStart: vSensorStart,
+  sensorEnd: vSensorEnd,
   budgetExceeded: vBudgetExceeded,
   error: vError,
   message: vMessage,
@@ -534,6 +549,19 @@ function tFeedbackForceCleared(): void {
   // Skipped in terse — surface only via --verbose.
 }
 
+function tSensorStart(sensor: string, sensorType?: string): void {
+  const typeTag = sensorType ? ` ${c.dim}(${sensorType})${c.reset}` : "";
+  emitLine(`    ${c.cyan}▸${c.reset} sensor ${c.bold}${sensor}${c.reset}${typeTag} ${c.dim}running…${c.reset}`);
+}
+
+function tSensorEnd(sensor: string, sensorType: string | undefined, durationMs: number, exitCode: number): void {
+  const typeTag = sensorType ? ` ${c.dim}(${sensorType})${c.reset}` : "";
+  const ok = exitCode === 0;
+  const sym = ok ? `${c.green}✓${c.reset}` : `${c.red}✗${c.reset}`;
+  const exitTxt = ok ? "" : ` ${c.red}exit=${exitCode}${c.reset}`;
+  emitLine(`    ${sym} sensor ${c.bold}${sensor}${c.reset}${typeTag} ${c.dim}(${fmtDuration(durationMs)})${c.reset}${exitTxt}`);
+}
+
 function tBudgetExceeded(storyId: string, spent: number, budget: number): void {
   emitLine(`  ${c.red}✗ budget${c.reset} ${c.dim}${storyId} spent=$${spent.toFixed(4)} / $${budget.toFixed(2)} — stopping fix loop${c.reset}`);
 }
@@ -601,6 +629,8 @@ export const terseReporter: Reporter = {
   gitCommit: tGitCommit,
   feedbackDetected: tFeedbackDetected,
   feedbackForceCleared: tFeedbackForceCleared,
+  sensorStart: tSensorStart,
+  sensorEnd: tSensorEnd,
   budgetExceeded: tBudgetExceeded,
   error: tError,
   message: () => {},

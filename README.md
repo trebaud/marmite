@@ -116,9 +116,21 @@ Deterministic checks the orchestrator runs between stories. `configPath` points 
 | `pulse` | Failing or flaky tests | jest, vitest | `debug` |
 | `safe` | Known CVEs | npm audit, snyk | `security-review` |
 
+### Workflows
+
+A workflow is a bundle of three agent prompts (orchestrator, builder, verifier) that determines how the loop behaves. `marmite init` asks you to pick one and copies the matching prompts into `.marmite/prompts/`. The selection is recorded in `marmite.json` as `"workflow": "<name>"`.
+
+| Workflow | What it does |
+|---|---|
+| `one-shot` (default) | Implements every story end-to-end without external gates. |
+| `pr-on-checkpoint` | Opens a GitHub PR and halts when a configured checkpoint fires. `workflowConfig.kind` selects the trigger: `every` (after N passing stories — N=1 is one PR per story) or `epic` (after the last story of a PRD epic passes). Requires `gh` (authenticated). |
+| `tdd` | Builder writes failing tests for each acceptance criterion before the implementation commit. Verifier confirms `test:` predates `feat:`. |
+
+The PR-gated workflow uses a small `halt` field in `.marmite/current-task.json` — when present, the harness emits a `run_halt` event and exits 0 cleanly. The next `marmite cook` invocation re-enters the orchestrator, which checks `gh pr view` and either resumes (on merge) or rewrites the same halt and exits again.
+
 ### Custom prompts
 
-Drop `builder-prompt.md`, `verifier-prompt.md`, or `orchestrator-prompt.md` into `.marmite/prompts/` to override the defaults. Overrides are checked in.
+Drop `builder-prompt.md`, `verifier-prompt.md`, or `orchestrator-prompt.md` into `.marmite/prompts/` to override the defaults installed by your chosen workflow. Overrides are checked in.
 
 ## Ops
 
@@ -139,6 +151,7 @@ src/core/        harness engine: orchestrator, session, schemas
 src/cli/         CLI commands (init, cook, to-prd) and wizard
 src/skills/      internal skills used by the CLI (not shipped to users)
 templates/       installed into user projects by `marmite init`:
-                   prompts/ goes to <project>/.marmite/prompts/
-                   skills/  goes to <project>/.claude/skills/
+                   workflows/<name>/prompts/ goes to <project>/.marmite/prompts/
+                                              (only the chosen workflow)
+                   skills/                   goes to <project>/.claude/skills/
 ```

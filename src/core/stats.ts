@@ -63,5 +63,5 @@ export function finalizeStoryOutcome(
   runStats.storyOutcomes.push(outcome);
   if (passed) runStats.storiesPassed++;
   else runStats.storiesFailed++;
-  emitEvent("story_outcome", outcome as unknown as Record<string, unknown>);
+  emitEvent("story_outcome", outcome);
 }
