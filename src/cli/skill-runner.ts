@@ -185,8 +185,8 @@ function renderMarkdown(text: string): string {
     }
     let m: RegExpMatchArray | null;
     if ((m = raw.match(/^(#{1,6})\s+(.*)$/))) {
-      const level = m[1].length;
-      const title = m[2];
+      const level = m[1]!.length;
+      const title = m[2]!;
       const visibleLen = title.replace(/\*\*([^*\n]+)\*\*/g, "$1").replace(/`([^`\n]+)`/g, " $1 ").length;
       const rule = "━".repeat(Math.max(8, Math.min(visibleLen, 64)));
       const rendered = renderInline(title);
@@ -208,15 +208,15 @@ function renderMarkdown(text: string): string {
       continue;
     }
     if ((m = raw.match(/^(\s*)>\s?(.*)$/))) {
-      out.push(`${m[1]}\x1b[90m│\x1b[0m ${renderInline(m[2])}`);
+      out.push(`${m[1]}\x1b[90m│\x1b[0m ${renderInline(m[2]!)}`);
       continue;
     }
     if ((m = raw.match(/^(\s*)[-*]\s+(.*)$/))) {
-      out.push(`${m[1]}\x1b[36m▸\x1b[0m ${renderInline(m[2])}`);
+      out.push(`${m[1]}\x1b[36m▸\x1b[0m ${renderInline(m[2]!)}`);
       continue;
     }
     if ((m = raw.match(/^(\s*)(\d+)\.\s+(.*)$/))) {
-      out.push(`${m[1]}\x1b[36m${m[2]}.\x1b[0m ${renderInline(m[3])}`);
+      out.push(`${m[1]}\x1b[36m${m[2]}.\x1b[0m ${renderInline(m[3]!)}`);
       continue;
     }
     out.push(renderInline(raw));

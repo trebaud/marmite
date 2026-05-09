@@ -1,57 +1,42 @@
 # Marmite
 
-A harness that loops three agents (orchestrator, builder, verifier) to implement a project from a PRD. Works on greenfield or existing codebases.
+A small harness CLI that runs three agents in a loop to implement a project from a PRD: an orchestrator picks the next story, a builder writes the code, and a verifier reviews it. The verifier never sees the build session, it has no stake in the plan and tends to catch what's actually broken better. Every handoff goes through a zod-validated JSON file you can read, diff, and replay.
 
-The verifier reviews the builder's work without seeing the build session, which is the whole point: it has no investment in the plan, so it tends to catch what's actually broken. Agents hand off through zod-validated JSON files, so every step is inspectable and replayable.
+Works on greenfield projects and existing codebases.
 
-## Install
+## Quickstart
 
-Requires [Bun](https://bun.sh) and the [Claude CLI](https://docs.claude.com/en/docs/claude-code).
+Requires [Bun](https://bun.sh) and [Claude Code](https://docs.claude.com/en/docs/claude-code).
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+bunx marmite init                 # interview + scaffold
+bunx marmite to-prd ./PRD.md      # creates and validates .marmite/prd.json
+bunx marmite cook                 # start the loop
 ```
 
-Run on demand with `bunx`:
+## Project shape
 
-```bash
-bunx marmite init
-bunx marmite cook
-```
-
-Or add to a project:
-
-```bash
-bun add -D marmite
-bun marmite cook
-```
-
-## Setup
-
-```bash
-marmite init
-```
-
-This launches a Claude Code skill that interviews you, figures out whether your repo is greenfield or has existing code, and points sensors at configs you already have. It writes `marmite.json` and `prd.json`, and won't overwrite anything without asking.
-
-After init, your project looks like:
+`marmite init` interviews you, detects whether the repo is greenfield or has existing code, and wires sensors to configs already in your repo. Nothing is overwritten without asking.
 
 ```
 my-project/
-├── marmite.json          # config — paths, sensors, models, budgets
-├── prd.json              # the PRD that drives the loop
+├── marmite.json              # config: paths, sensors, models, budgets
 ├── .marmite/
-│   ├── prompts/          # optional prompt overrides (checked in)
-│   ├── events.jsonl      # gitignored — per-session event log
-│   └── feedback.md       # gitignored — drop async notes here mid-run
-└── app/                  # your code (path is configurable)
+│   ├── prd.json              # the PRD that drives the loop          (git)
+│   ├── progress.txt          # rolling story status                  (git)
+│   ├── current-task.json     # per-iteration agent handoff           (git)
+│   ├── prompts/              # optional prompt overrides             (git)
+│   ├── events.jsonl          # per-session event log              (ignored)
+│   └── feedback.md           # async notes, dropped mid-run       (ignored)
+└── app/                      # your code (path is configurable)
 ```
 
-## Run
+## Cook
 
 ```bash
-marmite cook                                          # default: 1000 iterations
-marmite cook -n 5                                     # custom iteration count
+marmite cook                                          # 1000 iterations (default)
+marmite cook -n 5                                     # custom iteration cap
 marmite cook --prd ./x.json
 marmite cook --model claude-opus-4-7
 marmite cook --cost-budget 10                         # per-story cap (USD)
@@ -59,9 +44,7 @@ marmite cook --cost-budget-total 100                  # halts when total exceede
 marmite cook --builder-model claude-opus-4-7 --verifier-model claude-sonnet-4-6
 ```
 
-`marmite` and `marmite cook` are equivalent.
-
-## Workflow
+## The loop
 
 ```mermaid
 flowchart LR
@@ -77,70 +60,57 @@ flowchart LR
 
 | Phase | Agent | Output |
 |---|---|---|
-| ORCHESTRATE | Orchestrator | Picks story, runs sensors, writes brief |
-| BUILD | Builder | Implements story, commits |
-| VERIFY | Verifier | Approves or rejects |
-| FIX | Builder | Resumes session to address feedback |
+| `ORCHESTRATE` | Orchestrator | Picks story, runs sensors, writes the brief |
+| `BUILD` | Builder | Implements, commits |
+| `VERIFY` | Verifier | Approves or rejects |
+| `FIX` | Builder | Resumes the same session to address feedback |
 
-`current-task.json` is the single handoff between agents. If a run is interrupted, restarting `marmite cook` resumes naturally — the orchestrator picks the next non-passing story from `prd.json`, and any in-progress story (no `verify:` commit yet) gets re-attempted.
+`current-task.json` is the single handoff. If a run crashes, run `marmite cook` again: the orchestrator picks the next non-passing story, and any in-flight story without a `verify:` commit gets re-attempted.
 
 ## Async feedback
 
-Steer a long run without stopping it: drop notes into `.marmite/feedback.md` at any time.
+You can steer a running loop without stopping it. Drop a note any time:
 
 ```bash
-echo "the login UI feels too cramped, add vertical spacing on the next pass" > .marmite/feedback.md
+echo "login UI feels cramped, add vertical spacing on the next pass" > .marmite/feedback.md
 ```
 
-At the start of the next iteration, the orchestrator reads the file, applies it to story selection and `guidance` in `current-task.json`, then deletes it. The PRD is left untouched — feedback influences the upcoming iteration only. If the orchestrator forgets to delete, the harness force-clears as a safety net.
+The next iteration folds the note into story selection and `guidance`, then deletes the file. The PRD stays untouched, so feedback shapes the upcoming pass only. The harness clears the file as a fallback if the orchestrator forgets.
 
 ## Configuration
 
-`marmite.json` is JSONC. Every field is optional.
+`marmite.json` (JSONC, all fields optional):
 
 ```jsonc
 {
-  "app": "./app",                  // where application code lives
-  "prd": "./prd.json",
+  "app": "./app",
+  "prd": "./.marmite/prd.json",
 
   "sensors": [
-    {
-      "name": "eslint",
-      "type": "debt",
-      "package": "eslint",
-      "configPath": "./app/.eslintrc.json",
-      "guidance": "Run via `bun run lint:strict` in the app workspace."
-    },
-    {
-      "name": "tsc",
-      "type": "pulse",
-      "package": "typescript",
-      "configPath": "./app/tsconfig.json",
-      "guidance": "Use `bun run typecheck` so workspace refs resolve."
-    }
+    { "name": "eslint", "type": "debt",  "package": "eslint",     "configPath": "./app/.eslintrc.json", "guidance": "Run via `bun run lint:strict`." },
+    { "name": "tsc",    "type": "pulse", "package": "typescript", "configPath": "./app/tsconfig.json",  "guidance": "Use `bun run typecheck`." }
   ],
 
   "models": {
-    "default": "claude-sonnet-4-6",
-    "builder": "claude-sonnet-4-6",
-    "verifier": "claude-haiku-4-5",
+    "default":      "claude-sonnet-4-6",
+    "builder":      "claude-sonnet-4-6",
+    "verifier":     "claude-haiku-4-5",
     "orchestrator": "claude-sonnet-4-6"
   },
 
   "timeouts": { "build": "20m", "verify": "10m", "fix": "15m", "orchestrate": "10m" },
   "budget":   { "perStory": 15, "total": 100 },
   "retries":  { "fix": 3, "transient": 2 },
-  "maxIterations": 1000,
-  "resume": true
+  "maxIterations": 1000
 }
 ```
 
 ### Sensors
 
-Deterministic checks the orchestrator runs between stories. `configPath` points at an existing config anywhere in the repo (nothing gets copied); `guidance` is freeform prose passed to the agent. Each `type` maps to a skill the orchestrator suggests to the builder when the sensor fails:
+Deterministic checks the orchestrator runs between stories. `configPath` points at an existing config (nothing is copied); `guidance` is prose handed to the agent. Each `type` maps to a skill the orchestrator suggests to the builder on failure:
 
-| Type | Purpose | Typical tool | Suggested skill |
-|------|---------|--------------|-----------------|
+| Type | Catches | Tools | Skill |
+|------|---------|-------|-------|
 | `drift` | Import violations, circular deps, layer misuse | dependency-cruiser | `architect` |
 | `debt` | Style, complexity, unused code, type errors | eslint, tsc | `clean-code`, `refactor` |
 | `pulse` | Failing or flaky tests | jest, vitest | `debug` |
@@ -148,29 +118,27 @@ Deterministic checks the orchestrator runs between stories. `configPath` points 
 
 ### Custom prompts
 
-Drop a file named `builder-prompt.md`, `verifier-prompt.md`, or `orchestrator-prompt.md` into `.marmite/prompts/` to override the default. Overrides are checked in.
+Drop `builder-prompt.md`, `verifier-prompt.md`, or `orchestrator-prompt.md` into `.marmite/prompts/` to override the defaults. Overrides are checked in.
 
-## Operational notes
+## Ops
 
-- Transient errors (429, 5xx, network) retry with exponential backoff; fatal errors abort the iteration.
-- Per-story cost cap halts remaining fix attempts; total-run cap halts before the next iteration.
-- When the PRD branch changes, prior `prd.json` + `progress.txt` move to `archive/YYYY-MM-DD-branchname/`.
-- All protocol files are written atomically (temp + rename).
+- Transient errors (429, 5xx, network) retry with exponential backoff. Fatal errors abort the iteration.
+- Per-story cap halts remaining fix attempts; total-run cap halts before the next iteration.
+- Every protocol file lives under `.marmite/` and is written atomically (temp + rename).
 
-## Developing marmite
+## Hacking on marmite
 
 ```bash
-git clone <repo> && cd marmite
-bun install
+git clone <repo> && cd marmite && bun install
 ```
 
-Marmite is a harness, not an application — there's no application code in this repo. To test end-to-end, run `bunx --bun ./index.ts init` in a scratch directory (or `bun link`, then `marmite init`), then `marmite cook`.
+There is no `app/` in this repo; marmite is a harness, not an application. To smoke-test, run `bunx --bun ./index.ts init` in a scratch dir (or `bun link`, then `marmite init`), then `marmite cook`.
 
-Layout:
-
-- `src/core/` — harness engine (orchestrator, session, schemas).
-- `src/cli/` — CLI commands (`init`, `cook`, `to-prd`) and shared skill-runner.
-- `src/skills/` — internal skills used by the CLI (`marmite-init`, `to-prd`). Not copied to user projects.
-- `templates/` — assets installed into the user's project at `marmite init`:
-  - `templates/prompts/` → `<project>/.marmite/prompts/`
-  - `templates/skills/` → `<project>/.claude/skills/`
+```
+src/core/        harness engine: orchestrator, session, schemas
+src/cli/         CLI commands (init, cook, to-prd) and skill-runner
+src/skills/      internal skills used by the CLI (not shipped to users)
+templates/       installed into user projects by `marmite init`:
+                   prompts/ goes to <project>/.marmite/prompts/
+                   skills/  goes to <project>/.claude/skills/
+```

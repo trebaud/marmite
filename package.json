@@ -1,26 +1,51 @@
 {
   "name": "marmite",
   "version": "0.1.0",
-  "description": "Three-agent harness that drives autonomous coding from a PRD.",
+  "description": "Three-agent harness (orchestrator, builder, verifier) that drives autonomous coding from a PRD.",
   "type": "module",
+  "license": "MIT",
+  "author": "Thomas Rebaud <rebaud.thomas@gmail.com>",
+  "homepage": "https://github.com/trebaud/marmite#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trebaud/marmite.git"
+  },
+  "bugs": {
+    "url": "https://github.com/trebaud/marmite/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "agent",
+    "agents",
+    "autonomous",
+    "harness",
+    "prd",
+    "codegen",
+    "anthropic",
+    "bun",
+    "cli"
+  ],
   "bin": {
     "marmite": "./index.ts"
   },
   "scripts": {
-    "marmite": "bun run index.ts"
+    "marmite": "bun run index.ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run typecheck"
   },
   "files": [
     "index.ts",
     "src",
-    "templates"
+    "templates",
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "bun": ">=1.0.0"
   },
   "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
+    "@types/bun": "latest",
     "typescript": "^5"
   },
   "dependencies": {
