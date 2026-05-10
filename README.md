@@ -55,13 +55,16 @@ marmite cook --builder-model claude-opus-4-7 --verifier-model claude-sonnet-4-6
           ▼                 ▼              ▼                  reads + retries)
    ┌──────────────┐    ┌─────────┐    ┌──────────┐   pass    ┌──────────┐
    │ Orchestrator │ ──▶│ Builder │ ──▶│ Verifier │ ────────▶ │ prd.json │
-   └──────────────┘    └────┬────┘    └──────────┘           └──────────┘
-                            │
-                            │ commit
-                            ▼
-                     ┌──────────────┐
-                     │ progress.txt │
-                     └──────────────┘
+   └──────────────┘    └────┬────┘    └──────────┘           └────┬─────┘
+          ▲                 │                                     │
+          │                 │ commit                              │
+          │                 ▼                                     │
+          │          ┌──────────────┐                             │
+          │          │ progress.txt │                             │
+          │          └──────────────┘                             │
+          │                                                       │
+          └───────────────────────────────────────────────────────┘
+                                next story
 ```
 
 | Phase | Agent | Output |
