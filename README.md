@@ -1,6 +1,6 @@
 # Marmite
 
-A small harness CLI that runs three agents in a loop to implement a project from a PRD: an orchestrator picks the next story, a builder writes the code, and a verifier reviews it. The verifier never sees the build session, it has no stake in the plan and tends to catch what's actually broken better. Every handoff goes through a zod-validated JSON file you can read, diff, and replay.
+A low footprint harness CLI that runs three agents in a loop to implement a project from a PRD: an orchestrator picks the next story, a builder writes the code, and a verifier reviews it. Every handoff goes through a zod-validated JSON file you can read, diff, and replay.
 
 Works on greenfield projects and existing codebases.
 
