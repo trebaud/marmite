@@ -131,27 +131,3 @@ The PR-gated workflow uses a small `halt` field in `.marmite/current-task.json` 
 ### Custom prompts
 
 Drop `builder-prompt.md`, `verifier-prompt.md`, or `orchestrator-prompt.md` into `.marmite/prompts/` to override the defaults installed by your chosen workflow. Overrides are checked in.
-
-## Ops
-
-- Transient errors (429, 5xx, network) retry with exponential backoff. Fatal errors abort the iteration.
-- Per-story cap halts remaining fix attempts; total-run cap halts before the next iteration.
-- Every protocol file lives under `.marmite/` and is written atomically (temp + rename).
-
-## Hacking on marmite
-
-```bash
-git clone <repo> && cd marmite && bun install
-```
-
-There is no `app/` in this repo; marmite is a harness, not an application. To smoke-test, run `bunx --bun ./index.ts init` in a scratch dir (or `bun link`, then `marmite init`), then `marmite cook`.
-
-```
-src/core/        harness engine: orchestrator, session, schemas
-src/cli/         CLI commands (init, cook, to-prd) and wizard
-src/skills/      internal skills used by the CLI (not shipped to users)
-templates/       installed into user projects by `marmite init`:
-                   workflows/<name>/prompts/ goes to <project>/.marmite/prompts/
-                                              (only the chosen workflow)
-                   skills/                   goes to <project>/.claude/skills/
-```
