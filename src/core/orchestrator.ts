@@ -88,9 +88,22 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
   reporter.start(config.maxIterations);
 
+  const warnedBudgetThresholds = new Set<number>();
+
   for (let i = 1; i <= config.maxIterations; i++) {
     if (runAbort.signal.aborted) break;
     const iterationStartedAtMs = Date.now();
+
+    // Budget warning thresholds (50%, 80%) — emit once each before the hard stop.
+    if (config.costBudgetUsdTotal > 0) {
+      const spent = totalCost(runStats);
+      for (const threshold of [0.5, 0.8]) {
+        if (!warnedBudgetThresholds.has(threshold) && spent >= config.costBudgetUsdTotal * threshold) {
+          warnedBudgetThresholds.add(threshold);
+          await emitEvent("budget_warning", { threshold, spent, budget: config.costBudgetUsdTotal });
+        }
+      }
+    }
 
     // Total cost gate
     if (config.costBudgetUsdTotal > 0 && totalCost(runStats) >= config.costBudgetUsdTotal) {
@@ -116,7 +129,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     }
 
     // ── Phase 0: Orchestrate ──
-    await detectAndAnnounceFeedback(i, reporter);
+    const feedbackWasDetected = await detectAndAnnounceFeedback(i, reporter);
 
     await emitEvent("phase_start", { phase: "orchestrate", iteration: i, storyId: nextStory.id });
     reporter.phaseStart("orchestrate", { iteration: i, storyId: nextStory.id });
@@ -145,13 +158,14 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     recordSession(runStats, orchestrate, "orchestrate", i, nextStory.id, reporter);
     await emitEvent("phase_end", { phase: "orchestrate", iteration: i, outcome: orchestrate.outcome });
 
-    await forceClearFeedbackIfPresent(i, reporter);
+    await forceClearFeedbackIfPresent(i, reporter, feedbackWasDetected);
 
     if (runAbort.signal.aborted) break;
 
     // Read orchestrator decision from current-task.json — determine actual story selected.
     const decisionParsed = await readCurrentTaskDecision();
     let currentStory = nextStory;
+    let storySource: "orchestrator" | "fallback" = "fallback";
 
     if (decisionParsed.kind === "present") {
       const decision = decisionParsed.value;
@@ -177,6 +191,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       const decidedStory = prdState.stories.find((s) => s.id === decision.storyId);
       if (decidedStory) {
         currentStory = decidedStory;
+        storySource = "orchestrator";
       } else {
         reporter.error(
           `orchestrator picked unknown story '${decision.storyId}', falling back to priority order`,
@@ -193,6 +208,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       reporter.info("  current-task.json not found after orchestrate — using priority-order story selection.");
     }
 
+    await emitEvent("story_selected", { iteration: i, storyId: currentStory.id, title: currentStory.title, source: storySource });
     reporter.iterationStart(i, config.maxIterations, currentStory.id, currentStory.title);
     await emitEvent("iteration_start", { iteration: i, storyId: currentStory.id, title: currentStory.title });
 

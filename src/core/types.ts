@@ -136,7 +136,30 @@ export type HarnessEvent =
       qaFail: number;
     }
   | { kind: "feedback_detected"; iteration: number; bytes: number; preview: string }
+  | { kind: "feedback_applied"; iteration: number }
   | { kind: "feedback_force_cleared"; iteration: number }
+  | {
+      kind: "story_selected";
+      iteration: number;
+      storyId: string;
+      title: string;
+      source: "orchestrator" | "fallback";
+    }
+  | {
+      kind: "budget_warning";
+      threshold: number;
+      spent: number;
+      budget: number;
+    }
+  | {
+      kind: "agent_error";
+      phase: SessionPhase;
+      iteration: number;
+      attempt: number | undefined;
+      storyId: string;
+      outcome: "fatal_error" | "transient_error";
+      errorMessage: string | undefined;
+    }
   | {
       kind: "session_result";
       phase: SessionPhase;

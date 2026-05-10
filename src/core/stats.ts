@@ -38,6 +38,16 @@ export function recordSession(
     anomalyFlags: stats.anomalyFlags,
     errorMessage: stats.errorMessage,
   });
+  if (stats.outcome === "fatal_error" || stats.outcome === "transient_error") {
+    emitEvent("agent_error", {
+      phase,
+      iteration,
+      attempt,
+      storyId,
+      outcome: stats.outcome,
+      errorMessage: stats.errorMessage,
+    });
+  }
   return stats;
 }
 
