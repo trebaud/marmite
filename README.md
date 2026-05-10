@@ -46,16 +46,22 @@ marmite cook --builder-model claude-opus-4-7 --verifier-model claude-sonnet-4-6
 
 ## The loop
 
-```mermaid
-flowchart LR
-    O["Orchestrator"] -->|story + sensors| CT[("current-task.json")]
-    CT --> B["Builder"]
-    B -->|commit + log| PR[("progress.txt")]
-    PR --> V["Verifier"]
-    CT --> V
-    V -->|verdict| CT
-    CT -.->|pass| P[("prd.json")]
-    CT -.->|fail| B
+```
+   ┌───────────────────────────────────────────────────┐
+   │                 current-task.json                 │ ◀── shared handoff
+   └───────────────────────────────────────────────────┘    (fail loops here:
+          ▲                 ▲              ▲                  Verifier writes
+          │                 │              │                  verdict, Builder
+          ▼                 ▼              ▼                  reads + retries)
+   ┌──────────────┐    ┌─────────┐    ┌──────────┐   pass    ┌──────────┐
+   │ Orchestrator │ ──▶│ Builder │ ──▶│ Verifier │ ────────▶ │ prd.json │
+   └──────────────┘    └────┬────┘    └──────────┘           └──────────┘
+                            │
+                            │ commit
+                            ▼
+                     ┌──────────────┐
+                     │ progress.txt │
+                     └──────────────┘
 ```
 
 | Phase | Agent | Output |
