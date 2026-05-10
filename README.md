@@ -32,18 +32,6 @@ my-project/
 └── app/                      # your code (path is configurable)
 ```
 
-## Cook
-
-```bash
-marmite cook                                          # 1000 iterations (default)
-marmite cook -n 5                                     # custom iteration cap
-marmite cook --prd ./x.json
-marmite cook --model claude-opus-4-7
-marmite cook --cost-budget 10                         # per-story cap (USD)
-marmite cook --cost-budget-total 100                  # halts when total exceeded
-marmite cook --builder-model claude-opus-4-7 --verifier-model claude-sonnet-4-6
-```
-
 ## The loop
 
 ```
