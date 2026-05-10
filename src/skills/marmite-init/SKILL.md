@@ -64,7 +64,7 @@ Ask **one question at a time**. Adapt based on previous answers. Always offer se
 
    - If the user picked `pr-on-checkpoint`, ask one follow-up: **checkpoint trigger**. Two options:
      - `every` (default) — open a PR after every N passing stories. Ask for N (default `1`, which is one PR per story). Save as `workflowConfig: { "kind": "every", "stories": N }`.
-     - `epic` — open a PR after the last story of each PRD epic passes. Save as `workflowConfig: { "kind": "epic" }`. Mention that the user must tag stories in `.marmite/prd.json` with an `epic` field for this to do anything useful (`marmite to-prd` supports it).
+     - `epic` — open a PR after the last story of each PRD epic passes. Save as `workflowConfig: { "kind": "epic" }`. Stories in `.marmite/prd.json` always carry an `epic` field (`marmite to-prd` enforces it); for this trigger to be useful the user should split work into distinct epics rather than the default single-epic PRD.
    - If the user picked `pr-on-checkpoint`, run `gh auth status` to verify the GitHub CLI is installed and authenticated. If it isn't, mention it as a follow-up step the user must complete before `marmite cook` will work — but don't block init on it.
 
 3. **Sensors** — which deterministic checks should marmite run between stories?

@@ -54,8 +54,8 @@ This counts `verify: <storyId> - passed verification` commits, which the harness
 **`kind: "epic"`** — fire when the just-passed story is the **last** story of its epic. To decide:
 
 1. From `.marmite/current-task.json`, read the just-passed `storyId` (call it `passedStoryId`).
-2. Read `.marmite/prd.json` and look up the story whose `id === passedStoryId`. Note its `epic` field (a string, or undefined if the story has no epic).
-3. Look at all stories in `.marmite/prd.json` whose `epic` matches the passed story's epic (use strict equality, including the case where both are undefined — in which case the story is its own implicit one-story epic and the predicate fires every time).
+2. Read `.marmite/prd.json` and look up the story whose `id === passedStoryId`. Note its `epic` field (every story carries one — `marmite to-prd` enforces it).
+3. Look at all stories in `.marmite/prd.json` whose `epic` matches the passed story's epic (strict string equality).
 4. Among those stories, are there any with `passes: false` whose `id` is *not* the just-passed one? If yes, the epic is not yet complete — skip to Phase C. If no (every other story in the epic already has `passes: true`), the epic just finished — fire the checkpoint.
 
 If the predicate does not fire, skip to Phase C.

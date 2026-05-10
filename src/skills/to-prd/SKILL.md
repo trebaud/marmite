@@ -55,7 +55,7 @@ Do not run `marmite cook` for the user. End the session after step 7.
 
 The `dependencies` field is optional. Use it to communicate execution order intent — marmite runs stories sequentially by priority, but `dependencies` makes the dependency graph explicit so humans reviewing the plan can spot ordering issues. Dependencies must point at stories with **lower priority numbers** (the validator enforces this).
 
-The `epic` field is optional. It groups related stories under a shared label (e.g. `"auth"`, `"dashboard"`, `"checkout"`). Stories in the same epic should be contiguous in priority order. The `pr-on-checkpoint` workflow with `kind: "epic"` uses this field to decide when to open a PR — once every story in an epic has passed, the next orchestrator iteration cuts a PR for the whole epic. Stories without an `epic` are treated as their own one-story epic.
+The `epic` field is required. It groups related stories under a shared label (e.g. `"auth"`, `"dashboard"`, `"checkout"`). Stories in the same epic must be contiguous in priority order. The `pr-on-checkpoint` workflow with `kind: "epic"` uses this field to decide when to open a PR — once every story in an epic has passed, the next orchestrator iteration cuts a PR for the whole epic. Other workflows ignore it. If the PRD doesn't break work into distinct themes, put every story in a single `"main"` epic.
 
 ---
 
@@ -221,7 +221,8 @@ Add ability to mark tasks with different statuses.
       "priority": 1,
       "passes": false,
       "notes": "",
-      "dependencies": []
+      "dependencies": [],
+      "epic": "main"
     },
     {
       "id": "US-002",
@@ -237,7 +238,8 @@ Add ability to mark tasks with different statuses.
       "priority": 2,
       "passes": false,
       "notes": "",
-      "dependencies": ["US-001"]
+      "dependencies": ["US-001"],
+      "epic": "main"
     },
     {
       "id": "US-003",
@@ -252,7 +254,8 @@ Add ability to mark tasks with different statuses.
       "priority": 3,
       "passes": false,
       "notes": "",
-      "dependencies": ["US-001"]
+      "dependencies": ["US-001"],
+      "epic": "main"
     }
   ]
 }
@@ -272,7 +275,7 @@ Before calling `Write` on `$MARMITE_PRD_OUTPUT`, verify:
 - [ ] IDs match `US-###`, sequential, no duplicates.
 - [ ] Every story has `passes: false`, `notes: ""`, `dependencies: []` (or non-empty array of valid prior IDs).
 - [ ] `dependencies` only reference IDs with strictly lower `priority`.
-- [ ] If using epics, stories sharing an `epic` value are contiguous in priority order.
+- [ ] Every story has an `epic` value; stories sharing an `epic` are contiguous in priority order. Default to a single `"main"` epic if the PRD has no natural grouping.
 - [ ] Every story has "Typecheck passes" as a criterion.
 - [ ] UI stories have "Verify in browser using dev-browser skill" as a criterion.
 - [ ] Acceptance criteria are verifiable (not vague).
