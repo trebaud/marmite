@@ -145,5 +145,3 @@ vite.config.ts.timestamp-*
 # not in the package itself). Everything else lives under .marmite/.
 .marmite/
 marmite.json
-
-.claude/
