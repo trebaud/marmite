@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { PATHS } from "../../core/paths.ts";
-import { emitEvent, initEventLog } from "../../core/events.ts";
+import { emitEvent, initEventLog, setCurrentIteration, setRunId } from "../../core/events.ts";
 import { die } from "../args.ts";
 
 // Subcommand the orchestrator agent invokes around each sensor it runs.
@@ -43,6 +43,12 @@ export async function runEmitEvent(argv: string[]): Promise<void> {
   const flags = parseFlags(argv.slice(4));
 
   initEventLog(PATHS.events);
+  if (process.env.MARMITE_RUN_ID) setRunId(process.env.MARMITE_RUN_ID);
+  const itEnv = process.env.MARMITE_ITERATION;
+  if (itEnv) {
+    const n = Number(itEnv);
+    if (Number.isInteger(n) && n > 0) setCurrentIteration(n);
+  }
 
   if (kind === "sensor-start") {
     const parsed = SensorStart.safeParse({

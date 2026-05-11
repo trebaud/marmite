@@ -1,4 +1,5 @@
 import { resolve } from "path";
+import { getVersion } from "../core/version.ts";
 
 export interface CliOverrides {
   maxIterations?: number;
@@ -16,13 +17,21 @@ export interface CliOverrides {
   verbose?: boolean;
 }
 
+export function printVersion(): never {
+  console.log(`marmite ${getVersion()}`);
+  process.exit(0);
+}
+
 export function usage(): never {
-  console.log(`Usage:
+  console.log(`marmite ${getVersion()}
+
+Usage:
   marmite                            Run the agent loop in the current project (alias: marmite cook)
   marmite cook [options]             Run the agent loop
   marmite init                       Set up marmite in the current project (interactive wizard)
   marmite to-prd <PRD.md>            Convert a markdown PRD into .marmite/prd.json
   marmite doctor                     Preflight check — config, prompts, contract fences, sensors
+  marmite stats [path]               Summarize a .marmite/events.jsonl run log
   marmite emit-event <kind> [...]    Append a structured event to .marmite/events.jsonl
                                      (used by the orchestrator agent around sensor runs)
 
@@ -41,6 +50,7 @@ Options for cook:
       --max-fix-attempts <n>  Fix attempts per story
       --retries <n>           Transient retries per session
   -v, --verbose               Verbose log output (raw SDK messages and stats)
+  -V, --version               Print marmite version and exit
   -h, --help                  Show this help
 
 Layer order (low → high precedence):
@@ -90,6 +100,7 @@ export function parseArgs(argv: string[]): { cli: CliOverrides; configPath: stri
     const next = () => args[++i];
     switch (arg) {
       case "-h": case "--help": usage();
+      case "-V": case "--version": printVersion();
       case "-c": case "--config":
         configPath = next();
         if (!configPath) die("--config requires a path");

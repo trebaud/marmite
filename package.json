@@ -32,7 +32,8 @@
   "scripts": {
     "marmite": "bun run index.ts",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "bun run typecheck"
+    "test": "bun test",
+    "prepublishOnly": "bun run typecheck && bun test"
   },
   "files": [
     "index.ts",

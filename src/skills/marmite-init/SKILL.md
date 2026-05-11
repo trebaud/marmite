@@ -107,7 +107,10 @@ Ask the user to confirm. If they say no, loop back to whichever step they want t
 
 - For each file you'd write, check if it already exists. If yes, **show the diff** and ask before overwriting.
 - Never `rm` a user file.
-- Do **not** modify `.gitignore`. The user manages their own ignore rules.
+- `.gitignore` may be **appended to** only to add the two per-developer marmite files
+  (`.marmite/events.jsonl` and `.marmite/feedback.md`) if they aren't already present.
+  Do not touch any other ignore rules. If `.gitignore` doesn't exist, create one with
+  just those two lines plus a leading `# marmite` comment.
 
 ### `marmite.json` shape
 

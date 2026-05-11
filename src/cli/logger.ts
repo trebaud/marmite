@@ -53,6 +53,17 @@ function fmtTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
+// Cache-hit ratio: cached reads as a share of all input tokens charged.
+// Higher is better — every cache read costs ~10× less than a fresh read.
+export function cacheHitRatio(cacheReadTokens: number, inputTokens: number): number {
+  const denom = cacheReadTokens + inputTokens;
+  return denom === 0 ? 0 : cacheReadTokens / denom;
+}
+
+function fmtRatio(r: number): string {
+  return `${(r * 100).toFixed(1)}%`;
+}
+
 function outcomeBadge(outcome: string): string {
   switch (outcome) {
     case "success": return `${c.bgGreen}${c.bold} OK ${c.reset}`;
@@ -375,9 +386,11 @@ function vFinalReport(runStats: RunStats): void {
     console.log(`${line}`);
   }
 
+  const hitRatio = cacheHitRatio(totalCacheRead, totalIn);
   console.log(`${line}   Total turns:       ${totalTurns}`);
   console.log(`${line}   Tokens:            in=${fmtTokens(totalIn)} out=${fmtTokens(totalOut)}`);
   console.log(`${line}                      cache_read=${fmtTokens(totalCacheRead)} cache_create=${fmtTokens(totalCacheCreate)}`);
+  console.log(`${line}   ${c.bold}Cache hit ratio:    ${fmtRatio(hitRatio)}${c.reset} ${c.dim}(cache_read / (cache_read + input))${c.reset}`);
   console.log(`${line} ${c.bold}${sep}${c.reset}`);
 }
 
@@ -593,11 +606,14 @@ function tFinalReport(runStats: RunStats): void {
   clearSpinner();
   const elapsed = Date.now() - runStats.startedAt.getTime();
   const totalCost = runStats.sessions.reduce((sum, s) => sum + s.costUsd, 0);
+  const totalIn = runStats.sessions.reduce((sum, s) => sum + s.inputTokens, 0);
+  const totalCacheRead = runStats.sessions.reduce((sum, s) => sum + s.cacheReadTokens, 0);
+  const hitRatio = cacheHitRatio(totalCacheRead, totalIn);
   const passed = runStats.storiesPassed;
   const failed = runStats.storiesFailed;
   emitLine("");
   emitLine(`${c.dim}───────────────────────────────${c.reset}`);
-  emitLine(`  ${c.green}${passed} passed${c.reset}${failed > 0 ? `, ${c.red}${failed} failed${c.reset}` : ""}  ${c.dim}· ${fmtCost(totalCost)} · ${fmtDuration(elapsed)} · ${runStats.sessions.length} sessions${c.reset}`);
+  emitLine(`  ${c.green}${passed} passed${c.reset}${failed > 0 ? `, ${c.red}${failed} failed${c.reset}` : ""}  ${c.dim}· ${fmtCost(totalCost)} · ${fmtDuration(elapsed)} · ${runStats.sessions.length} sessions · cache ${fmtRatio(hitRatio)}${c.reset}`);
   if (runStats.storyOutcomes.length > 0) {
     for (const o of runStats.storyOutcomes) {
       const sym = o.passed ? `${c.green}✓${c.reset}` : `${c.red}✗${c.reset}`;

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "fs";
 import { resolve } from "path";
 import { FRAMEWORK_PATHS, PATHS, setUserRoot, resolvePrompt, type PromptName } from "../../core/paths.ts";
 import { MarmiteConfigSchema, formatConfigError, type MarmiteConfig } from "../../core/config.ts";
+import { getVersion } from "../../core/version.ts";
 import { stripJsonc } from "../config.ts";
 
 // `marmite doctor` — preflight checker. Validates that the user's project is
@@ -165,21 +166,31 @@ Exit code is non-zero if any check fails (warnings are tolerated).`);
     }
   }
 
-  // 6. .gitignore must NOT exclude any .marmite/ artifacts (team shares full history)
+  // 6. .gitignore policy: tracked artifacts (prd.json, progress.txt, current-task.json,
+  // prompts/) must NOT be excluded. The two per-developer files (events.jsonl,
+  // feedback.md) MAY be excluded — and ideally are, so they aren't churned into commits.
   const gitignorePath = resolve(projectRoot, ".gitignore");
   if (existsSync(gitignorePath)) {
     const lines = readFileSync(gitignorePath, "utf-8")
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("#"));
-    const offenders = lines.filter((l) => /(^|\/)\.marmite($|\/)/.test(l) || /\.marmite\/.+/.test(l));
+    const ALLOWED = new Set([".marmite/events.jsonl", ".marmite/feedback.md"]);
+    const marmiteLines = lines.filter((l) => /(^|\/)\.marmite($|\/)/.test(l) || /\.marmite\/.+/.test(l));
+    const offenders = marmiteLines.filter((l) => !ALLOWED.has(l));
     if (offenders.length === 0) {
-      findings.push({ severity: "ok", message: ".gitignore does not exclude any .marmite/ artifacts" });
+      findings.push({
+        severity: "ok",
+        message: ".gitignore does not exclude any tracked .marmite/ artifacts",
+      });
     } else {
       findings.push({
         severity: "fail",
-        message: ".gitignore is excluding .marmite/ artifacts",
-        detail: `offending pattern(s): ${offenders.join(", ")} — everything in .marmite/ must be tracked`,
+        message: ".gitignore is excluding tracked .marmite/ artifacts",
+        detail:
+          `offending pattern(s): ${offenders.join(", ")}\n` +
+          `only \`.marmite/events.jsonl\` and \`.marmite/feedback.md\` may be ignored; ` +
+          `the rest of .marmite/ must be tracked`,
       });
     }
   }
@@ -220,6 +231,8 @@ Exit code is non-zero if any check fails (warnings are tolerated).`);
   }
 
   // ── Render ──
+  console.log(`marmite ${getVersion()}  (project root: ${projectRoot})`);
+  console.log("");
   const counts = { ok: 0, warn: 0, fail: 0 };
   for (const f of findings) counts[f.severity]++;
   for (const f of findings) {

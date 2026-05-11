@@ -2,7 +2,7 @@ import type { HarnessConfig, RunStats } from "./types.ts";
 import type { Reporter } from "./reporter.ts";
 import { silentReporter } from "./reporter.ts";
 import { PATHS, resolvePrompt } from "./paths.ts";
-import { emitEvent, initEventLog, tailEvents } from "./events.ts";
+import { emitEvent, initEventLog, setCurrentIteration, setRunId, tailEvents } from "./events.ts";
 import { fileExists, gitCommit, gitEnsureBranch, readJsonField, sleep, writeAtomic } from "./utils.ts";
 import { detectAndAnnounceFeedback, forceClearFeedbackIfPresent } from "./feedback.ts";
 import {
@@ -26,7 +26,15 @@ import {
 
 export async function run(config: HarnessConfig, reporter: Reporter = silentReporter): Promise<void> {
   initEventLog(PATHS.events);
+
+  // Stamp every event in this run with a UUID. The agent subprocesses inherit
+  // it via env so events they emit (via `marmite emit-event`) match.
+  const runId = crypto.randomUUID();
+  setRunId(runId);
+  process.env.MARMITE_RUN_ID = runId;
+
   await emitEvent("run_start", {
+    runId,
     maxIterations: config.maxIterations,
     model: config.model,
     builderModel: config.builderModel,
@@ -93,6 +101,8 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
   for (let i = 1; i <= config.maxIterations; i++) {
     if (runAbort.signal.aborted) break;
     const iterationStartedAtMs = Date.now();
+    setCurrentIteration(i);
+    process.env.MARMITE_ITERATION = String(i);
 
     // Budget warning thresholds (50%, 80%) — emit once each before the hard stop.
     if (config.costBudgetUsdTotal > 0) {
@@ -399,6 +409,8 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
     await sleep(2000);
   }
+
+  setCurrentIteration(null);
 
   if (terminated) reporter.aborted();
   else reporter.maxReached(config.maxIterations);

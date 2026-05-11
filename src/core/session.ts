@@ -25,6 +25,7 @@ export interface SessionStatsRaw {
 export interface SessionResult {
   result: string;
   sessionId: string;
+  model: string;
   outcome: SessionOutcome;
   errorMessage?: string;
   stats: SessionStatsRaw;
@@ -149,6 +150,7 @@ export async function runQuery(
     return {
       result: drained.result,
       sessionId: drained.sessionId,
+      model,
       outcome: "success",
       stats: drained.stats,
     };
@@ -161,6 +163,7 @@ export async function runQuery(
     return {
       result: "",
       sessionId: "",
+      model,
       outcome,
       errorMessage: classified.message,
       stats: { ...emptyStats },

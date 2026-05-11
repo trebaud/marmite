@@ -45,6 +45,7 @@ export interface SessionStats {
   iteration: number;
   attempt?: number;
   storyId?: string;
+  model: string;
   outcome: SessionOutcome;
   errorMessage?: string;
   costUsd: number;
@@ -80,6 +81,7 @@ export interface RunStats {
 export type HarnessEvent =
   | {
       kind: "run_start";
+      runId: string;
       maxIterations: number;
       model: string;
       builderModel: string;
@@ -166,10 +168,15 @@ export type HarnessEvent =
       iteration: number;
       attempt: number | undefined;
       storyId: string;
+      model: string;
       outcome: SessionOutcome;
       costUsd: number;
       durationMs: number;
       numTurns: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreateTokens: number;
       anomalyFlags: string[];
       errorMessage: string | undefined;
     }
