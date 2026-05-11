@@ -151,17 +151,50 @@ Derive `<OWNER>/<REPO>` from `package.json`'s `repository.url` (or `git remote g
 
 If no commits pass the user-facing filter, write "No user-facing changes in this release."
 
-### 5. Create the GitHub release
+### 5. Build cross-platform binaries
+
+Compile standalone executables for each supported platform/arch using `bun build --compile`. The entry point is the package's `bin` target (e.g. `./index.ts` — read it from `package.json` rather than hardcoding).
+
+Create a clean output directory and build all targets:
+
+```bash
+rm -rf dist/release
+mkdir -p dist/release
+
+ENTRY=$(node -p "let b=require('./package.json').bin; typeof b==='string'?b:Object.values(b)[0]")
+NAME=$(node -p "require('./package.json').name")
+
+for TARGET in bun-linux-x64 bun-linux-arm64 bun-darwin-x64 bun-darwin-arm64 bun-windows-x64; do
+  EXT=""
+  [[ "$TARGET" == bun-windows-* ]] && EXT=".exe"
+  OUT="dist/release/${NAME}-<VERSION>-${TARGET#bun-}${EXT}"
+  bun build "$ENTRY" --compile --target="$TARGET" --outfile "$OUT" || exit 1
+  (cd "$(dirname "$OUT")" && shasum -a 256 "$(basename "$OUT")" > "$(basename "$OUT").sha256")
+done
+```
+
+If any target fails to build, stop and report — do not create the release.
+
+Each binary gets a sibling `<binary>.sha256` file (one line, `<hash>  <filename>`) that users can verify with `shasum -a 256 -c <binary>.sha256`. Also produce an aggregate manifest for convenience:
+
+```bash
+(cd dist/release && shasum -a 256 $(ls | grep -v '\.sha256$\|^SHA256SUMS\.txt$') > SHA256SUMS.txt)
+```
+
+### 6. Create the GitHub release
+
+Create the release and attach every artifact in `dist/release/` in a single `gh release create` call:
 
 ```bash
 gh release create <VERSION> \
   --title "<VERSION>" \
-  --notes "<NOTES>"
+  --notes "<NOTES>" \
+  dist/release/*
 ```
 
 Print the release URL when done.
 
-### 6. Remind the user to publish
+### 7. Remind the user to publish
 
 The skill does **not** publish to npm — registry auth/2FA is interactive and belongs to the user. Print a clear reminder:
 
