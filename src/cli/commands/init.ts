@@ -1,3 +1,5 @@
+import { existsSync } from "fs";
+import { resolve } from "path";
 import { FRAMEWORK_PATHS } from "../../core/paths.ts";
 import { runWizard } from "../wizard.ts";
 
@@ -29,6 +31,16 @@ export async function runInit(): Promise<void> {
 }
 
 function printInitBanner(): void {
+  const dim = "\x1b[90m";
+  const bold = "\x1b[1m";
+  const reset = "\x1b[0m";
+  // On re-runs (marmite.json already in cwd) the user knows what this is —
+  // skip the ceremonial ASCII art and print a one-liner instead.
+  if (existsSync(resolve(process.cwd(), "marmite.json"))) {
+    process.stdout.write(`\n${bold}marmite init${reset} ${dim}— reconfigure existing project${reset}\n`);
+    process.stdout.write(`${dim}Press Ctrl+C anytime to abort.${reset}\n\n`);
+    return;
+  }
   const art = [
     "  ███╗   ███╗  █████╗  ██████╗  ███╗   ███╗ ██╗ ████████╗ ███████╗",
     "  ████╗ ████║ ██╔══██╗ ██╔══██╗ ████╗ ████║ ██║ ╚══██╔══╝ ██╔════╝",
@@ -37,9 +49,6 @@ function printInitBanner(): void {
     "  ██║ ╚═╝ ██║ ██║  ██║ ██║  ██║ ██║ ╚═╝ ██║ ██║    ██║    ███████╗",
     "  ╚═╝     ╚═╝ ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═╝     ╚═╝ ╚═╝    ╚═╝    ╚══════╝",
   ];
-  const dim = "\x1b[90m";
-  const bold = "\x1b[1m";
-  const reset = "\x1b[0m";
   process.stdout.write("\n");
   for (const line of art) process.stdout.write(`${bold}${line}${reset}\n`);
   process.stdout.write("\n");

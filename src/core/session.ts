@@ -197,7 +197,16 @@ export async function runQueryWithRetry(
       result.errorMessage,
       "retry",
     );
-    await sleep(delay);
+    reporter.transientRetry(attempt, delay, result.outcome);
+    // Sleep in ~1s slices so the reporter can refresh a countdown. The early
+    // exit on parentSignal lets Ctrl+C interrupt the wait promptly.
+    const deadline = Date.now() + delay;
+    while (!parentSignal.aborted) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(1_000, remaining));
+      if (remaining > 1_000) reporter.transientRetry(attempt, deadline - Date.now(), result.outcome);
+    }
   }
   return lastResult!;
 }

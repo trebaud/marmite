@@ -27,6 +27,7 @@ export function usage(): never {
 
 Usage:
   marmite                            Run the agent loop in the current project (alias: marmite cook)
+  marmite <n>                        Shorthand for 'marmite cook -n <n>' (e.g. marmite 5)
   marmite cook [options]             Run the agent loop
   marmite init                       Set up marmite in the current project (interactive wizard)
   marmite to-prd <PRD.md>            Convert a markdown PRD into .marmite/prd.json

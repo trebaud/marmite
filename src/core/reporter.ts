@@ -51,6 +51,11 @@ export interface Reporter {
   sensorStart(sensor: string, sensorType?: string): void;
   sensorEnd(sensor: string, sensorType: string | undefined, durationMs: number, exitCode: number): void;
   budgetExceeded(storyId: string, spent: number, budget: number): void;
+  // Called when a phase hits a transient error and the harness is about to
+  // sleep before retrying. Terse renderers should reflect the wait in the
+  // active spinner so the user doesn't think the run is hung; verbose
+  // renderers log a line.
+  transientRetry(attempt: number, delayMs: number, errorKind: "transient_error" | "timeout"): void;
   error(context: string, err: unknown, category: string): void;
   message(msg: SDKMessage, agentLabel: string): void;
   sessionReport(stats: SessionStats): void;
@@ -76,6 +81,7 @@ export const silentReporter: Reporter = {
   sensorStart: () => {},
   sensorEnd: () => {},
   budgetExceeded: () => {},
+  transientRetry: () => {},
   error: () => {},
   message: () => {},
   sessionReport: () => {},

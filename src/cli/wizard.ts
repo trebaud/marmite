@@ -91,7 +91,7 @@ export async function runWizard(opts: WizardOptions): Promise<void> {
     abort.abort();
     resolveTurn();
     stopSpinner();
-    process.stdout.write(`\n\x1b[33m✗ aborted — no files written. Run \`${opts.command}\` to start over.\x1b[0m\n`);
+    process.stdout.write(`\n\x1b[33m✗ aborted. Some files may have been written — re-run \`${opts.command}\` to resume or roll back via git.\x1b[0m\n`);
     setTimeout(() => process.exit(130), 150);
   };
   process.on("SIGINT", onAbort);
@@ -101,7 +101,7 @@ export async function runWizard(opts: WizardOptions): Promise<void> {
     prompt: userStream(),
     options: {
       cwd: process.cwd(),
-      model: opts.model ?? "claude-haiku-4-5",
+      model: opts.model ?? "claude-sonnet-4-6",
       settingSources: ["project"],
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,

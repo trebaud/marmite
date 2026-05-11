@@ -53,6 +53,12 @@ function fmtTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 // Cache-hit ratio: cached reads as a share of all input tokens charged.
 // Higher is better — every cache read costs ~10× less than a fresh read.
 export function cacheHitRatio(cacheReadTokens: number, inputTokens: number): number {
@@ -165,7 +171,7 @@ function vFeedbackDetected(bytes: number, preview: string): void {
   const trimmed = preview.replace(/\s+/g, " ").trim().slice(0, 120);
   const ellipsis = preview.length > 120 ? "…" : "";
   console.log("");
-  console.log(`${c.bgCyan}${c.bold} 📝 ASYNC FEEDBACK ${c.reset} ${bytes}B — ${c.white}"${trimmed}${ellipsis}"${c.reset}`);
+  console.log(`${c.bgCyan}${c.bold} 📝 ASYNC FEEDBACK ${c.reset} ${fmtBytes(bytes)} — ${c.white}"${trimmed}${ellipsis}"${c.reset}`);
   console.log(`${c.dim}  Will be applied this iteration; orchestrator deletes after consumption.${c.reset}`);
 }
 
@@ -184,6 +190,15 @@ function vSensorEnd(sensor: string, sensorType: string | undefined, durationMs: 
   const sym = ok ? `${c.green}✓${c.reset}` : `${c.red}✗${c.reset}`;
   const exitTxt = ok ? "" : ` ${c.red}exit=${exitCode}${c.reset}`;
   console.log(`  ${c.cyan}[sensor]${c.reset} ${sym} ${c.bold}${sensor}${c.reset}${typeTag} ${c.dim}(${fmtDuration(durationMs)})${c.reset}${exitTxt}`);
+}
+
+let vLastRetryAttempt = -1;
+function vTransientRetry(attempt: number, delayMs: number, kind: "transient_error" | "timeout"): void {
+  // The session sleep loop calls this once per second to drive the terse
+  // countdown — verbose only wants the initial schedule line per retry.
+  if (vLastRetryAttempt === attempt) return;
+  vLastRetryAttempt = attempt;
+  console.log(`  ${c.yellow}[retry]${c.reset} ${kind} on attempt ${attempt}, waiting ${fmtDuration(delayMs)}`);
 }
 
 function vBudgetExceeded(storyId: string, spent: number, budget: number): void {
@@ -409,6 +424,7 @@ export const verboseReporter: Reporter = {
   sensorStart: vSensorStart,
   sensorEnd: vSensorEnd,
   budgetExceeded: vBudgetExceeded,
+  transientRetry: vTransientRetry,
   error: vError,
   message: vMessage,
   sessionReport: vSessionReport,
@@ -433,6 +449,10 @@ let spinnerStartedAt = 0;
 // Cumulative cost across all completed sessions in this run; rendered next to
 // the active spinner so the user always sees how much the run has spent.
 let runCostUsd = 0;
+// When set in the future, the spinner appends a "retrying in Ns" hint so the
+// user can see the backoff countdown instead of a frozen-looking spinner.
+let spinnerRetryUntil = 0;
+let spinnerRetryKind: "transient_error" | "timeout" = "transient_error";
 
 function drawSpinner(): void {
   const elapsed = Date.now() - spinnerStartedAt;
@@ -440,7 +460,11 @@ function drawSpinner(): void {
   if (elapsed > 1500) meta.push(fmtDuration(elapsed));
   if (runCostUsd > 0) meta.push(`$${runCostUsd.toFixed(2)}`);
   const metaTxt = meta.length ? ` ${c.dim}${meta.join(" · ")}${c.reset}` : "";
-  process.stdout.write(`\r\x1b[K  ${c.cyan}${SPINNER_FRAMES[spinnerFrame]}${c.reset} ${spinnerLabel}${metaTxt}`);
+  const remaining = spinnerRetryUntil - Date.now();
+  const retryTxt = remaining > 0
+    ? ` ${c.yellow}· retrying in ${Math.ceil(remaining / 1000)}s (${spinnerRetryKind === "timeout" ? "timeout" : "transient error"})${c.reset}`
+    : "";
+  process.stdout.write(`\r\x1b[K  ${c.cyan}${SPINNER_FRAMES[spinnerFrame]}${c.reset} ${spinnerLabel}${metaTxt}${retryTxt}`);
 }
 
 function startSpinner(label: string): void {
@@ -489,7 +513,7 @@ function tIterationStart(_iteration: number, _max: number, storyId?: string, sto
   // build/verify lines below have context.
   if (!storyId) return;
   const title = storyTitle ? `  ${c.dim}${storyTitle}${c.reset}` : "";
-  emitLine(`  ${c.cyan}▸${c.reset} ${c.bold}${storyId}${c.reset}${title}`);
+  emitLine(`${c.cyan}▸${c.reset} ${c.bold}${storyId}${c.reset}${title}`);
 }
 
 function tIterationEnd(opts: IterationEndOpts): void {
@@ -505,7 +529,7 @@ function tIterationEnd(opts: IterationEndOpts): void {
 function phaseLabel(phase: Phase, opts: PhaseStartOpts): string {
   switch (phase) {
     case "orchestrate":
-      return `orchestrating ${c.dim}(picking next story)${c.reset}`;
+      return `orchestrating`;
     case "build":
       return `building ${c.bold}${opts.storyId ?? ""}${c.reset}`;
     case "verify":
@@ -516,6 +540,8 @@ function phaseLabel(phase: Phase, opts: PhaseStartOpts): string {
 }
 
 function tPhaseStart(phase: Phase, opts: PhaseStartOpts): void {
+  // A new phase invalidates any pending retry hint from the previous phase.
+  spinnerRetryUntil = 0;
   if (phase === "orchestrate") {
     emitLine("");
     const max = terseMaxIterations || opts.iteration;
@@ -555,7 +581,7 @@ function tBranchSetup(branchName: string, action: BranchAction): void {
 function tFeedbackDetected(bytes: number, preview: string): void {
   const trimmed = preview.replace(/\s+/g, " ").trim().slice(0, 80);
   const ellipsis = preview.length > 80 ? "…" : "";
-  emitLine(`  ${c.cyan}📝 feedback${c.reset} ${c.dim}${bytes}B${c.reset} "${trimmed}${ellipsis}"`);
+  emitLine(`  ${c.cyan}📝 feedback${c.reset} ${c.dim}(${fmtBytes(bytes)})${c.reset} "${trimmed}${ellipsis}"`);
 }
 
 function tFeedbackForceCleared(): void {
@@ -564,7 +590,7 @@ function tFeedbackForceCleared(): void {
 
 function tSensorStart(sensor: string, sensorType?: string): void {
   const typeTag = sensorType ? ` ${c.dim}(${sensorType})${c.reset}` : "";
-  emitLine(`    ${c.cyan}▸${c.reset} sensor ${c.bold}${sensor}${c.reset}${typeTag} ${c.dim}running…${c.reset}`);
+  emitLine(`  ${c.cyan}▸${c.reset} sensor ${c.bold}${sensor}${c.reset}${typeTag} ${c.dim}running…${c.reset}`);
 }
 
 function tSensorEnd(sensor: string, sensorType: string | undefined, durationMs: number, exitCode: number): void {
@@ -572,11 +598,17 @@ function tSensorEnd(sensor: string, sensorType: string | undefined, durationMs: 
   const ok = exitCode === 0;
   const sym = ok ? `${c.green}✓${c.reset}` : `${c.red}✗${c.reset}`;
   const exitTxt = ok ? "" : ` ${c.red}exit=${exitCode}${c.reset}`;
-  emitLine(`    ${sym} sensor ${c.bold}${sensor}${c.reset}${typeTag} ${c.dim}(${fmtDuration(durationMs)})${c.reset}${exitTxt}`);
+  emitLine(`  ${sym} sensor ${c.bold}${sensor}${c.reset}${typeTag} ${c.dim}(${fmtDuration(durationMs)})${c.reset}${exitTxt}`);
+}
+
+function tTransientRetry(_attempt: number, delayMs: number, kind: "transient_error" | "timeout"): void {
+  spinnerRetryUntil = Date.now() + delayMs;
+  spinnerRetryKind = kind;
+  if (spinnerTimer) drawSpinner();
 }
 
 function tBudgetExceeded(storyId: string, spent: number, budget: number): void {
-  emitLine(`  ${c.red}✗ budget${c.reset} ${c.dim}${storyId} spent=$${spent.toFixed(4)} / $${budget.toFixed(2)} — stopping fix loop${c.reset}`);
+  emitLine(`  ${c.red}✗ budget${c.reset} ${c.dim}${storyId} spent=$${spent.toFixed(2)} / $${budget.toFixed(2)} — stopping fix loop${c.reset}`);
 }
 
 function tError(context: string, err: unknown, category: string): void {
@@ -648,6 +680,7 @@ export const terseReporter: Reporter = {
   sensorStart: tSensorStart,
   sensorEnd: tSensorEnd,
   budgetExceeded: tBudgetExceeded,
+  transientRetry: tTransientRetry,
   error: tError,
   message: () => {},
   sessionReport: tSessionReport,
