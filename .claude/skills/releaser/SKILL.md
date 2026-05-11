@@ -1,17 +1,17 @@
 ---
-name: release-bun
+name: releaser
 description: >
-  Cut a new release of a Bun-based npm package: bump the version in package.json,
-  run typecheck and tests, publish to npm with `bun publish`, push the git tag,
-  and create a GitHub release with a curated changelog.
-  Use when the user says "release", "cut a release", "publish v1.x", or "new version"
-  in a Bun project.
+  Cut a new release of a bun package: bump the version in package.json,
+  run typecheck and tests, push the git tag, and create a GitHub release with a
+  curated changelog. Does not publish to the registry — that step is left to the
+  user. Use when the user says "release", "cut a release", "tag v1.x", or
+  "new version".
 allowed-tools: Bash
 ---
 
-# Release a Bun package
+# Release a package
 
-Cut a new release of the current Bun-based npm package and publish it to npm + GitHub.
+Cut a new release of the current npm package: bump version, run gates, tag, and create a GitHub release. Publishing to the registry is **not** part of this skill — the user runs `bun publish` (or equivalent) themselves at the end.
 
 ## Arguments
 
@@ -29,13 +29,13 @@ git status --porcelain
 git rev-parse --abbrev-ref HEAD
 ```
 
-Refuse to proceed if the working tree is dirty or the branch is not `main` (ask the user to confirm an override). Confirm the package manifest is present:
+Refuse to proceed if the working tree is dirty or the branch is not `main` (ask the user to confirm an override). Confirm a package manifest is present:
 
 ```bash
-test -f package.json && test -f bun.lock
+test -f package.json
 ```
 
-If `bun.lock` is missing, this is not a Bun project — stop and surface the mismatch.
+If `package.json` is missing, this is not an npm package — stop and surface the mismatch.
 
 ## Steps
 
@@ -90,7 +90,7 @@ bun pm version <SEMVER> --no-git-tag-version 2>/dev/null \
   || (jq ".version = \"<SEMVER>\"" package.json > package.json.tmp && mv package.json.tmp package.json)
 ```
 
-Verify the change, then run the same gates `prepublishOnly` enforces, so a failure surfaces before any tag or publish:
+Verify the change, then run the project's gates so failures surface before any tag is created:
 
 ```bash
 bun install
@@ -98,7 +98,7 @@ bun run typecheck
 bun test
 ```
 
-If any gate fails, stop and report — do not tag, do not publish.
+If any gate fails, stop and report — do not tag.
 
 ### 3. Commit the version bump and tag
 
@@ -112,17 +112,7 @@ git push origin <VERSION>
 
 Fail loudly if any push is rejected.
 
-### 4. Publish to npm
-
-```bash
-bun publish
-```
-
-`bun publish` will re-run `prepublishOnly` if defined, so the typecheck and tests will execute again as a final guard. If publishing fails after the tag was pushed, do not delete the tag automatically — stop and surface the error so the user can decide (re-publish vs. retract).
-
-For scoped or restricted packages the user may need `bun publish --access public` — only add that flag if the user requests it or the registry rejects the default.
-
-### 5. Generate changelog
+### 4. Generate changelog
 
 Get the previous tag (the one before the latest):
 
@@ -161,7 +151,7 @@ Derive `<OWNER>/<REPO>` from `package.json`'s `repository.url` (or `git remote g
 
 If no commits pass the user-facing filter, write "No user-facing changes in this release."
 
-### 6. Create the GitHub release
+### 5. Create the GitHub release
 
 ```bash
 gh release create <VERSION> \
@@ -169,4 +159,15 @@ gh release create <VERSION> \
   --notes "<NOTES>"
 ```
 
-This release has no binary artifacts to attach — the package is consumed via npm. Print the release URL and the `npm`/`bun add` install command for the new version when done.
+Print the release URL when done.
+
+### 6. Remind the user to publish
+
+The skill does **not** publish to npm — registry auth/2FA is interactive and belongs to the user. Print a clear reminder:
+
+```bash
+echo ""
+echo "Release <VERSION> is tagged and on GitHub."
+echo "To publish to npm, run: bun publish"
+echo ""
+```
