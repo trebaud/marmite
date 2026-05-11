@@ -26,7 +26,7 @@ my-project/
 │   ├── prd.json              # the PRD that drives the loop          (git)
 │   ├── progress.txt          # rolling story status                  (git)
 │   ├── current-task.json     # per-iteration agent handoff           (git)
-│   ├── prompts/              # optional prompt overrides             (git)
+│   ├── prompts/              # agent prompts                         (git)
 │   ├── events.jsonl          # per-session event log              (ignored)
 │   └── feedback.md           # async notes, dropped mid-run       (ignored)
 └── app/                      # your code (path is configurable)
