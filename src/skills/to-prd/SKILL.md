@@ -6,43 +6,36 @@ user-invocable: false
 
 # Marmite PRD Converter
 
-You are running as the `marmite to-prd` converter. Your job: read the user's markdown PRD at `$MARMITE_PRD_INPUT`, transform it into the `prd.json` schema below, write it to `$MARMITE_PRD_OUTPUT`, and validate the result with `$MARMITE_VALIDATE_PRD`.
+You are running as the `marmite to-prd` converter. Your **only job** is to translate the markdown PRD at `$MARMITE_PRD_INPUT` into the JSON schema below and write it to `$MARMITE_PRD_OUTPUT`.
 
-The user invoked this command with a path to their PRD (`marmite to-prd ./PRD.md`). They are sitting in their project's working directory.
+This is a mechanical conversion — **do not resize, merge, split, reorder, or re-interpret stories.** The markdown PRD is the source of truth; preserve every user story exactly as authored.
 
 ---
 
 ## Workflow
 
-1. **Read the input.** `Read $MARMITE_PRD_INPUT`. Skim the structure: title, sections, requirements, any explicit user stories.
-2. **Draft the JSON in memory.** Apply the sizing/ordering rules below. Don't write the file yet.
-3. **Show the plan.** Print a short summary: project name, branch name, story count, and a one-line title for each story (with priority and dependencies). Ask the user to confirm or request changes.
-4. **Iterate if asked.** Merge/split stories, reorder, rename — whatever the user wants. Re-print the summary after each change. Loop until they accept.
-5. **Write the file.** `Write $MARMITE_PRD_OUTPUT` with the final JSON.
-6. **Validate.** Run `bun run $MARMITE_VALIDATE_PRD $MARMITE_PRD_OUTPUT`. If it exits non-zero, read the errors, fix the JSON, write again, and re-run the validator. Loop until exit 0.
-7. **Report.** Print a 2–3 line summary: "wrote N stories to .marmite/prd.json, validated OK" plus any semantic notes (e.g. "merged X and Y because they touched the same component").
+1. **Read** `$MARMITE_PRD_INPUT`.
+2. **Convert** the markdown into the JSON schema (rules below).
+3. **Write** the JSON to `$MARMITE_PRD_OUTPUT`.
+4. **Validate**: run `bun run validate-prd.ts $MARMITE_PRD_OUTPUT`. If it exits non-zero, fix the JSON and re-validate. Loop until exit 0.
+5. **Report** one line: `wrote N stories to .marmite/prd.json, validated OK`.
 
-Do not run `marmite cook` for the user. End the session after step 7.
+Do not prompt the user for confirmation. Do not run `marmite cook`. End the session after step 5.
 
 ---
 
-## Output Format
+## Output Schema
 
 ```json
 {
   "project": "[Project Name]",
-  "branchName": "[kebab-case-from-project]",
   "description": "[One-line feature description from PRD title/intro]",
   "userStories": [
     {
       "id": "US-001",
       "title": "[Story title]",
       "description": "As a [user], I want [feature] so that [benefit]",
-      "acceptanceCriteria": [
-        "Criterion 1",
-        "Criterion 2",
-        "Typecheck passes"
-      ],
+      "acceptanceCriteria": ["Criterion 1", "Criterion 2", "Typecheck passes"],
       "priority": 1,
       "passes": false,
       "notes": "",
@@ -53,160 +46,113 @@ Do not run `marmite cook` for the user. End the session after step 7.
 }
 ```
 
-The `dependencies` field is optional. Use it to communicate execution order intent — marmite runs stories sequentially by priority, but `dependencies` makes the dependency graph explicit so humans reviewing the plan can spot ordering issues. Dependencies must point at stories with **lower priority numbers** (the validator enforces this).
+Field rules enforced by `validate-prd.ts`:
 
-The `epic` field is required. It groups related stories under a shared label (e.g. `"auth"`, `"dashboard"`, `"checkout"`). Stories in the same epic must be contiguous in priority order. The `pr-on-checkpoint` workflow with `kind: "epic"` uses this field to decide when to open a PR — once every story in an epic has passed, the next orchestrator iteration cuts a PR for the whole epic. Other workflows ignore it. If the PRD doesn't break work into distinct themes, put every story in a single `"main"` epic.
-
----
-
-## Story Size: Optimize for Total Iterations
-
-**Each marmite iteration is expensive.** Too many small stories = too many iterations. Too few large stories = context overflow and broken code. The goal is a balanced list of medium-complexity stories.
-
-### Calibration target
-
-Aim for stories that a skilled developer could implement in **2–4 hours**. Each story should represent a coherent slice of work — not a single line change, and not an entire subsystem.
-
-### Right-sized (group related work)
-
-- Schema migration + server actions that use it (backend slice)
-- A full UI section: component + data fetching + error state
-- A complete CRUD flow for a small entity
-- A feature toggle + the UI that respects it
-- A set of closely related filter/sort options on a list
-
-### Too small (merge these)
-
-- "Add a database column" alone — combine with the server action that uses it
-- "Display X badge" alone — combine with the toggle that changes it
-- "Add dropdown" alone — combine with the filter logic it triggers
-
-### Too big (split these)
-
-- "Build the entire dashboard" — split by major panel or data domain
-- "Add authentication" — split into: schema + middleware, login/register UI, session/redirect logic
-- "Refactor the API" — split by resource or concern, not endpoint-by-endpoint
-
-### Rule of thumb
-
-If the story touches **more than two distinct layers** (e.g. DB + backend + two separate UI pages), split it. If it touches **less than one coherent feature** (single column, single button), merge it with its natural neighbour.
-
-**Target list length:** for a medium PRD, aim for **5–12 stories total**. Fewer than 5 usually means stories are too big; more than 15 usually means over-splitting.
-
----
-
-## Story Ordering: Dependencies First
-
-Stories execute in priority order. Earlier stories must not depend on later ones.
-
-**Correct:**
-1. Schema/database changes (migrations)
-2. Server actions / backend logic
-3. UI components that use the backend
-4. Dashboard/summary views that aggregate data
-
-**Wrong:**
-1. UI component (depends on schema that doesn't exist yet)
-2. Schema change
-
----
-
-## Acceptance Criteria: Must Be Verifiable
-
-Each criterion must be something a verifier can CHECK, not something vague.
-
-### Good (verifiable)
-
-- "Add `status` column to tasks table with default 'pending'"
-- "Filter dropdown has options: All, Active, Completed"
-- "Clicking delete shows confirmation dialog"
-- "Typecheck passes"
-- "Tests pass"
-
-### Bad (vague)
-
-- "Works correctly"
-- "User can do X easily"
-- "Good UX"
-- "Handles edge cases"
-
-### Always include as final criterion
-
-```
-"Typecheck passes"
-```
-
-For stories with testable logic, also include:
-```
-"Tests pass"
-```
-
-For UI stories, also include:
-```
-"Verify in browser using dev-browser skill"
-```
-
-Frontend stories are NOT complete until visually verified.
+- `id` matches `US-\d{3,}` (e.g. `US-001`), unique across the list.
+- `priority` is a non-negative integer. Stories execute in priority order.
+- `passes` must be `false` in a freshly-generated PRD.
+- `dependencies` (optional) must reference existing `US-###` ids with strictly lower `priority`.
+- `epic` is required and non-empty.
+- `acceptanceCriteria` has at least one item.
 
 ---
 
 ## Conversion Rules
 
-1. **Each user story becomes one JSON entry.**
-2. **IDs**: sequential `US-001`, `US-002`, … (the validator enforces the `US-###` format).
-3. **Priority**: based on dependency order, then document order.
-4. **All stories**: `passes: false`, `notes: ""`. The validator rejects stories with `passes: true` in a freshly-generated PRD.
-5. **branchName**: derive from the project name as kebab-case (`"TodoApp"` → `"todo-app"`, `"My App"` → `"my-app"`).
-6. **Always add** "Typecheck passes" to every story's acceptance criteria.
+### Top-level fields
+
+- **`project`**: PRD title (strip leading `PRD:` / `# `).
+- **`description`**: one-line summary from the PRD's Introduction/Overview section. If multi-paragraph, take the first sentence.
+
+### User stories — preserve 1:1
+
+For each `### US-NNN: ...` heading in the markdown PRD, emit exactly one JSON entry. Do **not** merge, split, or skip stories.
+
+- **`id`**: copy from the markdown heading (e.g. `US-001`). Re-number sequentially starting at `US-001` only if the markdown uses a non-conforming scheme.
+- **`title`**: text after the `US-NNN:` prefix in the heading.
+- **`description`**: the `**Description:**` line, verbatim.
+- **`acceptanceCriteria`**: each `- [ ] ...` bullet under `**Acceptance Criteria:**` becomes one string. Strip the `- [ ] ` prefix. Keep wording verbatim.
+- **`priority`**: assigned in document order — first story is `1`, second is `2`, etc.
+- **`passes`**: always `false`.
+- **`notes`**: always `""`.
+- **`dependencies`**: parsed from the `**Dependencies:**` line in the markdown story.
+  - `None` (or missing) → `[]`.
+  - Comma-separated ids → array of those ids (e.g. `"US-001, US-002"` → `["US-001", "US-002"]`).
+- **`epic`**: parsed from the `**Epic:**` line.
+  - Format in markdown is `EP-NNN — [Epic title]`. Use a kebab-case slug of the epic title as the JSON value (e.g. `"EP-001 — Data model"` → `"data-model"`).
+  - If the PRD has no Epics section, use `"main"` for every story.
+
+### Acceptance criteria normalization
+
+- Preserve all criteria from the markdown verbatim.
+- If "Typecheck passes" is missing from a story, append it.
+- If the criteria mention browser/UI verification but not the exact dev-browser phrasing, leave the existing wording — do not add or rewrite.
 
 ---
 
-## Splitting and Grouping
+## Validation Loop
 
-Group logically related work into medium-complexity stories. Neither atomize everything nor lump everything together.
+After `Write`, always run:
 
-**Original:**
-> "Add user notification system"
+```bash
+bun run validated-prd.ts $MARMITE_PRD_OUTPUT
+```
 
-**Over-split (too many iterations):**
-1. Add notifications table
-2. Add notification service
-3. Add bell icon to header
-4. Add dropdown panel
-5. Add mark-as-read
-6. Add preferences page
+If validation fails, read the numbered error list, fix only the cited fields, re-write, and re-run. The validator enforces:
 
-**Well-grouped (efficient):**
-1. US-001: Notifications schema + backend service (DB + send/receive logic)
-2. US-002: Notification bell + dropdown panel (header icon + list UI)
-3. US-003: Mark-as-read + unread count badge (interaction + state)
-4. US-004: Notification preferences page (settings UI + persistence)
-
-Four iterations instead of six, each story a complete vertical slice.
+- Schema shape (types, required fields, id format).
+- No duplicate ids.
+- `dependencies` resolve to lower-priority stories.
+- `passes` is `false` for every story.
 
 ---
 
 ## Example
 
-**Input PRD:**
+**Input PRD excerpt:**
 ```markdown
-# Task Status Feature
+# PRD: Task Status Feature
 
+## Introduction
 Add ability to mark tasks with different statuses.
 
-## Requirements
-- Toggle between pending/in-progress/done on task list
-- Filter list by status
-- Show status badge on each task
-- Persist status in database
+## Epics
+- **EP-001: Data model** — Persist status on tasks.
+- **EP-002: Task UI** — Show and edit status inline.
+
+## User Stories
+
+### US-001: Task status schema and server actions
+**Epic:** EP-001 — Data model
+
+**Dependencies:** None
+
+**Description:** As a developer, I need status stored in the DB and exposed via server actions.
+
+**Acceptance Criteria:**
+- [ ] Add status column: 'pending' | 'in_progress' | 'done' (default 'pending')
+- [ ] Server action updateTaskStatus(id, status) persists change
+- [ ] Typecheck passes
+
+### US-002: Status badge and inline toggle on task list
+**Epic:** EP-002 — Task UI
+
+**Dependencies:** US-001
+
+**Description:** As a user, I want to see and change task status from the list.
+
+**Acceptance Criteria:**
+- [ ] Each task row shows a colored status badge
+- [ ] Inline dropdown saves immediately via server action
+- [ ] Typecheck passes
+- [ ] Verify in browser using dev-browser skill
 ```
 
 **Output prd.json:**
 ```json
 {
-  "project": "TaskApp",
-  "branchName": "task-status",
-  "description": "Track task progress with status indicators on the task list.",
+  "project": "Task Status Feature",
+  "description": "Add ability to mark tasks with different statuses.",
   "userStories": [
     {
       "id": "US-001",
@@ -214,7 +160,6 @@ Add ability to mark tasks with different statuses.
       "description": "As a developer, I need status stored in the DB and exposed via server actions.",
       "acceptanceCriteria": [
         "Add status column: 'pending' | 'in_progress' | 'done' (default 'pending')",
-        "Generate and run migration successfully",
         "Server action updateTaskStatus(id, status) persists change",
         "Typecheck passes"
       ],
@@ -222,16 +167,15 @@ Add ability to mark tasks with different statuses.
       "passes": false,
       "notes": "",
       "dependencies": [],
-      "epic": "main"
+      "epic": "data-model"
     },
     {
       "id": "US-002",
       "title": "Status badge and inline toggle on task list",
-      "description": "As a user, I want to see and change task status directly from the list.",
+      "description": "As a user, I want to see and change task status from the list.",
       "acceptanceCriteria": [
-        "Each task row shows a colored status badge (gray=pending, blue=in_progress, green=done)",
-        "Each row has a status dropdown that saves immediately via server action",
-        "UI updates without full page refresh",
+        "Each task row shows a colored status badge",
+        "Inline dropdown saves immediately via server action",
         "Typecheck passes",
         "Verify in browser using dev-browser skill"
       ],
@@ -239,45 +183,21 @@ Add ability to mark tasks with different statuses.
       "passes": false,
       "notes": "",
       "dependencies": ["US-001"],
-      "epic": "main"
-    },
-    {
-      "id": "US-003",
-      "title": "Filter tasks by status",
-      "description": "As a user, I want to filter the list to see only certain statuses.",
-      "acceptanceCriteria": [
-        "Filter dropdown: All | Pending | In Progress | Done",
-        "Filter persists in URL params",
-        "Typecheck passes",
-        "Verify in browser using dev-browser skill"
-      ],
-      "priority": 3,
-      "passes": false,
-      "notes": "",
-      "dependencies": ["US-001"],
-      "epic": "main"
+      "epic": "task-ui"
     }
   ]
 }
 ```
 
-The original 4 requirements collapsed into 3 stories by merging badge display and status toggle (both touch the same task row component).
-
 ---
 
 ## Pre-write checklist
 
-Before calling `Write` on `$MARMITE_PRD_OUTPUT`, verify:
-
-- [ ] Story count balanced: **5–12 stories** for a medium PRD.
-- [ ] Each story groups logically related work (not a single micro-change, not a whole subsystem).
-- [ ] Stories ordered by dependency (schema → backend → UI).
-- [ ] IDs match `US-###`, sequential, no duplicates.
-- [ ] Every story has `passes: false`, `notes: ""`, `dependencies: []` (or non-empty array of valid prior IDs).
-- [ ] `dependencies` only reference IDs with strictly lower `priority`.
-- [ ] Every story has an `epic` value; stories sharing an `epic` are contiguous in priority order. Default to a single `"main"` epic if the PRD has no natural grouping.
-- [ ] Every story has "Typecheck passes" as a criterion.
-- [ ] UI stories have "Verify in browser using dev-browser skill" as a criterion.
-- [ ] Acceptance criteria are verifiable (not vague).
-
-After writing, **always** run `bun run $MARMITE_VALIDATE_PRD $MARMITE_PRD_OUTPUT` and fix any errors before declaring done.
+- [ ] One JSON story per markdown story (no merging, splitting, or dropping).
+- [ ] IDs preserved from markdown (or sequentially assigned if the source is non-conforming).
+- [ ] `priority` matches document order.
+- [ ] `dependencies` parsed from the `**Dependencies:**` line; `None` → `[]`.
+- [ ] `epic` parsed from the `**Epic:**` line and slugified; `"main"` if no Epics section exists.
+- [ ] Every story has `passes: false`, `notes: ""`.
+- [ ] "Typecheck passes" present in every story's acceptance criteria.
+- [ ] Validator passes

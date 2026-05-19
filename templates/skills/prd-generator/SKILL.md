@@ -66,9 +66,22 @@ Brief description of the feature and the problem it solves.
 ### 2. Goals
 Specific, measurable objectives (bullet list).
 
-### 3. User Stories
+### 3. Epics
+Before listing user stories, define the epics — high-level themes that group related stories. Each epic represents a meaningful chunk of the feature (e.g. "Data model", "User-facing UI", "Admin tooling").
+
+**Format:**
+```markdown
+- **EP-001: [Epic title]** — One-line description of what this epic covers.
+- **EP-002: [Epic title]** — One-line description.
+```
+
+Aim for 2-5 epics per PRD. Every user story below must reference exactly one epic.
+
+### 4. User Stories
 Each story needs:
 - **Title:** Short descriptive name
+- **Epic:** The epic this story belongs to (e.g. `EP-001`)
+- **Dependencies:** List of prior user story IDs that must be completed before this one can start (or `None`)
 - **Description:** "As a [user], I want [feature] so that [benefit]"
 - **Acceptance Criteria:** Verifiable checklist of what "done" means
 
@@ -77,6 +90,10 @@ Each story should be small enough to implement in one focused session.
 **Format:**
 ```markdown
 ### US-001: [Title]
+**Epic:** EP-001 — [Epic title]
+
+**Dependencies:** None  *(or e.g. `US-001, US-002`)*
+
 **Description:** As a [user], I want [feature] so that [benefit].
 
 **Acceptance Criteria:**
@@ -86,36 +103,40 @@ Each story should be small enough to implement in one focused session.
 - [ ] **[UI stories only]** Verify in browser using dev-browser skill
 ```
 
-**Important:** 
+**Important:**
+- Every story must be assigned to exactly one epic defined in the Epics section above. Do not invent epic IDs that aren't listed.
+- Group stories by epic in the output (all EP-001 stories together, then EP-002, etc.).
+- **Dependencies must only reference earlier user story IDs** (lower number than the current story). Do not create circular or forward references.
+- Use `None` when a story has no prerequisites. Keep the dependency list minimal — only list stories whose output this story actually requires.
 - Acceptance criteria must be verifiable, not vague. "Works correctly" is bad. "Button shows confirmation dialog before deleting" is good.
 - **For any story with UI changes:** Always include "Verify in browser using dev-browser skill" as acceptance criteria. This ensures visual verification of frontend work.
 
-### 4. Functional Requirements
+### 5. Functional Requirements
 Numbered list of specific functionalities:
 - "FR-1: The system must allow users to..."
 - "FR-2: When a user clicks X, the system must..."
 
 Be explicit and unambiguous.
 
-### 5. Non-Goals (Out of Scope)
+### 6. Non-Goals (Out of Scope)
 What this feature will NOT include. Critical for managing scope.
 
-### 6. Design Considerations (Optional)
+### 7. Design Considerations (Optional)
 - UI/UX requirements
 - Link to mockups if available
 - Relevant existing components to reuse
 
-### 7. Technical Considerations (Optional)
+### 8. Technical Considerations (Optional)
 - Known constraints or dependencies
 - Integration points with existing systems
 - Performance requirements
 
-### 8. Success Metrics
+### 9. Success Metrics
 How will success be measured?
 - "Reduce time to complete X by 50%"
 - "Increase conversion rate by 10%"
 
-### 9. Open Questions
+### 10. Open Questions
 Remaining questions or areas needing clarification.
 
 ---
@@ -156,9 +177,19 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 - Enable filtering and sorting by priority
 - Default new tasks to medium priority
 
+## Epics
+
+- **EP-001: Data model** — Persist priority on tasks.
+- **EP-002: Task UI** — Surface and edit priority on individual tasks.
+- **EP-003: List filtering** — Let users filter the task list by priority.
+
 ## User Stories
 
 ### US-001: Add priority field to database
+**Epic:** EP-001 — Data model
+
+**Dependencies:** None
+
 **Description:** As a developer, I need to store task priority so it persists across sessions.
 
 **Acceptance Criteria:**
@@ -167,6 +198,10 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 - [ ] Typecheck passes
 
 ### US-002: Display priority indicator on task cards
+**Epic:** EP-002 — Task UI
+
+**Dependencies:** US-001
+
 **Description:** As a user, I want to see task priority at a glance so I know what needs attention first.
 
 **Acceptance Criteria:**
@@ -176,6 +211,10 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 - [ ] Verify in browser using dev-browser skill
 
 ### US-003: Add priority selector to task edit
+**Epic:** EP-002 — Task UI
+
+**Dependencies:** US-001, US-002
+
 **Description:** As a user, I want to change a task's priority when editing it.
 
 **Acceptance Criteria:**
@@ -186,6 +225,10 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 - [ ] Verify in browser using dev-browser skill
 
 ### US-004: Filter tasks by priority
+**Epic:** EP-003 — List filtering
+
+**Dependencies:** US-001, US-002
+
 **Description:** As a user, I want to filter the task list to see only high-priority items when I'm focused.
 
 **Acceptance Criteria:**
@@ -235,6 +278,10 @@ Before saving the PRD:
 
 - [ ] Asked clarifying questions with lettered options
 - [ ] Incorporated user's answers
+- [ ] Defined 2-5 epics that cover the feature
+- [ ] Every user story is assigned to exactly one defined epic
+- [ ] User stories are grouped by epic in the output
+- [ ] Every user story has a `Dependencies:` line (either `None` or earlier US IDs only)
 - [ ] User stories are small and specific
 - [ ] Functional requirements are numbered and unambiguous
 - [ ] Non-goals section defines clear boundaries

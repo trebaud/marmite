@@ -19,13 +19,13 @@ Run `pwd` and read `.marmite/current-task.json`.
 
 If the file has a top-level field `halt` of shape `{ "kind": "awaiting_pr", "prNum": <number>, ... }`, a previous iteration is waiting on a PR. Do this:
 
-1. Run `gh pr view <prNum> --json state,mergeCommit,mergedAt,headRefName,baseRefName`.
+1. Run `gh pr view <prNum> --json state,mergeCommit,mergedAt,headRefName`.
 2. Inspect `state`:
    - **`MERGED`** — the PR has been merged. Continue to step 3.
    - **`OPEN`** — still waiting. Re-write `.marmite/current-task.json` preserving the same `halt` field and stop. The harness will exit cleanly.
    - **`CLOSED` (not merged)** — the PR was closed without merging. Treat this as user intent to abandon the work. Surface the situation in `guidance` (suggest the user either reopen the PR or revert the corresponding commits and re-run), preserve the halt field, and stop.
 3. PR was merged. Reconcile the local branch with the merged base:
-   - Read the marmite working branch from `.marmite/prd.json` (`branchName` field on the PRD root) and the base branch from `gh pr view <prNum> --json baseRefName` (step 1).
+   - Read the marmite working branch and base branch from `marmite.json` (`branchName` and `baseBranch` fields). Both are required for this workflow — if either is missing, surface the situation in `guidance` and halt.
    - `git fetch origin`
    - `git checkout <baseBranch> && git pull --ff-only origin <baseBranch>`
    - `git checkout <marmiteBranch>` (create it from base if it no longer exists)

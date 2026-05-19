@@ -26,7 +26,6 @@ const StorySchema = z.object({
 
 const PrdSchema = z.object({
   project: z.string().min(1, "project must be non-empty"),
-  branchName: z.string().min(1, "branchName must be non-empty"),
   description: z.string().min(1, "description must be non-empty"),
   userStories: z.array(StorySchema).min(1, "userStories must contain at least one story"),
 });

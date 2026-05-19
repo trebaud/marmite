@@ -3,7 +3,7 @@ import type { Reporter } from "./reporter.ts";
 import { silentReporter } from "./reporter.ts";
 import { PATHS, resolvePrompt } from "./paths.ts";
 import { emitEvent, initEventLog, setCurrentIteration, setRunId, tailEvents } from "./events.ts";
-import { fileExists, gitCommit, gitEnsureBranch, readJsonField, sleep, writeAtomic } from "./utils.ts";
+import { fileExists, gitCommit, gitEnsureBranch, sleep, writeAtomic } from "./utils.ts";
 import { detectAndAnnounceFeedback, forceClearFeedbackIfPresent } from "./feedback.ts";
 import {
   allStoriesPassingOrError,
@@ -45,8 +45,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     verifyTimeoutMs: config.verifyTimeoutMs,
   });
 
-  const branchName = await readJsonField(config.prdPath, "branchName");
-  if (branchName) gitEnsureBranch(PATHS.projectRoot, branchName, reporter);
+  if (config.branchName) gitEnsureBranch(PATHS.projectRoot, config.branchName, reporter);
   if (!(await fileExists(PATHS.progress))) {
     await writeAtomic(
       PATHS.progress,

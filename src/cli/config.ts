@@ -93,6 +93,8 @@ export function composeConfig(
     maxIterations: cli.maxIterations ?? fromConfig(fileCfg.maxIterations, DEFAULTS.maxIterations),
     appPath,
     prdPath,
+    branchName: fileCfg.branchName,
+    baseBranch: fileCfg.baseBranch,
     model,
     builderModel: cli.builderModel ?? fileCfg.models?.builder ?? model,
     verifierModel: cli.verifierModel ?? fileCfg.models?.verifier ?? model,
