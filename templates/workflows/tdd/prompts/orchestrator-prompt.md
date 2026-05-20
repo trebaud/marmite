@@ -10,7 +10,7 @@ First, run `pwd` to get your working directory. Then read these files using the 
 - `.marmite/prd.json` — project requirements and story status (`passes: true/false`)
 - `marmite.json` — config; the `sensors` array lists available sensors (may be absent or empty; skip sensor work if so)
 - `.marmite/current-task.json` — if it exists from a previous iteration, may contain a `verdict` field written by the verifier
-- `.marmite/progress.txt` — implementation history and accumulated patterns (may not exist yet)
+- `.marmite/progress.json` — JSON ledger of project history with shape `{ patterns: [...], timeline: [...] }`. `timeline` interleaves `StoryEntry` (`kind:"story"`) rows the builder appends after each story and `JanitorEntry` (`kind:"janitor"`) rows you may append (see "Janitor cadence" below). The harness initializes the file as `{"patterns":[],"timeline":[]}` on first run.
 - `.marmite/feedback.md` — **async user feedback** dropped in mid-run (see step 2). May not exist; that's the common case.
 
 ### 2. Check for async user feedback
@@ -47,9 +47,9 @@ From `.marmite/current-task.json` (if it has a `verdict` field from the previous
 - What specific issues did the verifier flag?
 - Were issues related to security, architecture, code quality, tests?
 
-From `.marmite/progress.txt`:
-- Are there recurring issues or patterns worth highlighting?
-- Has tech debt been accumulating across stories?
+From `.marmite/progress.json`:
+- Are there recurring issues or patterns worth highlighting (scan `timeline[]` entries)?
+- Has tech debt been accumulating across stories? Janitor entries in the timeline (`kind:"janitor"`) tell you when refactor passes already ran and on which sensors — useful for deciding whether to escalate or back off.
 
 ### 5. Sensor catalog
 
@@ -87,7 +87,7 @@ Sensors are deterministic scripts (linters, SAST tools, architectural drift dete
 Run sensors when one or more of the following apply:
 - The previous story **failed** verification (`fail_retry` or `fail_abort`) — sensors give the builder targeted feedback
 - Every 3rd completed story — periodic quality baseline
-- `.marmite/progress.txt` shows accumulating debt, drift, or security concerns
+- `.marmite/progress.json` shows accumulating debt, drift, or security concerns
 
 Skip sensors when:
 - `marmite.json` has no `sensors` entries
@@ -137,6 +137,37 @@ When recommending a skill in `guidance`, name it explicitly (e.g. *"run the `arc
 
 If all sensors passed, skip this step.
 
+### 8.5. Janitor cadence — convert sensor debt into a refactor task
+
+If `marmite.json` has a top-level `janitor` key, threshold detection is part of your sensor-running flow. After each sensor runs, count its findings (use the tool's exit code, count `error|warning` lines in the output, or a structured flag like `eslint --format=json | jq 'map(.errorCount + .warningCount) | add'` per the sensor's `guidance`). Compare counts against `janitor.thresholds[<sensor-type>]` from `marmite.json`.
+
+**First** — read `.marmite/progress.json`. If `timeline` already contains an unfinished janitor entry (`kind:"janitor"` and `passes:false`), that entry must be addressed before any new threshold trip is recorded. Route this iteration to that existing entry: set `current-task.json.kind` to `"janitor"`, `storyId` to the entry's `id`, and skip writing a new entry.
+
+**Otherwise**, if any threshold trips, append a new `JanitorEntry` to `progress.json.timeline` and emit a `janitor_triggered` event:
+
+```json
+{
+  "kind": "janitor",
+  "id": "JANITOR-2026-05-19-0001",
+  "ts": "2026-05-19T12:34:56Z",
+  "passes": false,
+  "title": "Address debt threshold: eslint 23 findings",
+  "triggeredBy": [
+    { "sensor": "eslint", "findingCount": 23, "threshold": 20 }
+  ]
+}
+```
+
+```bash
+marmite emit-event janitor-triggered --janitor-id "JANITOR-2026-05-19-0001" --sensor eslint --finding-count 23 --threshold 20
+```
+
+When you append, **read the existing file, mutate the `timeline` array, write it back** — never replace the file from scratch (you'd drop everything the builder wrote there).
+
+ID format: `JANITOR-<YYYY-MM-DD>-<NNNN>`. Compute `NNNN` as one more than the highest existing four-digit suffix on the same date in the timeline, or `0001` for the first of the day.
+
+If you materialize a janitor entry, you do NOT also pick a user story this iteration — the janitor task takes the slot. Write `current-task.json` with `kind: "janitor"` and route to the new entry.
+
 ### 9. Write `.marmite/current-task.json`
 
 You MUST write this file before finishing. It tells the builder exactly what to implement and gives the harness the metadata it needs for state tracking.
@@ -165,7 +196,23 @@ Field rules:
 - `sensorSummary` — one concise line per sensor that ran, summarizing the key findings; leave as `""` if no sensors ran
 - `ranSensors` — array of sensor names that ran; set to `[]` if none ran (the harness emits `sensors_ran` from this array)
 - `reasoning` — one sentence explaining your story selection and sensor decision; if async feedback was applied, say so explicitly (e.g. *"applied user feedback from .marmite/feedback.md"*)
+- `kind` — `"story"` (default) or `"janitor"`. Set to `"janitor"` only when this iteration is addressing a janitor entry from `progress.json` (see step 8.5). The harness uses this to route mark-passing to `progress.json` instead of `prd.json`. **Janitor tasks bypass the TDD discipline check** in the verifier (refactors that don't change behavior don't need new tests; the existing test suite is the safety net).
 <!-- marmite:contract end -->
+
+**Janitor variant.** When routing to a janitor entry, the file shape changes — `storyId` is the JanitorEntry id (not a PRD story id):
+
+```json
+{
+  "version": "1",
+  "storyId": "JANITOR-2026-05-19-0001",
+  "storyTitle": "Address debt threshold: eslint 23 findings",
+  "kind": "janitor",
+  "guidance": "Invoke the `janitor` skill. Triggered by eslint (23 findings, threshold 20). Address up to <janitor.maxFindingsPerRun> highest-impact findings; tag any deferrals inline with `// JANITOR-DEFER: <reason>`.",
+  "sensorSummary": "eslint (debt): 23 violations crossing threshold of 20.",
+  "ranSensors": ["eslint"],
+  "reasoning": "eslint debt threshold tripped at 23/20; materialized JANITOR-2026-05-19-0001."
+}
+```
 
 If async feedback was applied this iteration, the `guidance` field MUST repeat the user's directive (paraphrased or verbatim) so the builder and verifier see it. Don't just point at a file the user already deleted.
 
@@ -174,7 +221,7 @@ If async feedback was applied this iteration, the `guidance` field MUST repeat t
 - Do NOT write code
 - Do NOT edit `.marmite/prd.json` (this includes flipping `passes`, adding stories, changing priorities — even when async feedback asks for it)
 - Do NOT start any implementation work
-- ONLY write `.marmite/current-task.json` (and archive `.marmite/feedback.md` when present)
+- Write `.marmite/current-task.json` every iteration. Append to `.marmite/progress.json.timeline` only when materializing a new janitor entry (step 8.5). Archive `.marmite/feedback.md` when present.
 - Keep `guidance` actionable and specific — not generic filler
 - Do NOT copy or move sensor config files — `configPath` references existing files in place
 - Do NOT install or update dependencies as part of orchestration; that's the builder's job when a story requires it

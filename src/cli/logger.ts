@@ -150,7 +150,7 @@ function vComplete(iteration: number, max: number): void {
 function vMaxReached(max: number): void {
   console.log("");
   console.log(`Harness reached max iterations (${max}) without completing all tasks.`);
-  console.log("Check .marmite/progress.txt for status.");
+  console.log("Check .marmite/progress.json for status.");
 }
 
 function vBranchSetup(branchName: string, action: BranchAction): void {

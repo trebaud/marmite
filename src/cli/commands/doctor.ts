@@ -166,7 +166,7 @@ Exit code is non-zero if any check fails (warnings are tolerated).`);
     }
   }
 
-  // 6. .gitignore policy: tracked artifacts (prd.json, progress.txt, current-task.json,
+  // 6. .gitignore policy: tracked artifacts (prd.json, progress.json, current-task.json,
   // prompts/) must NOT be excluded. The two per-developer files (events.jsonl,
   // feedback.md) MAY be excluded — and ideally are, so they aren't churned into commits.
   const gitignorePath = resolve(projectRoot, ".gitignore");

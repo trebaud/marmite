@@ -3,13 +3,16 @@ import type { Reporter } from "./reporter.ts";
 import { silentReporter } from "./reporter.ts";
 import { PATHS, resolvePrompt } from "./paths.ts";
 import { emitEvent, initEventLog, setCurrentIteration, setRunId, tailEvents } from "./events.ts";
-import { fileExists, gitCommit, gitEnsureBranch, sleep, writeAtomic } from "./utils.ts";
+import { fileExists, gitCommit, gitEnsureBranch, sleep, writeAtomicJson } from "./utils.ts";
 import { detectAndAnnounceFeedback, forceClearFeedbackIfPresent } from "./feedback.ts";
 import {
   allStoriesPassingOrError,
+  findUnfinishedJanitorEntry,
+  markJanitorPassing,
   markStoryPassing,
   pickNextStory,
   readPrd,
+  readProgress,
 } from "./prd.ts";
 import {
   buildFixPrompt,
@@ -47,10 +50,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
   if (config.branchName) gitEnsureBranch(PATHS.projectRoot, config.branchName, reporter);
   if (!(await fileExists(PATHS.progress))) {
-    await writeAtomic(
-      PATHS.progress,
-      `# Harness Progress Log\nStarted: ${new Date().toString()}\n---\n`,
-    );
+    await writeAtomicJson(PATHS.progress, { patterns: [], timeline: [] });
   }
 
   // Validate prompt + PRD files up front. Prompts are installed by `marmite init`
@@ -123,25 +123,39 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       process.exit(0);
     }
 
-    // Pre-check: any story left? If not, exit successfully.
+    // Pre-check: anything left to do? An unfinished janitor entry in
+    // progress.json blocks completion just like an unfinished story does.
     const prdState = await readPrd(config.prdPath);
     if (prdState.kind === "parse_error") {
       reporter.error(`prd.json became unreadable mid-run`, prdState.error, "fatal");
       break;
     }
+    const progressState = await readProgress();
+    if (progressState.kind === "parse_error") {
+      reporter.error(`progress.json became unreadable mid-run`, progressState.error, "fatal");
+      break;
+    }
+    const pendingJanitor = progressState.kind === "ok"
+      ? findUnfinishedJanitorEntry(progressState.timeline)
+      : null;
     const nextStory = pickNextStory(prdState.stories);
-    if (!nextStory) {
+    if (!nextStory && !pendingJanitor) {
       reporter.complete(i - 1, config.maxIterations);
       await emitEvent("run_done", { reason: "all_stories_passing" });
       reporter.finalReport(runStats);
       process.exit(0);
     }
+    // Opening picture for the orchestrate phase. Janitor takes priority when
+    // present; the agent gets the final say via current-task.json.
+    const initialTask = pendingJanitor
+      ? { kind: "janitor" as const, id: pendingJanitor.id, title: pendingJanitor.title }
+      : { kind: "story" as const, id: nextStory!.id, title: nextStory!.title };
 
     // ── Phase 0: Orchestrate ──
     const feedbackWasDetected = await detectAndAnnounceFeedback(i, reporter);
 
-    await emitEvent("phase_start", { phase: "orchestrate", iteration: i, storyId: nextStory.id });
-    reporter.phaseStart("orchestrate", { iteration: i, storyId: nextStory.id });
+    await emitEvent("phase_start", { phase: "orchestrate", iteration: i, storyId: initialTask.id });
+    reporter.phaseStart("orchestrate", { iteration: i, storyId: initialTask.id });
 
     // Tail events.jsonl during the orchestrate session so sensor_start /
     // sensor_end events emitted by the agent (via `marmite emit-event`)
@@ -164,16 +178,18 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       "orchestrator",
     );
     tailAbort.abort();
-    recordSession(runStats, orchestrate, "orchestrate", i, nextStory.id, reporter);
+    recordSession(runStats, orchestrate, "orchestrate", i, initialTask.id, reporter);
     await emitEvent("phase_end", { phase: "orchestrate", iteration: i, outcome: orchestrate.outcome });
 
     await forceClearFeedbackIfPresent(i, reporter, feedbackWasDetected);
 
     if (runAbort.signal.aborted) break;
 
-    // Read orchestrator decision from current-task.json — determine actual story selected.
+    // Read orchestrator decision from current-task.json — determine actual task selected.
     const decisionParsed = await readCurrentTaskDecision();
-    let currentStory = nextStory;
+    let currentTaskKind: "story" | "janitor" = initialTask.kind;
+    let currentTaskId = initialTask.id;
+    let currentTaskTitle = initialTask.title;
     let storySource: "orchestrator" | "fallback" = "fallback";
 
     if (decisionParsed.kind === "present") {
@@ -197,33 +213,56 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
         reporter.finalReport(runStats);
         process.exit(0);
       }
-      const decidedStory = prdState.stories.find((s) => s.id === decision.storyId);
-      if (decidedStory) {
-        currentStory = decidedStory;
-        storySource = "orchestrator";
+      currentTaskKind = decision.kind;
+      if (decision.kind === "janitor") {
+        // Janitor entry must already exist in progress.json — the orchestrator
+        // agent appends it before writing current-task.json. Re-read to pick
+        // up any append the agent just did this phase.
+        const fresh = await readProgress();
+        const entry = fresh.kind === "ok"
+          ? fresh.timeline.find((e) => e.kind === "janitor" && e.id === decision.storyId)
+          : null;
+        if (entry && entry.kind === "janitor") {
+          currentTaskId = entry.id;
+          currentTaskTitle = entry.title;
+          storySource = "orchestrator";
+        } else {
+          reporter.error(
+            `orchestrator picked unknown janitor entry '${decision.storyId}'; no matching entry in progress.json`,
+            undefined,
+            "orchestrate",
+          );
+        }
       } else {
-        reporter.error(
-          `orchestrator picked unknown story '${decision.storyId}', falling back to priority order`,
-          undefined,
-          "orchestrate",
-        );
+        const decidedStory = prdState.stories.find((s) => s.id === decision.storyId);
+        if (decidedStory) {
+          currentTaskId = decidedStory.id;
+          currentTaskTitle = decidedStory.title;
+          storySource = "orchestrator";
+        } else {
+          reporter.error(
+            `orchestrator picked unknown story '${decision.storyId}', falling back to priority order`,
+            undefined,
+            "orchestrate",
+          );
+        }
       }
       if (decision.ranSensors.length > 0) {
-        await emitEvent("sensors_ran", { iteration: i, storyId: currentStory.id, sensors: decision.ranSensors });
+        await emitEvent("sensors_ran", { iteration: i, storyId: currentTaskId, sensors: decision.ranSensors });
       }
     } else if (decisionParsed.kind === "malformed") {
       reporter.error(`current-task.json malformed after orchestrate`, decisionParsed.error, "orchestrate");
     } else {
-      reporter.info("  current-task.json not found after orchestrate — using priority-order story selection.");
+      reporter.info("  current-task.json not found after orchestrate — using priority-order task selection.");
     }
 
-    await emitEvent("story_selected", { iteration: i, storyId: currentStory.id, title: currentStory.title, source: storySource });
-    reporter.iterationStart(i, config.maxIterations, currentStory.id, currentStory.title);
-    await emitEvent("iteration_start", { iteration: i, storyId: currentStory.id, title: currentStory.title });
+    await emitEvent("story_selected", { iteration: i, storyId: currentTaskId, title: currentTaskTitle, source: storySource });
+    reporter.iterationStart(i, config.maxIterations, currentTaskId, currentTaskTitle);
+    await emitEvent("iteration_start", { iteration: i, storyId: currentTaskId, title: currentTaskTitle });
 
     // ── Phase 1: Build ──
-    await emitEvent("phase_start", { phase: "build", iteration: i, storyId: currentStory.id });
-    reporter.phaseStart("build", { iteration: i, storyId: currentStory.id });
+    await emitEvent("phase_start", { phase: "build", iteration: i, storyId: currentTaskId });
+    reporter.phaseStart("build", { iteration: i, storyId: currentTaskId });
 
     const builderPrompt = await readPromptFile(resolvePrompt("builder"));
     const build = await runQueryWithRetry(
@@ -236,13 +275,13 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       config.builderModel,
       "builder",
     );
-    recordSession(runStats, build, "build", i, currentStory.id, reporter);
+    recordSession(runStats, build, "build", i, currentTaskId, reporter);
     await emitEvent("phase_end", { phase: "build", iteration: i, outcome: build.outcome });
 
     if (runAbort.signal.aborted) break;
 
     if (build.outcome === "fatal_error") {
-      finalizeStoryOutcome(runStats, currentStory.id, i, false, `build_fatal:${build.errorMessage?.slice(0, 60) ?? ""}`);
+      finalizeStoryOutcome(runStats, currentTaskId, i, false, `build_fatal:${build.errorMessage?.slice(0, 60) ?? ""}`);
       runStats.iterationsCompleted = i;
       await sleep(1000);
       continue;
@@ -261,13 +300,13 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
       // Cost budget check
       if (config.costBudgetUsdPerStory > 0 && iterationCost(runStats, i) > config.costBudgetUsdPerStory) {
-        reporter.budgetExceeded(currentStory.id, iterationCost(runStats, i), config.costBudgetUsdPerStory);
+        reporter.budgetExceeded(currentTaskId, iterationCost(runStats, i), config.costBudgetUsdPerStory);
         failReason = "budget_exceeded";
         break;
       }
 
       await emitEvent("phase_start", { phase: "verify", iteration: i, attempt: fix + 1 });
-      reporter.phaseStart("verify", { iteration: i, storyId: currentStory.id, attempt: fix + 1 });
+      reporter.phaseStart("verify", { iteration: i, storyId: currentTaskId, attempt: fix + 1 });
 
       const verifierPrompt = await readPromptFile(resolvePrompt("verifier"));
       const verify = await runQueryWithRetry(
@@ -280,7 +319,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
         config.verifierModel,
         "verifier",
       );
-      recordSession(runStats, verify, "verify", i, currentStory.id, reporter, fix + 1);
+      recordSession(runStats, verify, "verify", i, currentTaskId, reporter, fix + 1);
       await emitEvent("phase_end", { phase: "verify", iteration: i, attempt: fix + 1, outcome: verify.outcome });
 
       // Distinguish verifier crash from legitimate "no fixes will help" verdict.
@@ -343,7 +382,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       await emitEvent("phase_start", { phase: "fix", iteration: i, attempt: fixAttempts });
       reporter.phaseStart("fix", {
         iteration: i,
-        storyId: currentStory.id,
+        storyId: currentTaskId,
         attempt: fixAttempts,
         maxAttempts: config.maxFixAttempts,
       });
@@ -359,7 +398,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
         config.builderModel,
         "fixer",
       );
-      recordSession(runStats, fixResult, "fix", i, currentStory.id, reporter, fix + 1);
+      recordSession(runStats, fixResult, "fix", i, currentTaskId, reporter, fix + 1);
       await emitEvent("phase_end", { phase: "fix", iteration: i, attempt: fixAttempts, outcome: fixResult.outcome });
 
       if (fixResult.sessionId) lastBuildSessionId = fixResult.sessionId;
@@ -373,19 +412,26 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     // ── Finalize iteration ──
     runStats.iterationsCompleted = i;
     if (passed) {
-      const marked = await markStoryPassing(config, currentStory.id, reporter);
-      if (marked) {
-        gitCommit(PATHS.projectRoot, config.prdPath, `verify: ${currentStory.id} - passed verification`, reporter);
+      if (currentTaskKind === "janitor") {
+        const marked = await markJanitorPassing(currentTaskId, reporter);
+        if (marked) {
+          gitCommit(PATHS.projectRoot, PATHS.progress, `verify(janitor): ${currentTaskId} - passed verification`, reporter);
+        }
+      } else {
+        const marked = await markStoryPassing(config, currentTaskId, reporter);
+        if (marked) {
+          gitCommit(PATHS.projectRoot, config.prdPath, `verify: ${currentTaskId} - passed verification`, reporter);
+        }
       }
-      finalizeStoryOutcome(runStats, currentStory.id, i, true);
+      finalizeStoryOutcome(runStats, currentTaskId, i, true);
     } else {
-      finalizeStoryOutcome(runStats, currentStory.id, i, false, failReason);
+      finalizeStoryOutcome(runStats, currentTaskId, i, false, failReason);
     }
 
     reporter.iterationEnd({
       iteration: i,
-      storyId: currentStory.id,
-      storyTitle: currentStory.title,
+      storyId: currentTaskId,
+      storyTitle: currentTaskTitle,
       passed,
       reason: failReason,
       durationMs: Date.now() - iterationStartedAtMs,

@@ -6,16 +6,16 @@ The **orchestrator** — not you — mutates `.marmite/prd.json` and creates the
 
 ## What you MUST do, in order
 
-1. **Run `pwd`** to get your working directory, then read `.marmite/current-task.json` using the full absolute path — contains the assigned story ID, title, and acceptance criteria.
-2. **Read `.marmite/progress.txt`** — find the entry for this story. Note the "Tests added (TDD)" section.
-3. **Verify the test-first discipline:**
+1. **Run `pwd`** to get your working directory, then read `.marmite/current-task.json` using the full absolute path — contains the assigned task ID, title, acceptance criteria, and a `kind` field (`"story"` or `"janitor"`).
+2. **Read `.marmite/progress.json`** — find the timeline entry matching the current task. For story tasks: read its `summary` and `testsAdded`. For janitor tasks: read `appliedFixes`, `deferredFindings`, `commitShas`.
+3. **If `kind === "story"`, verify the test-first discipline.** (Skip for janitor tasks — refactors don't add new behavior, so they don't add new failing tests; the existing test suite is the safety net.)
    - Run `git log --format='%h %s' -20` (or filter by story ID).
    - Find the `test: [Story ID]` commit and the `feat: [Story ID]` (or `chore: [Story ID]`) commit.
-   - The `test:` commit MUST predate the `feat:` commit. If a `feat:` commit exists without a preceding `test:` commit and the progress entry does NOT justify "no tests: …", that's a discipline violation — set `verdict: "fail_retry"` and ask the builder to extract failing tests from the implementation and recommit in the right order.
-   - If the progress entry justifies "no tests: <reason>", evaluate the reason critically. "Doc-only change", "config-only change with no behavioral effect" are acceptable. "Hard to test", "trivial", "I'll add tests later" are NOT — fail with `fail_retry` and demand tests.
-4. **Verify each acceptance criterion** — check each one literally against the actual implementation. Read code, run the test suite, inspect output. Confirm the new tests added in step 2 actually cover the acceptance criteria (not just trivial smoke tests).
+   - The `test:` commit MUST predate the `feat:` commit. If a `feat:` commit exists without a preceding `test:` commit and the progress entry's `testsAdded` field does NOT justify `"no tests: …"`, that's a discipline violation — set `verdict: "fail_retry"` and ask the builder to extract failing tests from the implementation and recommit in the right order.
+   - If `testsAdded` justifies `"no tests: <reason>"`, evaluate the reason critically. "Doc-only change", "config-only change with no behavioral effect" are acceptable. "Hard to test", "trivial", "I'll add tests later" are NOT — fail with `fail_retry` and demand tests.
+4. **Verify the task** — see "Choosing the verdict" below. For story tasks: check each acceptance criterion against the implementation, and confirm the new tests in `testsAdded` actually cover the acceptance criteria. For janitor tasks: re-run the triggering sensor and the test suite.
 5. **Update `.marmite/current-task.json`** — merge the verdict fields into the existing file (preserve all existing fields, add the ones below).
-6. **STOP.** Do not edit `.marmite/prd.json`. Do not create commits.
+6. **STOP.** Do not edit `.marmite/prd.json` or `.marmite/progress.json`. Do not create commits.
 
 End your response with:
 ```
@@ -42,15 +42,27 @@ If the test-first discipline failed, surface that explicitly in `summary` (e.g. 
 
 ### Choosing the verdict
 
-- **`pass`** — every acceptance criterion is met AND test-first discipline was followed (or skipped with a valid justification).
+**Story tasks (`kind: "story"`):**
+
+- **`pass`** — every acceptance criterion is met AND test-first discipline was followed (or skipped with a valid justification in `testsAdded`).
 - **`fail_retry`** — criteria unmet, or test-first discipline violated, but fixable in another attempt. Put a precise, actionable fix list in `summary`.
 - **`fail_abort`** — criteria unmet AND another attempt won't help (wrong approach, fundamental misunderstanding). Explain in `summary` why retrying wastes effort.
+
+**Janitor tasks (`kind: "janitor"`):**
+
+The TDD discipline check is skipped. Verdict depends on whether the refactor reduced sensor debt without breaking anything:
+
+- **`pass`** — both:
+  - The test suite is still green.
+  - At least one of the sensors listed in `triggeredBy` shows **strictly fewer findings** than the count recorded there (re-run to confirm).
+- **`fail_retry`** — tests pass but no triggering sensor improved. Put the still-flagged findings in `summary`.
+- **`fail_abort`** — tests broke and the builder can't recover, or the same fixes have been tried before.
 
 `summary` MUST be non-empty when `verdict` is not `"pass"`.
 
 ## What you MUST NOT do
 
-- **Never edit `.marmite/prd.json`.** The orchestrator owns that.
+- **Never edit `.marmite/prd.json` or `.marmite/progress.json`.** The orchestrator owns prd; the builder owns progress.
 - **Never create `verify:` commits.** The orchestrator does that.
-- **Never mark `pass` if any acceptance criterion is unmet, or if the test-first discipline was skipped without a valid reason.**
+- **Never mark `pass` if any acceptance criterion is unmet, or (for story tasks) if test-first discipline was skipped without a valid reason, or (for janitor tasks) if no triggering sensor showed strictly fewer findings.**
 - **Never emit a `summary` shorter than one sentence** on a fail verdict.

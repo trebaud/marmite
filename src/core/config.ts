@@ -3,6 +3,27 @@ import { z } from "zod";
 export const SensorTypeSchema = z.enum(["drift", "debt", "pulse", "safe"]);
 export type SensorType = z.infer<typeof SensorTypeSchema>;
 
+// Thresholds keyed by sensor type. A janitor task fires the moment any single
+// threshold is met. Counts are produced by the orchestrator agent at sensor
+// run-time; the harness does not enforce them itself.
+export const JanitorConfigSchema = z.object({
+  thresholds: z
+    .object({
+      drift: z.number().int().nonnegative().optional(),
+      debt: z.number().int().nonnegative().optional(),
+      pulse: z.number().int().nonnegative().optional(),
+      safe: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
+  // Cap on how many findings the janitor skill tackles per run. Small batches
+  // are the safety mechanism — the skill should pick the highest-impact items.
+  maxFindingsPerRun: z.number().int().positive().optional(),
+  budgetUsd: z.number().nonnegative().optional(),
+  // Optional allowlist; when omitted the janitor consults all configured sensors.
+  sensors: z.array(z.string()).optional(),
+});
+export type JanitorConfig = z.infer<typeof JanitorConfigSchema>;
+
 export const SensorEntrySchema = z.object({
   name: z.string().min(1, "sensor.name is required"),
   type: SensorTypeSchema,
@@ -60,6 +81,10 @@ export const MarmiteConfigSchema = z.object({
     })
     .optional(),
   maxIterations: z.number().int().positive().optional(),
+  // When present, the orchestrator agent compares post-run sensor counts to
+  // these thresholds and materializes a janitor entry in `progress.json`
+  // whenever any threshold is met. Omit to disable the feature entirely.
+  janitor: JanitorConfigSchema.optional(),
 });
 export type MarmiteConfig = z.infer<typeof MarmiteConfigSchema>;
 

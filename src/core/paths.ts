@@ -33,7 +33,7 @@ function userPath(p: string): string {
 
 export const PATHS = {
   get projectRoot() { return userRoot; },
-  get progress()    { return userPath(".marmite/progress.txt"); },
+  get progress()    { return userPath(".marmite/progress.json"); },
   get events()      { return userPath(".marmite/events.jsonl"); },
   get currentTask() { return userPath(".marmite/current-task.json"); },
   get prompts()     { return userPath(".marmite/prompts"); },

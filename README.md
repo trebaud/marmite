@@ -24,7 +24,7 @@ my-project/
 ├── marmite.json              # config: paths, sensors, models, budgets
 ├── .marmite/
 │   ├── prd.json              # the PRD that drives the loop          (git)
-│   ├── progress.txt          # rolling story status                  (git)
+│   ├── progress.json         # rolling story + janitor timeline     (git)
 │   ├── current-task.json     # per-iteration agent handoff           (git)
 │   ├── prompts/              # agent prompts                         (git)
 │   ├── events.jsonl          # per-session event log              (ignored)
@@ -48,7 +48,7 @@ my-project/
           │                 │ commit                              │
           │                 ▼                                     │
           │          ┌──────────────┐                             │
-          │          │ progress.txt │                             │
+          │          │ progress.json│                             │
           │          └──────────────┘                             │
           │                                                       │
           └───────────────────────────────────────────────────────┘

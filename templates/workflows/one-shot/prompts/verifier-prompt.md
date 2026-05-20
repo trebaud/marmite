@@ -6,11 +6,11 @@ The **orchestrator** — not you — mutates `.marmite/prd.json` and creates the
 
 ## What you MUST do, in order
 
-1. **Run `pwd`** to get your working directory, then read `.marmite/current-task.json` using the full absolute path — contains the assigned story ID, title, and acceptance criteria.
-2. **Read `.marmite/progress.txt`** — understand what the implementer reported.
-3. **Verify each acceptance criterion** — check each one literally against the actual implementation. Read code, run commands, inspect output — whatever it takes to be sure.
+1. **Run `pwd`** to get your working directory, then read `.marmite/current-task.json` using the full absolute path — contains the assigned task ID, title, acceptance criteria, and a `kind` field (`"story"` or `"janitor"`).
+2. **Read `.marmite/progress.json`** — find the timeline entry matching the current task (most recent `StoryEntry` with the same `storyId`, or the `JanitorEntry` with the same `id`). Read its `summary` / `appliedFixes` / `deferredFindings` — understand what the implementer reported.
+3. **Verify the task** — see "Choosing the verdict" below for the criteria. Read code, run commands, inspect output — whatever it takes to be sure.
 4. **Update `.marmite/current-task.json`** — merge the verdict fields into the existing file (preserve all existing fields, add the ones below).
-5. **STOP.** Do not edit `.marmite/prd.json`. Do not create commits.
+5. **STOP.** Do not edit `.marmite/prd.json` or `.marmite/progress.json`. Do not create commits.
 
 End your response with:
 ```
@@ -37,15 +37,27 @@ Add these fields to the existing `.marmite/current-task.json` object (keep all o
 
 ### Choosing the verdict
 
+**Story tasks (`kind: "story"` — the default):**
+
 - **`pass`** — every acceptance criterion is met.
 - **`fail_retry`** — one or more criteria are not met, but the implementer can plausibly fix it in one more attempt. Put a precise, actionable fix list in `summary`.
 - **`fail_abort`** — criteria are not met AND another attempt won't help (wrong approach, missing major feature, fundamental misunderstanding of the story). Explain clearly in `summary` why retrying wastes effort.
+
+**Janitor tasks (`kind: "janitor"`):**
+
+Acceptance criteria don't apply. Instead, the verdict is driven by whether the refactor actually reduced sensor debt without breaking anything:
+
+- **`pass`** — both of the following hold:
+  - The test suite (pulse sensor) is still green.
+  - At least one of the sensors listed in `triggeredBy` shows **strictly fewer findings** than the count recorded there (re-run the sensor to confirm — the `JanitorEntry.triggeredBy[].findingCount` is the baseline).
+- **`fail_retry`** — tests pass but no triggering sensor improved. Put the still-flagged findings in `summary` so the builder can pick a different batch next attempt.
+- **`fail_abort`** — tests broke and the builder can't recover, or the same fixes have been attempted before with the same outcome.
 
 `summary` MUST be non-empty when `verdict` is not `"pass"`. If the environment is broken (e.g. code won't compile, test runner crashed), set `verdict: "fail_abort"` and describe what's broken.
 
 ## What you MUST NOT do
 
-- **Never edit `.marmite/prd.json`.** The orchestrator owns that.
+- **Never edit `.marmite/prd.json` or `.marmite/progress.json`.** The orchestrator owns prd; the builder owns progress.
 - **Never create `verify:` commits.** The orchestrator does that after processing your verdict.
-- **Never mark `pass` if any acceptance criterion is unmet.**
+- **Never mark `pass` if any acceptance criterion is unmet, or (for janitor tasks) if no triggering sensor showed strictly fewer findings.**
 - **Never emit a `summary` shorter than one sentence** on a fail verdict. The builder relies on it to produce fixes.

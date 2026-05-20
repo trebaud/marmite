@@ -184,7 +184,38 @@ export type HarnessEvent =
       anomalyFlags: string[];
       errorMessage: string | undefined;
     }
-  | ({ kind: "story_outcome" } & StoryOutcome);
+  | ({ kind: "story_outcome" } & StoryOutcome)
+  // Emitted by the orchestrator agent when a sensor-threshold trip materializes
+  // a new janitor entry in progress.json. The harness does not emit these
+  // directly — agents call `marmite emit-event` like they do for sensor_*.
+  | {
+      kind: "janitor_triggered";
+      iteration: number;
+      janitorId: string;
+      triggers: Array<{ sensor: string; findingCount: number; threshold: number }>;
+    }
+  | { kind: "janitor_started"; iteration: number; janitorId: string }
+  | {
+      kind: "janitor_fix_applied";
+      iteration: number;
+      janitorId: string;
+      finding: string;
+      commitSha?: string;
+    }
+  | {
+      kind: "janitor_fix_deferred";
+      iteration: number;
+      janitorId: string;
+      finding: string;
+      reason: string;
+    }
+  | {
+      kind: "janitor_done";
+      iteration: number;
+      janitorId: string;
+      applied: number;
+      deferred: number;
+    };
 
 export type HarnessEventKind = HarnessEvent["kind"];
 

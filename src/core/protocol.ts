@@ -89,12 +89,17 @@ const CurrentTaskDecisionSchema = z
     storyTitle: z.string().optional(),
     ranSensors: z.array(z.string()).default([]),
     halt: HaltSchema.optional(),
+    // Set to "janitor" by the orchestrator when the current iteration is a
+    // sensor-debt-driven refactor task instead of a user story. The harness
+    // routes mark-passing to progress.json instead of prd.json in this case.
+    kind: z.enum(["story", "janitor"]).optional(),
   })
   .transform((r) => ({
     storyId: r.storyId,
     storyTitle: r.storyTitle ?? "",
     ranSensors: r.ranSensors,
     halt: r.halt,
+    kind: r.kind ?? "story",
   }));
 
 export type CurrentTaskDecision = z.infer<typeof CurrentTaskDecisionSchema>;
