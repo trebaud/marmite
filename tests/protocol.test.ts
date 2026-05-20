@@ -129,17 +129,37 @@ describe("readCurrentTaskDecision", () => {
     if (r.kind === "present") expect(r.value.ranSensors).toEqual(["eslint", "tsc"]);
   });
 
-  test("halt.awaiting_pr parses", async () => {
+  test("halt.awaiting_pr_review parses with prNum (gh-opened PR)", async () => {
     writeCurrentTask({
       storyId: "s1",
-      halt: { kind: "awaiting_pr", prNum: 42, branch: "feature/x" },
+      halt: { kind: "awaiting_pr_review", prNum: 42, branch: "feature/x", baseBranch: "main" },
     });
     const r = await readCurrentTaskDecision();
     expect(r.kind).toBe("present");
     if (r.kind === "present" && r.value.halt) {
-      expect(r.value.halt.kind).toBe("awaiting_pr");
+      expect(r.value.halt.kind).toBe("awaiting_pr_review");
       expect(r.value.halt.prNum).toBe(42);
       expect(r.value.halt.branch).toBe("feature/x");
+    }
+  });
+
+  test("halt.awaiting_pr_review parses without prNum (manual PR fallback)", async () => {
+    writeCurrentTask({
+      storyId: "s1",
+      halt: {
+        kind: "awaiting_pr_review",
+        branch: "feature/x",
+        baseBranch: "main",
+        reason: "gh CLI not installed or not authenticated",
+      },
+    });
+    const r = await readCurrentTaskDecision();
+    expect(r.kind).toBe("present");
+    if (r.kind === "present" && r.value.halt) {
+      expect(r.value.halt.kind).toBe("awaiting_pr_review");
+      expect(r.value.halt.prNum).toBeUndefined();
+      expect(r.value.halt.branch).toBe("feature/x");
+      expect(r.value.halt.reason).toContain("gh CLI");
     }
   });
 
@@ -150,7 +170,7 @@ describe("readCurrentTaskDecision", () => {
   });
 
   test("halt.prNum non-positive → malformed", async () => {
-    writeCurrentTask({ storyId: "s1", halt: { kind: "awaiting_pr", prNum: 0 } });
+    writeCurrentTask({ storyId: "s1", halt: { kind: "awaiting_pr_review", prNum: 0 } });
     const r = await readCurrentTaskDecision();
     expect(r.kind).toBe("malformed");
   });

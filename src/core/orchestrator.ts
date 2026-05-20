@@ -198,15 +198,26 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       // orchestrator agent writes this; the harness exits 0 so the next
       // `marmite cook` invocation resumes from the same current-task.json.
       if (decision.halt) {
-        reporter.info(
-          `\nHalting: workflow requested ${decision.halt.kind}` +
-            (decision.halt.kind === "awaiting_pr" ? ` for PR #${decision.halt.prNum}` : "") +
-            `. Re-run \`marmite cook\` once the gate clears.`,
-        );
+        const branchHint = decision.halt.branch ? ` (branch \`${decision.halt.branch}\`)` : "";
+        if (decision.halt.prNum !== undefined) {
+          reporter.info(
+            `\nHalting: awaiting PR review for PR #${decision.halt.prNum}${branchHint}. ` +
+              `Re-run \`marmite cook\` once the PR is merged.`,
+          );
+        } else {
+          reporter.info(
+            `\nHalting: awaiting PR review${branchHint}. ` +
+              (decision.halt.reason ? `${decision.halt.reason}\n` : "\n") +
+              `  → The GitHub CLI (\`gh\`) is not installed, so marmite could not open the PR automatically.\n` +
+              `    Install gh (https://cli.github.com — \`brew install gh\` on macOS) and \`gh auth login\`\n` +
+              `    so future checkpoints open PRs automatically. In the meantime, open & merge a PR\n` +
+              `    from the pushed branch by hand, then re-run \`marmite cook\`.`,
+          );
+        }
         await emitEvent("run_halt", {
           iteration: i,
-          reason: decision.halt.kind,
-          prNum: decision.halt.kind === "awaiting_pr" ? decision.halt.prNum : undefined,
+          reason: "awaiting_pr_review",
+          prNum: decision.halt.prNum,
           branch: decision.halt.branch,
         });
         runStats.iterationsCompleted = i - 1;

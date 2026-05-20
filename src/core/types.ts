@@ -102,7 +102,7 @@ export type HarnessEvent =
   | {
       kind: "run_halt";
       iteration: number;
-      reason: "awaiting_pr";
+      reason: "awaiting_pr_review";
       prNum: number | undefined;
       branch: string | undefined;
     }

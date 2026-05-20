@@ -73,13 +73,19 @@ export async function readVerificationResultFile(): Promise<ParsedVerification> 
 
 // Halt instruction written by the orchestrator when a workflow needs to stop the
 // harness mid-run (e.g. waiting on a human PR merge in pr-on-checkpoint).
-// The harness reads this after the orchestrate phase and exits 0 cleanly. Only
-// `kind: "awaiting_pr"` is used today, but the discriminator leaves room.
+// The harness reads this after the orchestrate phase and exits 0 cleanly.
+//
+// `awaiting_pr_review` — the harness has paused for a PR to be reviewed and
+// merged. `prNum` is present when the orchestrator opened the PR itself via
+// `gh pr create`; absent when gh was unavailable and the user is expected to
+// open the PR manually from the pushed branch. `reason` carries an optional
+// explanation surfaced in the CLI (e.g. "gh CLI not installed").
 const HaltSchema = z.object({
-  kind: z.literal("awaiting_pr"),
-  prNum: z.number().int().positive(),
+  kind: z.literal("awaiting_pr_review"),
+  prNum: z.number().int().positive().optional(),
   branch: z.string().optional(),
   baseBranch: z.string().optional(),
+  reason: z.string().optional(),
 });
 export type Halt = z.infer<typeof HaltSchema>;
 
