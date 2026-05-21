@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const SensorTypeSchema = z.enum(["drift", "debt", "pulse", "safe"]);
+export const SensorTypeSchema = z.enum(["drift", "debt"]);
 export type SensorType = z.infer<typeof SensorTypeSchema>;
 
 // Thresholds keyed by sensor type. A janitor task fires the moment any single
@@ -11,8 +11,6 @@ export const JanitorConfigSchema = z.object({
     .object({
       drift: z.number().int().nonnegative().optional(),
       debt: z.number().int().nonnegative().optional(),
-      pulse: z.number().int().nonnegative().optional(),
-      safe: z.number().int().nonnegative().optional(),
     })
     .optional(),
   // Cap on how many findings the janitor skill tackles per run. Small batches

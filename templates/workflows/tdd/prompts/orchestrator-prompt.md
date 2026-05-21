@@ -53,58 +53,51 @@ From `.marmite/progress.json`:
 
 ### 5. Sensor catalog
 
-Sensor entries live inline in `marmite.json` under the `sensors` key. Each entry looks like:
+Marmite ships exactly two sensors and their configs live under `./.marmite/sensors/`. Both are **scoped to files modified by this run** — they never lint or analyze the brownfield project's untouched files.
 
-```json
-{
-  "name": "eslint",
-  "type": "debt",
-  "package": "eslint",
-  "configPath": "./apps/web/.eslintrc.json",
-  "guidance": "Run via `bun run lint:strict` in apps/web; ignore warnings under packages/legacy/."
-}
-```
+| Sensor | Type | Config | Purpose |
+|--------|------|--------|---------|
+| `eslint` | `debt` | `./.marmite/sensors/eslint.config.js` | Code quality debt — complexity, unused code, escape hatches |
+| `dependency-cruiser` | `drift` | `./.marmite/sensors/.dependency-cruiser.cjs` | Architectural drift — cycles, layer violations, orphan modules |
 
-- `name` — short identifier used in `ranSensors` and reports.
-- `type` — one of `drift`, `debt`, `pulse`, `safe` (see table in step 5).
-- `package` — the underlying tool (eslint, dependency-cruiser, vitest, …). Optional.
-- `configPath` — path to the tool's config file, **already in place somewhere in the repo**. The harness does not copy or move config files. If `configPath` is set and the file is missing, treat that as a setup gap and surface it in `guidance`; do not fabricate a config.
-- `guidance` — user-authored prose: how to invoke the sensor, exit-code quirks, ignore patterns, anything tool-specific. Pass it along verbatim when relevant.
-
-If `marmite.json` has no `sensors` key, or the array is empty, skip steps 6–8 entirely.
+Entries appear in `marmite.json` under `sensors` with `name`, `type`, `package`, `configPath` (pointing into `.marmite/sensors/`), and a `guidance` string that contains the exact invocation. If a sensor entry is missing from `marmite.json` (the user disabled it during init), skip it. If the `sensors` array is empty or absent, skip steps 6–8 entirely.
 
 ### 6. Decide whether to run sensors
-
-Sensors are deterministic scripts (linters, SAST tools, architectural drift detectors, etc.).
-
-| Type | Purpose | Typical tool |
-|------|---------|--------------|
-| `drift` | Architectural drift — import violations, circular deps, layer misuse | dependency-cruiser |
-| `debt` | Code quality debt accumulation — style, complexity, unused code | eslint, biome |
-| `pulse` | Test regressions — failing or flaky tests | jest, vitest, playwright |
-| `safe` | Security vulnerabilities — SAST, dependency audit | npm audit, semgrep, snyk |
 
 Run sensors when one or more of the following apply:
 - The previous story **failed** verification (`fail_retry` or `fail_abort`) — sensors give the builder targeted feedback
 - Every 3rd completed story — periodic quality baseline
-- `.marmite/progress.json` shows accumulating debt, drift, or security concerns
+- `.marmite/progress.json` shows accumulating debt or drift
 
 Skip sensors when:
 - `marmite.json` has no `sensors` entries
 - The previous story **passed** cleanly with no warnings
-- This is the very first story with no prior context
+- This is the very first story with no prior context (nothing changed yet — see step 7)
 
-When running sensors, be **targeted**: only run sensors relevant to the detected issues, not everything at once.
+Be **targeted** when running: pick the sensor whose `type` matches the previous failure mode, not always both.
 
 ### 7. Run sensors (if appropriate)
 
-For each sensor you decide to run:
+Sensors are scoped to files changed on this branch versus the base branch. **Compute the changed-file list before invoking any tool** — if the list is empty, skip the sensor (there is nothing for it to look at) and record that in `sensorSummary`.
 
-1. **Read the sensor's `guidance`** — it usually tells you the exact invocation (`bun run lint`, `pnpm test:ci`, etc.). If `guidance` specifies a command, prefer it over inventing one.
-2. **Otherwise, discover the run command** by inspecting the project: `scripts` in `package.json`, a `Makefile`, a `justfile`, etc. Run from the directory the tool expects (typically wherever `configPath` lives, or wherever the relevant source is).
-3. **Verify the tool actually resolves** — if a sensor's binary isn't installed where it needs to run, that's a setup gap. Note it in `guidance` for the builder; do not silently skip.
+```bash
+BASE=$(jq -r '.baseBranch // "main"' marmite.json)
+CHANGED=$(git diff --name-only "$BASE"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs')
+```
 
-Do **not** install dependencies or copy config files. If a `configPath` points at a missing file, or a tool isn't installed, record the gap in `.marmite/current-task.json`'s `guidance` for the builder to address as part of the story.
+If `CHANGED` is empty: write `"no changed files in scope; skipping <sensor>"` into `sensorSummary` and continue.
+
+Otherwise, run the sensor's exact command from its `marmite.json` `guidance` field (which already wires up the changed-file list). The defaults installed by `marmite init` are:
+
+```bash
+# debt — eslint
+npx eslint --no-config-lookup -c .marmite/sensors/eslint.config.js $CHANGED
+
+# drift — dependency-cruiser
+npx depcruise --config .marmite/sensors/.dependency-cruiser.cjs $CHANGED
+```
+
+If a tool's binary doesn't resolve via `npx`, that is a setup gap — note it in `guidance` for the builder; do not silently skip. Do **not** install dependencies and do **not** edit the configs under `.marmite/sensors/` (they are user-tracked customization points).
 
 **Surface each sensor in the harness logger** by wrapping its run with `marmite emit-event`:
 
@@ -112,28 +105,26 @@ Do **not** install dependencies or copy config files. If a `configPath` points a
 ```bash
 marmite emit-event sensor-start --sensor eslint --type debt
 START_MS=$(date +%s%3N)
-bun run lint:strict; EXIT=$?
+npx eslint --no-config-lookup -c .marmite/sensors/eslint.config.js $CHANGED; EXIT=$?
 DURATION_MS=$(( $(date +%s%3N) - START_MS ))
 marmite emit-event sensor-end --sensor eslint --type debt --duration-ms "$DURATION_MS" --exit-code "$EXIT"
 ```
 
-Emit `sensor-start` *before* the tool runs and `sensor-end` *after*, even on failure. `--type` is one of `drift|debt|pulse|safe`.
+Emit `sensor-start` *before* the tool runs and `sensor-end` *after*, even on failure. `--type` is one of `drift|debt`.
 <!-- marmite:contract end -->
 
 Capture the full output (stdout + stderr + exit code). The full output stays in your context — you will summarize it in `.marmite/current-task.json`.
 
 ### 8. Match failing sensors to skills
 
-For each sensor that did not pass, look up the corresponding skill(s) from the table below and include them in the guidance you write to the builder. The builder can invoke these skills directly — they contain specialist knowledge for addressing that category of issue.
+For each sensor that did not pass, recommend the matching skill in your `guidance` so the builder invokes it.
 
 | Sensor type | Skill(s) to recommend |
 |-------------|----------------------|
 | `drift` | `architect` — fixes import violations and layering errors |
 | `debt` | `clean-code` or `refactor` — reduces accumulated quality debt |
-| `pulse` | `debug` — test-first debugging for regressions |
-| `safe` | `security-analysis` or `security-review` — white-box security triage |
 
-When recommending a skill in `guidance`, name it explicitly (e.g. *"run the `architect` skill to address the drift violations above"*) so the builder knows the exact slash command to invoke.
+Name the skill explicitly in `guidance` (e.g. *"run the `architect` skill to address the drift violations above"*).
 
 If all sensors passed, skip this step.
 

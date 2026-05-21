@@ -196,7 +196,10 @@ Exit code is non-zero if any check fails (warnings are tolerated).`);
   }
   // (no .gitignore at all is fine — nothing is being excluded)
 
-  // 7. Sensor configPath files exist
+  // 7. Sensor configPath files exist. Marmite ships its own configs under
+  // .marmite/sensors/; warn if the entry points at something outside that dir
+  // (legacy pattern from older marmite versions — the orchestrator no longer
+  // expects user-managed configs).
   if (config?.sensors && config.sensors.length > 0) {
     for (const sensor of config.sensors) {
       if (!sensor.configPath) continue;
@@ -207,7 +210,15 @@ Exit code is non-zero if any check fails (warnings are tolerated).`);
         findings.push({
           severity: "fail",
           message: `sensor "${sensor.name}" configPath does not exist`,
-          detail: `${sensor.configPath} → ${abs} — the orchestrator surfaces this as a setup gap; create the config or remove the entry`,
+          detail: `${sensor.configPath} → ${abs} — re-run \`marmite init\` to reinstall the sensor config, or remove the entry`,
+        });
+      }
+      const normalized = sensor.configPath.replace(/^\.\//, "");
+      if (!normalized.startsWith(".marmite/sensors/")) {
+        findings.push({
+          severity: "warn",
+          message: `sensor "${sensor.name}" configPath is outside .marmite/sensors/`,
+          detail: `marmite now ships its own sensor configs under .marmite/sensors/; consider moving "${sensor.configPath}" there so the harness owns the lifecycle`,
         });
       }
     }
@@ -215,7 +226,7 @@ Exit code is non-zero if any check fails (warnings are tolerated).`);
     findings.push({
       severity: "warn",
       message: "no sensors declared in marmite.json",
-      detail: "the run will proceed without lint/drift/test/security signals",
+      detail: "the run will proceed without lint/drift signals",
     });
   }
 

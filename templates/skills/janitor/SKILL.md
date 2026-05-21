@@ -45,9 +45,7 @@ For each picked finding:
 1. Apply the smallest change that resolves it. Match the sensor's guidance for that finding type:
    - `drift` (architectural) — move code to the correct layer, extract an interface, redirect an import.
    - `debt` (code quality) — decompose a long function, replace a custom routine with a library call, eliminate duplication, fix a type error.
-   - `safe` (security) — apply the upstream fix or the documented mitigation.
-   - `pulse` (test failures) — fix the underlying behavior, not the test.
-2. Run the project's test suite (use the `pulse` sensor's command, or `bun test` / `npm test` as inferred from `package.json`). If tests pass:
+2. Run the project's test suite (`bun test` / `npm test` as inferred from `package.json`). If tests pass:
    - Commit the change with message: `refactor(janitor): <JANITOR-ID> - <short description>` and `git add` only the files touched by this fix.
    - Record an `appliedFixes` entry: a short string like `"eslint no-unused-vars: dropped 3 unused imports in src/foo/bar.ts"`.
    - Emit `marmite emit-event janitor-fix-applied --janitor-id <ID> --finding "<kind>" --commit-sha <SHA>`.

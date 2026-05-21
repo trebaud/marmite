@@ -84,8 +84,8 @@ The next iteration folds the note into story selection and `guidance`, then dele
   "prd": "./.marmite/prd.json",
 
   "sensors": [
-    { "name": "eslint", "type": "debt",  "package": "eslint",     "configPath": "./app/.eslintrc.json", "guidance": "Run via `bun run lint:strict`." },
-    { "name": "tsc",    "type": "pulse", "package": "typescript", "configPath": "./app/tsconfig.json",  "guidance": "Use `bun run typecheck`." }
+    { "name": "eslint",             "type": "debt",  "package": "eslint",             "configPath": "./.marmite/sensors/eslint.config.js",       "guidance": "CHANGED=$(git diff --name-only \"$baseBranch\"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs'); [ -n \"$CHANGED\" ] && npx eslint --no-config-lookup -c .marmite/sensors/eslint.config.js $CHANGED" },
+    { "name": "dependency-cruiser", "type": "drift", "package": "dependency-cruiser", "configPath": "./.marmite/sensors/.dependency-cruiser.cjs", "guidance": "CHANGED=$(git diff --name-only \"$baseBranch\"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs'); [ -n \"$CHANGED\" ] && npx depcruise --config .marmite/sensors/.dependency-cruiser.cjs $CHANGED" }
   ],
 
   "models": {
@@ -104,14 +104,14 @@ The next iteration folds the note into story selection and `guidance`, then dele
 
 ### Sensors
 
-Deterministic checks the orchestrator runs between stories. `configPath` points at an existing config (nothing is copied); `guidance` is prose handed to the agent. Each `type` maps to a skill the orchestrator suggests to the builder on failure:
+Marmite ships exactly two deterministic checks. Their configs are installed under `./.marmite/sensors/` at `marmite init` time and tracked in git — edit them to encode the rules you want on new code. Both sensors are **scoped to files modified by the current run** (`git diff --name-only $baseBranch...HEAD`), so they never lint or analyze the brownfield project's untouched files.
 
-| Type | Catches | Tools | Skill |
-|------|---------|-------|-------|
-| `drift` | Import violations, circular deps, layer misuse | dependency-cruiser | `architect` |
-| `debt` | Style, complexity, unused code, type errors | eslint, tsc | `clean-code`, `refactor` |
-| `pulse` | Failing or flaky tests | jest, vitest | `debug` |
-| `safe` | Known CVEs | npm audit, snyk | `security-review` |
+| Sensor | Type | Config | Catches | Skill on failure |
+|--------|------|--------|---------|------------------|
+| `eslint` | `debt` | `.marmite/sensors/eslint.config.js` | Style, complexity, unused code, escape hatches | `clean-code`, `refactor` |
+| `dependency-cruiser` | `drift` | `.marmite/sensors/.dependency-cruiser.cjs` | Import violations, cycles, layer misuse, orphan modules | `architect` |
+
+If the project already has its own eslint flat config, `marmite init` layers the marmite debt rules on top of it (see the `userConfig` import in `eslint.config.js`). Either sensor can be disabled at init time or by removing its entry from `marmite.json`.
 
 ### Workflows
 

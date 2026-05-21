@@ -207,27 +207,51 @@ From `.marmite/current-task.json`'s previous `verdict` field (if any) and from `
 
 ### 5. Sensor catalog
 
-Sensors live in `marmite.json` under `sensors`. Each entry has `name`, `type` (`drift|debt|pulse|safe`), optional `package`, optional `configPath`, and optional `guidance`. If there are no sensors, skip steps 6–8.
+Marmite ships exactly two sensors and their configs live under `./.marmite/sensors/`. Both are scoped to files modified by this run — they never lint or analyze the brownfield project's untouched files.
+
+| Sensor | Type | Config |
+|--------|------|--------|
+| `eslint` | `debt` | `./.marmite/sensors/eslint.config.js` |
+| `dependency-cruiser` | `drift` | `./.marmite/sensors/.dependency-cruiser.cjs` |
+
+If a sensor entry is missing from `marmite.json` (disabled at init), skip it. If `sensors` is empty/absent, skip steps 6–8.
 
 ### 6. Decide whether to run sensors
 
-Run sensors when: previous story failed verification, every 3rd story for baseline, or progress.json shows accumulating issues. Skip when: no sensors configured, previous story passed cleanly, or this is the first story with no context. Be targeted — only relevant sensors, not all.
+Run when: previous story failed verification, every 3rd story for baseline, or progress.json shows accumulating issues. Skip when: no sensors configured, previous story passed cleanly, or this is the first story (nothing changed yet). Be targeted — pick the sensor matching the failure type.
 
 ### 7. Run sensors
 
-For each chosen sensor: read its `guidance` for the run command, otherwise discover from `package.json`/`Makefile`. Verify the tool resolves; if missing, note the gap in `guidance` for the builder. Do NOT install dependencies or copy configs. Capture stdout + stderr + exit code.
+Sensors are scoped to files changed vs. the base branch. **Compute the changed-file list first** — if empty, skip the sensor and note that in `sensorSummary`.
 
-Wrap each sensor with `marmite emit-event` so the harness logger can surface live progress:
+```bash
+BASE=$(jq -r '.baseBranch // "main"' marmite.json)
+CHANGED=$(git diff --name-only "$BASE"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs')
+```
+
+Use the exact command in the sensor's `guidance` field. Defaults installed by `marmite init`:
+
+```bash
+# debt
+npx eslint --no-config-lookup -c .marmite/sensors/eslint.config.js $CHANGED
+# drift
+npx depcruise --config .marmite/sensors/.dependency-cruiser.cjs $CHANGED
+```
+
+If a tool doesn't resolve via `npx`, note the setup gap in `guidance`; do not install dependencies and do not edit configs under `.marmite/sensors/`.
+
+Wrap each sensor run with `marmite emit-event`:
 
 <!-- marmite:contract start — the harness tails .marmite/events.jsonl during this phase; without these emits the live sensor feed in the CLI goes silent and `sensors_ran` is never recorded -->
 ```bash
 marmite emit-event sensor-start --sensor eslint --type debt
-START_MS=$(date +%s%3N); bun run lint:strict; EXIT=$?
+START_MS=$(date +%s%3N)
+npx eslint --no-config-lookup -c .marmite/sensors/eslint.config.js $CHANGED; EXIT=$?
 marmite emit-event sensor-end --sensor eslint --type debt \
   --duration-ms "$(( $(date +%s%3N) - START_MS ))" --exit-code "$EXIT"
 ```
 
-Emit `sensor-start` before and `sensor-end` after, even on failure. `--type` is one of `drift|debt|pulse|safe`.
+Emit `sensor-start` before and `sensor-end` after, even on failure. `--type` is one of `drift|debt`.
 <!-- marmite:contract end -->
 
 ### 8. Match failing sensors to skills
@@ -236,8 +260,6 @@ Emit `sensor-start` before and `sensor-end` after, even on failure. `--type` is 
 |-------------|----------|
 | `drift` | `architect` |
 | `debt` | `clean-code` or `refactor` |
-| `pulse` | `debug` |
-| `safe` | `security-analysis` or `security-review` |
 
 Name the recommended skill explicitly in `guidance` so the builder knows the slash command to invoke.
 

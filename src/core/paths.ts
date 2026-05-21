@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 //   templates/    — assets copied into the user's project at `marmite init`:
 //                     templates/prompts/  → <user>/.marmite/prompts/
 //                     templates/skills/   → <user>/.claude/skills/
+//                     templates/sensors/  → <user>/.marmite/sensors/
 const here = dirname(fileURLToPath(import.meta.url)); // src/core
 const packageRoot = resolve(here, "../..");
 
@@ -16,6 +17,7 @@ export const FRAMEWORK_PATHS = {
   templates:        resolve(packageRoot, "templates"),
   templatesPrompts: resolve(packageRoot, "templates/prompts"),
   templatesSkills:  resolve(packageRoot, "templates/skills"),
+  templatesSensors: resolve(packageRoot, "templates/sensors"),
 } as const;
 
 // User paths live in the user's project (where they ran `marmite cook`).
@@ -37,6 +39,7 @@ export const PATHS = {
   get events()      { return userPath(".marmite/events.jsonl"); },
   get currentTask() { return userPath(".marmite/current-task.json"); },
   get prompts()     { return userPath(".marmite/prompts"); },
+  get sensors()     { return userPath(".marmite/sensors"); },
   get prd()         { return userPath(".marmite/prd.json"); },
   get feedback()    { return userPath(".marmite/feedback.md"); },
 };

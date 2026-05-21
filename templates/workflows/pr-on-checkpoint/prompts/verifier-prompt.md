@@ -48,7 +48,7 @@ Add these fields to the existing `.marmite/current-task.json` object (keep all o
 Acceptance criteria don't apply. Instead, the verdict is driven by whether the refactor actually reduced sensor debt without breaking anything:
 
 - **`pass`** — both of the following hold:
-  - The test suite (pulse sensor) is still green.
+  - The test suite is still green (run the project's tests directly — `bun test` / `npm test` / per the project's `package.json` scripts).
   - At least one of the sensors listed in `triggeredBy` shows **strictly fewer findings** than the count recorded there (re-run the sensor to confirm — the `JanitorEntry.triggeredBy[].findingCount` is the baseline).
 - **`fail_retry`** — tests pass but no triggering sensor improved. Put the still-flagged findings in `summary` so the builder can pick a different batch next attempt.
 - **`fail_abort`** — tests broke and the builder can't recover, or the same fixes have been attempted before with the same outcome.

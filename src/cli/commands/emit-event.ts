@@ -80,7 +80,7 @@ export async function runEmitEvent(argv: string[]): Promise<void> {
 
   die(
     `emit-event: unknown kind '${kind ?? ""}'. Supported: sensor-start, sensor-end.\n` +
-      `  marmite emit-event sensor-start --sensor <name> [--type <drift|debt|pulse|safe>]\n` +
+      `  marmite emit-event sensor-start --sensor <name> [--type <drift|debt>]\n` +
       `  marmite emit-event sensor-end --sensor <name> --duration-ms <n> --exit-code <n> [--type <...>]`,
   );
 }
