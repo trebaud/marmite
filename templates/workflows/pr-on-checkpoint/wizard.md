@@ -17,7 +17,10 @@ Ask **when** the workflow should halt and open a PR. Two options:
 
 The orchestrator opens PRs from whatever branch the user has checked out into a base branch, and reconciles back against base after each merge. **`baseBranch` is REQUIRED** for this workflow — if it's missing, the orchestrator halts on the very first run with a `guidance` complaint. The wizard MUST emit it as a top-level key in `marmite.json`.
 
-The working branch is **not** configured — `marmite cook` always operates on the currently checked-out branch. Remind the user in the plan summary to `git checkout -b <branch>` before they run `marmite cook` if they don't want commits landing on whatever they have checked out now.
+Working-branch behavior depends on the checkpoint trigger from W2:
+
+- **`kind: "every"`** — `marmite cook` operates on the currently checked-out branch and reuses it across PRs. Remind the user in the plan summary to `git checkout -b <branch>` before running `marmite cook` if they don't want commits landing on whatever they have checked out now.
+- **`kind: "epic"`** — the orchestrator manages branches automatically. Each new epic gets a fresh branch off `baseBranch` (named `marmite/epic-<epic-slug>`), and the branch is retired after its PR merges. The user can `marmite cook` from `baseBranch` itself — they don't need to create a branch first.
 
 Detect the base-branch default before asking:
 

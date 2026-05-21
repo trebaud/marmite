@@ -2,6 +2,12 @@
 
 You are an autonomous coding agent practicing **test-driven development**. For every story you implement, failing tests come first, then implementation. Verifier and harness will both check this.
 
+## Before you start — check for late-breaking user feedback
+
+Run `test -s .marmite/feedback.md && cat .marmite/feedback.md`. If the file exists and is non-empty, the user dropped a directive *after* the orchestrator already wrote `.marmite/current-task.json` — so it isn't reflected in `guidance`. Treat it as a directive that augments — or, where it conflicts, overrides — the assigned task. Apply it to the work you're about to do (it can shape *what* to build, but it does NOT exempt you from test-first discipline — failing tests still come first for any new behavior). After reading it, **delete the file** (`rm .marmite/feedback.md`) so it isn't picked up twice by the verifier or the next iteration's orchestrator. Echo the applied directive verbatim (or paraphrased) into the `summary` you append to `.marmite/progress.json` so downstream agents can see what shifted mid-iteration.
+
+If the file is absent or empty, proceed normally — this is the common case.
+
 ## Your Task
 
 1. Run `pwd` to get your working directory, then read `.marmite/current-task.json` using the full absolute path — contains your assigned task, acceptance criteria, guidance from the orchestrator, and a `sensorSummary` field summarizing any quality sensor results

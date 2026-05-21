@@ -57,13 +57,25 @@ If exactly one result comes back, set `prNum = <N>` for the rest of this phase. 
 
 **Step 3 — PR was merged. Reconcile and clear the halt.**
 
-- The working branch is `halt.branch` (snapshotted at halt time). The base branch comes from `marmite.json`'s `baseBranch` — required for this workflow; if missing, surface the situation in `guidance` and halt.
-- `git fetch origin`
-- `git checkout <baseBranch> && git pull --ff-only origin <baseBranch>`
-- `git checkout <halt.branch>` (create it from base if it no longer exists)
-- `git reset --hard origin/<baseBranch>` — drop the pre-merge story commits; the merged squash/merge commit on base is the canonical history now.
+The working branch is `halt.branch` (snapshotted at halt time). The base branch comes from `marmite.json`'s `baseBranch` — required for this workflow; if missing, surface the situation in `guidance` and halt.
+
+Reconciliation depends on `workflowConfig.kind`:
+
+- **`kind: "epic"`** — the merged branch represented a *completed* epic; the next iteration will start a *new* epic and therefore needs a fresh branch off base. Do NOT reuse `halt.branch`, and do NOT delete it — leave the merged local branch alone so the user keeps a record of the work:
+  - `git fetch origin`
+  - `git checkout <baseBranch> && git pull --ff-only origin <baseBranch>`
+  - Leave the checkout on `<baseBranch>`. Phase C's "Ensure correct branch" step (3.5) will create the next epic branch off base before any builder work lands.
+
+- **`kind: "every"`** (the default) — keep reusing the same working branch across PRs:
+  - `git fetch origin`
+  - `git checkout <baseBranch> && git pull --ff-only origin <baseBranch>`
+  - `git checkout <halt.branch>` (create it from base if it no longer exists)
+  - `git reset --hard origin/<baseBranch>` — drop the pre-merge story commits; the merged squash/merge commit on base is the canonical history now.
+
+After the kind-specific block:
+
 - Clear the halt: when you write `.marmite/current-task.json` in Phase C, do **not** include the `halt` field.
-- Record what happened in `reasoning` (e.g. *"resumed after PR #42 merged into main; reset marmite/work to origin/main"*, or *"resumed after manual merge detected on origin/main"* if no `prNum` was available).
+- Record what happened in `reasoning` (e.g. *"resumed after PR #42 merged into main; reset marmite/work to origin/main"*, or *"resumed after epic PR #42 merged; checked out main, will branch the next epic in step 3.5"*, or *"resumed after manual merge detected on origin/main"* if no `prNum` was available).
 
 If there is no `halt` field, skip to Phase B.
 
@@ -209,6 +221,39 @@ If `.marmite/feedback.md` exists and is non-empty:
 ### 3. Select the next story
 
 Pick the **highest-priority** story where `passes: false`. Lower priority number = higher priority. Break ties by story ID alphabetically. Async feedback wins over priority if it named a story.
+
+### 3.5. Ensure correct branch (epic checkpoint workflow only)
+
+This step runs only when `workflowConfig.kind === "epic"`. Skip it for `kind: "every"`.
+
+The goal: every PR for an epic ships from its own branch off `baseBranch`. When this iteration is the start of a new epic — either because we just reconciled a merged PR (Phase A → epic branch) or because this is the very first run — create a fresh branch off `origin/<baseBranch>` before assigning the story to the builder.
+
+Detect whether a new branch is needed:
+
+```bash
+baseBranch=$(jq -r '.baseBranch // empty' marmite.json)
+currentBranch=$(git rev-parse --abbrev-ref HEAD)
+git fetch origin >/dev/null 2>&1
+commitsAhead=$(git log --oneline origin/$baseBranch..HEAD 2>/dev/null | wc -l | tr -d ' ')
+```
+
+A new branch is needed when **both** hold:
+- `currentBranch == baseBranch` (we're sitting on base, not already on an epic branch), AND
+- `commitsAhead == 0` (no in-progress epic work would be lost).
+
+If `currentBranch != baseBranch` AND `commitsAhead > 0`, an epic is already in progress on the current branch — do NOT create a new branch; reuse the current one (the builder will add the next story commit to it).
+
+When a new branch is needed:
+
+1. Derive a slug from the selected story's `epic` field — lowercase, replace any run of non-alphanumeric characters with `-`, trim leading/trailing `-`, cap at 40 characters. Call this `epicSlug`.
+2. Pick a branch name `marmite/epic-<epicSlug>`. If a local branch by that name already exists, append `-<YYYYMMDD>` (today's date); if that also exists, append `-<short-random>` (e.g. `$(openssl rand -hex 3)`).
+3. Create and check out the branch off the freshly-pulled base:
+   ```bash
+   git checkout -b marmite/epic-<epicSlug> origin/$baseBranch
+   ```
+4. Mention the branch creation in `reasoning` (e.g. *"started new epic branch marmite/epic-auth off origin/main for epic 'auth'"*).
+
+Refuse to create a branch when `baseBranch` is empty in `marmite.json` — surface that in `guidance` and halt. The builder will commit on whichever branch is checked out when it runs, so this step must complete before step 9 writes `.marmite/current-task.json`.
 
 ### 4. Assess previous run quality
 

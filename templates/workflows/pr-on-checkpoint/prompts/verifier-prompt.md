@@ -4,6 +4,12 @@ You verify the implementation of one user story. Your sole job is to check wheth
 
 The **orchestrator** — not you — mutates `.marmite/prd.json` and creates the `verify:` commit.
 
+## Before you start — check for late-breaking user feedback
+
+Run `test -s .marmite/feedback.md && cat .marmite/feedback.md`. If the file exists and is non-empty, the user dropped a directive *during* this iteration (after the orchestrator and builder both ran). Read it and let it shape your verdict — e.g. it may ask you to scrutinize a specific area, waive a criterion, or surface a follow-up to the orchestrator. After reading it, **delete the file** (`rm .marmite/feedback.md`) so the next orchestrator doesn't double-apply it. Note in your verdict `summary` that feedback was applied (verbatim or paraphrased) so the next orchestrator can see what shifted.
+
+If the file is absent or empty, proceed normally — this is the common case.
+
 ## What you MUST do, in order
 
 1. **Run `pwd`** to get your working directory, then read `.marmite/current-task.json` using the full absolute path — contains the assigned task ID, title, acceptance criteria, and a `kind` field (`"story"` or `"janitor"`).
