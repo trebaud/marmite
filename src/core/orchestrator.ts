@@ -174,7 +174,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       runAbort.signal,
       reporter,
       config.orchestratorModel,
-      "orchestrator",
+      `orchestrator n=${i}`,
     );
     tailAbort.abort();
     recordSession(runStats, orchestrate, "orchestrate", i, initialTask.id, reporter);
@@ -283,7 +283,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       runAbort.signal,
       reporter,
       config.builderModel,
-      "builder",
+      `builder n=${i}`,
     );
     recordSession(runStats, build, "build", i, currentTaskId, reporter);
     await emitEvent("phase_end", { phase: "build", iteration: i, outcome: build.outcome });
@@ -327,7 +327,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
         runAbort.signal,
         reporter,
         config.verifierModel,
-        "verifier",
+        `verifier n=${i}.${fix + 1}`,
       );
       recordSession(runStats, verify, "verify", i, currentTaskId, reporter, fix + 1);
       await emitEvent("phase_end", { phase: "verify", iteration: i, attempt: fix + 1, outcome: verify.outcome });
@@ -406,7 +406,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
         runAbort.signal,
         reporter,
         config.builderModel,
-        "fixer",
+        `fixer n=${i}.${fixAttempts}`,
       );
       recordSession(runStats, fixResult, "fix", i, currentTaskId, reporter, fix + 1);
       await emitEvent("phase_end", { phase: "fix", iteration: i, attempt: fixAttempts, outcome: fixResult.outcome });

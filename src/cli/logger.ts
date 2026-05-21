@@ -26,7 +26,12 @@ const c = {
 };
 
 function ts(): string {
-  return `${c.gray}${new Date().toISOString()}${c.reset}`;
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const ms = String(d.getMilliseconds()).padStart(3, "0");
+  return `${c.gray}${hh}:${mm}:${ss}.${ms}${c.reset}`;
 }
 
 function tag(label: string): string {
@@ -67,6 +72,50 @@ export function cacheHitRatio(cacheReadTokens: number, inputTokens: number): num
 
 function fmtRatio(r: number): string {
   return `${(r * 100).toFixed(1)}%`;
+}
+
+// Compact one-line summary of a tool call's input. Falls back to truncated JSON
+// for tools we don't recognize.
+function fmtToolInput(name: string, input: any): string {
+  if (!input || typeof input !== "object") return "";
+  const trunc = (s: string, n = 160) => (s.length > n ? s.slice(0, n) + "…" : s);
+  const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+  switch (name) {
+    case "Bash":
+      return `$ ${trunc(oneLine(input.command ?? ""))}`;
+    case "Read":
+      return input.offset || input.limit
+        ? `${input.file_path} ${c.dim}@${input.offset ?? 0}+${input.limit ?? "?"}${c.reset}`
+        : String(input.file_path ?? "");
+    case "Edit":
+      return `${input.file_path}${input.replace_all ? " (replace_all)" : ""}`;
+    case "Write":
+      return String(input.file_path ?? "");
+    case "Glob":
+      return `${input.pattern ?? ""}${input.path ? ` in ${input.path}` : ""}`;
+    case "Grep":
+      return `${input.pattern ?? ""}${input.path ? ` in ${input.path}` : ""}`;
+    case "TodoWrite":
+      return `${Array.isArray(input.todos) ? input.todos.length : "?"} todos`;
+    case "Task":
+      return trunc(oneLine(input.description ?? input.prompt ?? ""));
+    default: {
+      const json = JSON.stringify(input);
+      return trunc(json, 200);
+    }
+  }
+}
+
+// Clean a tool_result preview: strip the `cat -n` line-number prefix that Read
+// emits, collapse newlines to a visible separator, and trim.
+function fmtResultPreview(text: string, max = 240): string {
+  const cleaned = text
+    .replace(/^\s*\d+\t/gm, "")    // strip Read's `<n>\t` prefix per line
+    .replace(/^\s*\d+→/gm, "")     // legacy/alt arrow form
+    .replace(/\r?\n/g, " ↵ ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.length > max ? cleaned.slice(0, max) + "…" : cleaned;
 }
 
 function outcomeBadge(outcome: string): string {
@@ -203,14 +252,21 @@ function vMessage(message: SDKMessage, agentLabel: string = "harness"): void {
     case "system":
       if (message.subtype === "init") {
         const msg = message as any;
-        console.log(`${time} ${t} ${c.blue}INIT${c.reset} model=${c.white}${msg.model ?? "?"}${c.reset} cwd=${c.white}${message.cwd}${c.reset} v=${message.claude_code_version}`);
-        if (msg.tools?.length) {
-          console.log(`${time} ${t} ${c.blue}INIT${c.reset} tools=[${msg.tools.join(", ")}]`);
-        }
+        const parts = [
+          `model=${c.white}${msg.model ?? "?"}${c.reset}`,
+          `cwd=${c.white}${message.cwd}${c.reset}`,
+          `v=${message.claude_code_version}`,
+        ];
+        if (msg.tools?.length) parts.push(`tools=${msg.tools.length}`);
         if (msg.mcp_servers?.length) {
-          const mcps = msg.mcp_servers.map((s: any) => `${s.name}(${s.status})`).join(", ");
-          console.log(`${time} ${t} ${c.blue}INIT${c.reset} mcp=[${mcps}]`);
+          const total = msg.mcp_servers.length;
+          const bad = msg.mcp_servers.filter((s: any) => s.status !== "connected");
+          const badTxt = bad.length
+            ? ` ${c.dim}(${bad.map((s: any) => `${s.name}:${s.status}`).join(", ")})${c.reset}`
+            : "";
+          parts.push(`mcp=${total - bad.length}/${total}${badTxt}`);
         }
+        console.log(`${time} ${t} ${c.blue}INIT${c.reset} ${parts.join(" ")}`);
       } else if (message.subtype === "status") {
         console.log(`${time} ${t} ${c.blue}STATUS${c.reset} ${message.status}`);
       } else if ((message as any).subtype === "task_notification") {
@@ -220,6 +276,8 @@ function vMessage(message: SDKMessage, agentLabel: string = "harness"): void {
         if (msg.usage) {
           console.log(`${time} ${t} ${c.magenta}TASK${c.reset}   tokens=${msg.usage.total_tokens} tools=${msg.usage.tool_uses} dur=${msg.usage.duration_ms}ms`);
         }
+      } else if (message.subtype === "hook_started" || message.subtype === "hook_response") {
+        // Hook lifecycle is internal plumbing — skip in verbose to cut noise.
       } else {
         console.log(`${time} ${t} ${c.blue}SYSTEM${c.reset}/${message.subtype}`);
       }
@@ -229,14 +287,14 @@ function vMessage(message: SDKMessage, agentLabel: string = "harness"): void {
       const blocks = message.message.content;
       for (const block of blocks as any[]) {
         if (block.type === "thinking") {
-          const preview = block.thinking?.slice(0, 200) ?? "";
-          console.log(`${time} ${t} ${c.dim}THINK${c.reset} ${c.gray}${preview}${preview.length >= 200 ? "..." : ""}${c.reset}`);
+          const raw = (block.thinking ?? "").replace(/\s+/g, " ").trim();
+          const preview = raw.slice(0, 120);
+          console.log(`${time} ${t} ${c.dim}THINK${c.reset} ${c.gray}${preview}${raw.length > 120 ? "…" : ""}${c.reset}`);
         } else if (block.type === "text") {
           console.log(`${time} ${t} ${c.green}TEXT${c.reset}  ${block.text}`);
         } else if (block.type === "tool_use") {
-          const input = JSON.stringify(block.input ?? {});
-          const inputPreview = input.length > 300 ? input.slice(0, 300) + "..." : input;
-          console.log(`${time} ${t} ${c.yellow}TOOL${c.reset}  ${c.bold}${block.name}${c.reset} ${c.gray}${inputPreview}${c.reset}`);
+          const inputPreview = fmtToolInput(block.name, block.input);
+          console.log(`${time} ${t} ${c.yellow}TOOL${c.reset}  ${c.bold}${block.name}${c.reset}${inputPreview ? ` ${c.gray}${inputPreview}${c.reset}` : ""}`);
         } else {
           console.log(`${time} ${t} ${c.dim}BLOCK${c.reset} type=${block.type}`);
         }
@@ -254,9 +312,9 @@ function vMessage(message: SDKMessage, agentLabel: string = "harness"): void {
               : Array.isArray(block.content)
                 ? block.content.map((c: any) => c.text ?? `[${c.type}]`).join(" ")
                 : "";
-            const preview = content.slice(0, 300);
+            const preview = fmtResultPreview(content);
             const status = block.is_error ? `${c.red}ERR${c.reset}` : `${c.green}OK${c.reset}`;
-            console.log(`${time} ${t} ${c.dim}RESULT${c.reset} [${status}] ${c.gray}${preview}${content.length > 300 ? "..." : ""}${c.reset}`);
+            console.log(`${time} ${t} ${c.dim}RESULT${c.reset} [${status}] ${c.gray}${preview}${c.reset}`);
           } else if (block.type === "text") {
             console.log(`${time} ${t} ${c.dim}USER${c.reset}  ${block.text?.slice(0, 200) ?? ""}`);
           }
@@ -299,6 +357,8 @@ function vMessage(message: SDKMessage, agentLabel: string = "harness"): void {
 
     case "rate_limit_event": {
       const rl = (message as any).rate_limit_info ?? {};
+      // Suppress healthy "allowed" pings — only surface degraded states.
+      if (rl.status === "allowed") break;
       const status = rl.status === "rejected" ? `${c.red}${rl.status}${c.reset}` : `${c.yellow}${rl.status}${c.reset}`;
       const util = rl.utilization != null ? ` util=${(rl.utilization * 100).toFixed(0)}%` : "";
       const resets = rl.resetsAt ? ` resets=${new Date(rl.resetsAt * 1000).toISOString()}` : "";
