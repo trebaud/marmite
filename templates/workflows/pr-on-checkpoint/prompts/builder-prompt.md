@@ -14,10 +14,8 @@ You are an autonomous coding agent. Your job is to implement the story assigned 
 
 6. Implement the assigned story
 7. Run quality checks (typecheck, lint, test — use whatever the project requires)
-8. **If the story touched UI** (HTML, JSX/TSX, CSS, Tailwind classes, component styling, layout), invoke the `design-qa-checker` skill before committing and address anything it flags. Do not skip this step on UI-touching stories. Check the root `CLAUDE.md` for other project-specific skills that apply.
-9. Update CLAUDE.md files if you discover reusable patterns (see below)
-10. Append your progress to `.marmite/progress.json` (see "Progress Report Format" below)
-11. If checks pass, commit ALL changes — including every modified file under `.marmite/` (e.g. `.marmite/progress.json`) — with message: `feat: [Story ID] - [Story Title]`. Stage `.marmite/` explicitly (e.g. `git add .marmite/ <other paths>`) so the project history captures the harness state alongside the code change. Never gitignore `.marmite/` files and never leave them out of the story commit.
+8. Append your progress to `.marmite/progress.json` (see "Progress Report Format" below)
+9. If checks pass, commit ALL changes — including every modified file under `.marmite/` (e.g. `.marmite/progress.json`) — with message: `feat: [Story ID] - [Story Title]`. Stage `.marmite/` explicitly (e.g. `git add .marmite/ <other paths>`) so the project history captures the harness state alongside the code change. Never gitignore `.marmite/` files and never leave them out of the story commit.
 
 ### Janitor flow (`kind: "janitor"`)
 
@@ -62,17 +60,6 @@ If you discover a **reusable pattern**, append a new entry to `progress.json.pat
 ```
 
 Only add patterns that are **general and reusable**, not story-specific details. Append — don't delete or rewrite existing entries.
-
-## Update CLAUDE.md Files
-
-Before committing, check if any edited files have learnings worth preserving in nearby CLAUDE.md files:
-
-- API patterns or conventions specific to that module
-- Gotchas or non-obvious requirements
-- Dependencies between files
-- Testing approaches for that area
-
-Only update CLAUDE.md if you have **genuinely reusable knowledge** — not story-specific details or information already in `.marmite/progress.json`.
 
 ## Quality Requirements
 

@@ -27,16 +27,14 @@ J3. Commit the progress.json update as the **last** commit of the iteration with
 6. **Commit the failing tests** with message: `test: [Story ID] - failing tests for [Story Title]`. This commit MUST contain only test files (and any minimal scaffolding the tests need to even load — e.g. a stub function returning `null`) plus any modified `.marmite/` files that belong to this story (e.g. an early `.marmite/progress.json` note). It must not contain the actual implementation. Stage `.marmite/` explicitly (`git add .marmite/ <test paths>`) — never gitignore `.marmite/` files and never leave them out of the story commits.
 7. **Implement the story** to make the tests pass. Refactor as needed once green.
 8. Run quality checks (typecheck, lint, full test suite — use whatever the project requires). All tests must pass.
-9. **If the story touched UI** (HTML, JSX/TSX, CSS, Tailwind classes, component styling, layout), invoke the `design-qa-checker` skill before committing and address anything it flags. Do not skip this step on UI-touching stories. Check the root `CLAUDE.md` for other project-specific skills that apply.
-10. Update CLAUDE.md files if you discover reusable patterns (see below).
-11. Append your progress to `.marmite/progress.json`. In the entry, list the test files you added in step 6 — the verifier reads this.
-12. **Commit the implementation** with message: `feat: [Story ID] - [Story Title]`. This is a separate commit from the test commit in step 6, and MUST include all remaining modified files under `.marmite/` (especially `.marmite/progress.json`). Stage `.marmite/` explicitly (`git add .marmite/ <impl paths>`) so the project history captures the harness state alongside the code change.
+9. Append your progress to `.marmite/progress.json`. In the entry, list the test files you added in step 6 — the verifier reads this.
+10. **Commit the implementation** with message: `feat: [Story ID] - [Story Title]`. This is a separate commit from the test commit in step 6, and MUST include all remaining modified files under `.marmite/` (especially `.marmite/progress.json`). Stage `.marmite/` explicitly (`git add .marmite/ <impl paths>`) so the project history captures the harness state alongside the code change.
 
 The `guidance` field in `.marmite/current-task.json` contains specific instructions from the orchestrator — always read and act on it.
 
 ### When the change is genuinely untestable
 
-Some stories don't have meaningful tests (e.g. tweaking a `.gitignore`, editing CLAUDE.md, dependency bumps without behavioral change). If you honestly cannot write a failing test for a story:
+Some stories don't have meaningful tests (e.g. tweaking a `.gitignore`, editing docs, dependency bumps without behavioral change). If you honestly cannot write a failing test for a story:
 
 - Skip steps 5–6.
 - Append progress to `.marmite/progress.json` justifying why no tests were appropriate.
@@ -79,10 +77,6 @@ If you discover a **reusable pattern**, append a new entry to `progress.json.pat
 ```
 
 Only add patterns that are **general and reusable**, not story-specific details. Append — don't delete or rewrite existing entries.
-
-## Update CLAUDE.md Files
-
-Before committing, check if any edited files have learnings worth preserving in nearby CLAUDE.md files (API patterns, gotchas, dependencies, testing approaches). Only update CLAUDE.md if you have genuinely reusable knowledge.
 
 ## Quality Requirements
 

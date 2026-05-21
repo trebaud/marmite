@@ -221,7 +221,6 @@ $MARMITE_TEMPLATES/
 │   └── <config files referenced by the chosen workflow's workflow.json `sensors[].file`>
 └── skills/                  → ./.claude/skills/         (always installed)
     ├── architect/
-    ├── design-qa-checker/
     └── prd-generator/
     (… any other skill folders present)
 ```

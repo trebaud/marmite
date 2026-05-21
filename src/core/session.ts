@@ -50,11 +50,10 @@ function baseOptions(config: HarnessConfig, model: string, abort: AbortControlle
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
     abortController: abort,
-    mcpServers: {
-      playwright: {
-        command: "npx",
-        args: ["-y", "@playwright/mcp@latest"],
-      },
+    systemPrompt: {
+      type: "preset" as const,
+      preset: "claude_code" as const,
+      excludeDynamicSections: true,
     },
     stderr: (data: string) => {
       const line = data.trim();
