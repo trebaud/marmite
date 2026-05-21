@@ -1,7 +1,6 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { RunStats, SessionStats } from "../core/types.ts";
 import type {
-  BranchAction,
   IterationEndOpts,
   Phase,
   PhaseStartOpts,
@@ -151,20 +150,6 @@ function vMaxReached(max: number): void {
   console.log("");
   console.log(`Harness reached max iterations (${max}) without completing all tasks.`);
   console.log("Check .marmite/progress.json for status.");
-}
-
-function vBranchSetup(branchName: string, action: BranchAction): void {
-  switch (action) {
-    case "created":
-      console.log(`Branch ${c.green}created${c.reset}: ${c.cyan}${branchName}${c.reset}`);
-      break;
-    case "switched":
-      console.log(`Branch ${c.yellow}switched${c.reset}: ${c.cyan}${branchName}${c.reset}`);
-      break;
-    case "already_on":
-      console.log(`Branch ${c.dim}already on${c.reset}: ${c.cyan}${branchName}${c.reset}`);
-      break;
-  }
 }
 
 function vFeedbackDetected(bytes: number, preview: string): void {
@@ -417,7 +402,6 @@ export const verboseReporter: Reporter = {
   complete: vComplete,
   maxReached: vMaxReached,
   aborted: vAborted,
-  branchSetup: vBranchSetup,
   gitCommit: vGitCommit,
   feedbackDetected: vFeedbackDetected,
   feedbackForceCleared: vFeedbackForceCleared,
@@ -573,11 +557,6 @@ function tGitCommit(sha: string, _message: string): void {
   emitLine(`    ${c.dim}↳ committed${c.reset} ${tag}`);
 }
 
-function tBranchSetup(branchName: string, action: BranchAction): void {
-  const verb = action === "created" ? "created" : action === "switched" ? "switched to" : "on";
-  emitLine(`  ${c.gray}branch ${verb}${c.reset} ${c.cyan}${branchName}${c.reset}`);
-}
-
 function tFeedbackDetected(bytes: number, preview: string): void {
   const trimmed = preview.replace(/\s+/g, " ").trim().slice(0, 80);
   const ellipsis = preview.length > 80 ? "…" : "";
@@ -673,7 +652,6 @@ export const terseReporter: Reporter = {
   complete: tComplete,
   maxReached: tMaxReached,
   aborted: tAborted,
-  branchSetup: tBranchSetup,
   gitCommit: tGitCommit,
   feedbackDetected: tFeedbackDetected,
   feedbackForceCleared: tFeedbackForceCleared,

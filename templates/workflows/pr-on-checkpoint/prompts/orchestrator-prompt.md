@@ -30,7 +30,7 @@ Run `pwd` and read `.marmite/current-task.json`.
 
 If the file has a top-level field `halt` of shape `{ "kind": "awaiting_pr_review", ... }`, a previous iteration is waiting on a PR. Whether `prNum` is present or not, the goal is the same: detect merge, reconcile, and clear the halt; otherwise preserve the halt and stop.
 
-Read `halt.branch` and `halt.baseBranch` (both should be set; if missing, fall back to `marmite.json`'s `branchName` and `baseBranch`).
+Read `halt.branch` and `halt.baseBranch`. `halt.branch` was snapshotted from the working branch the previous iteration was running on; `halt.baseBranch` mirrors `marmite.json`'s `baseBranch`. If `halt.baseBranch` is missing, fall back to `marmite.json`'s `baseBranch`. If `halt.branch` is missing (older halts), fall back to the currently checked-out branch: `git rev-parse --abbrev-ref HEAD`.
 
 **Step 1 — try to discover the PR number if we don't have one.**
 
@@ -57,10 +57,10 @@ If exactly one result comes back, set `prNum = <N>` for the rest of this phase. 
 
 **Step 3 — PR was merged. Reconcile and clear the halt.**
 
-- Read the marmite working branch and base branch from `marmite.json` (`branchName` and `baseBranch`). Both are required — if either is missing, surface the situation in `guidance` and halt.
+- The working branch is `halt.branch` (snapshotted at halt time). The base branch comes from `marmite.json`'s `baseBranch` — required for this workflow; if missing, surface the situation in `guidance` and halt.
 - `git fetch origin`
 - `git checkout <baseBranch> && git pull --ff-only origin <baseBranch>`
-- `git checkout <marmiteBranch>` (create it from base if it no longer exists)
+- `git checkout <halt.branch>` (create it from base if it no longer exists)
 - `git reset --hard origin/<baseBranch>` — drop the pre-merge story commits; the merged squash/merge commit on base is the canonical history now.
 - Clear the halt: when you write `.marmite/current-task.json` in Phase C, do **not** include the `halt` field.
 - Record what happened in `reasoning` (e.g. *"resumed after PR #42 merged into main; reset marmite/work to origin/main"*, or *"resumed after manual merge detected on origin/main"* if no `prNum` was available).
@@ -94,8 +94,17 @@ If the predicate does not fire, skip to Phase C.
 
 ### Open the PR
 
+Resolve the working branch and base branch up front. The working branch is **always** whatever is currently checked out (`marmite cook` does not switch branches); the base branch comes from `marmite.json`:
+
+```bash
+marmiteBranch=$(git rev-parse --abbrev-ref HEAD)
+baseBranch=$(jq -r '.baseBranch // empty' marmite.json)
+```
+
+If `baseBranch` is empty, surface the situation in `guidance` (the user must set `baseBranch` in `marmite.json` before checkpoints can fire) and halt. If `marmiteBranch` equals `baseBranch`, refuse to open a PR — the user is cooking directly on base; surface this in `guidance` (suggest `git checkout -b <branch>` and re-running) and halt.
+
 1. Confirm there are commits ahead of base: `git log --oneline origin/<baseBranch>..HEAD`. If empty, skip — defensive guard.
-2. Push the marmite branch: `git push -u origin <marmiteBranch>` (force-with-lease only if the branch already existed remotely from a prior aborted run). **This push must happen even when gh is unavailable** — it's what makes the manual-PR fallback possible.
+2. Push the working branch: `git push -u origin <marmiteBranch>` (force-with-lease only if the branch already existed remotely from a prior aborted run). **This push must happen even when gh is unavailable** — it's what makes the manual-PR fallback possible.
 3. **If gh is unavailable**, take the manual fallback now and skip the rest of this section:
    - Write `.marmite/current-task.json` with:
      ```json

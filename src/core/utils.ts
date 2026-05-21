@@ -111,24 +111,6 @@ export function classifyError(err: unknown): { category: ErrorCategory; message:
   return { category: "fatal", message, code };
 }
 
-export function gitEnsureBranch(cwd: string, branchName: string, reporter: Reporter): void {
-  const current = spawnSync("git", ["branch", "--show-current"], { cwd, encoding: "utf8" });
-  if (current.stdout?.trim() === branchName) {
-    reporter.branchSetup(branchName, "already_on");
-    return;
-  }
-  const exists = spawnSync("git", ["show-ref", "--verify", `refs/heads/${branchName}`], { cwd });
-  if (exists.status === 0) {
-    const r = spawnSync("git", ["checkout", branchName], { cwd, encoding: "utf8" });
-    if (r.status !== 0) { reporter.error(`git checkout ${branchName}`, (r.stderr ?? "").trim() || `exit ${r.status ?? "?"}`, "git"); return; }
-    reporter.branchSetup(branchName, "switched");
-  } else {
-    const r = spawnSync("git", ["checkout", "-b", branchName], { cwd, encoding: "utf8" });
-    if (r.status !== 0) { reporter.error(`git checkout -b ${branchName}`, (r.stderr ?? "").trim() || `exit ${r.status ?? "?"}`, "git"); return; }
-    reporter.branchSetup(branchName, "created");
-  }
-}
-
 export function gitCommit(cwd: string, path: string, message: string, reporter: Reporter): void {
   const add = spawnSync("git", ["add", path], { cwd, encoding: "utf8" });
   if (add.status !== 0) {

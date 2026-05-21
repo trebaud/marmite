@@ -155,20 +155,20 @@ describe("fileExists", () => {
 describe("readJsonField", () => {
   test("reads a string field", async () => {
     const p = join(tmp, "j.json");
-    writeFileSync(p, JSON.stringify({ branchName: "feature/foo" }));
-    expect(await readJsonField(p, "branchName")).toBe("feature/foo");
+    writeFileSync(p, JSON.stringify({ label: "feature/foo" }));
+    expect(await readJsonField(p, "label")).toBe("feature/foo");
   });
 
   test("returns empty string when field missing", async () => {
     const p = join(tmp, "j.json");
     writeFileSync(p, JSON.stringify({}));
-    expect(await readJsonField(p, "branchName")).toBe("");
+    expect(await readJsonField(p, "label")).toBe("");
   });
 
   test("returns empty string when field is non-string", async () => {
     const p = join(tmp, "j.json");
-    writeFileSync(p, JSON.stringify({ branchName: 42 }));
-    expect(await readJsonField(p, "branchName")).toBe("");
+    writeFileSync(p, JSON.stringify({ label: 42 }));
+    expect(await readJsonField(p, "label")).toBe("");
   });
 
   test("returns empty string when file missing", async () => {

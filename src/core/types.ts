@@ -10,9 +10,9 @@ export interface HarnessConfig {
   maxIterations: number;
   appPath: string;
   prdPath: string;
-  // Working branch and base branch live on marmite.json (not prd.json) so
-  // they're project config, not feature spec.
-  branchName?: string;
+  // Base branch lives on marmite.json (not prd.json) — it's project config,
+  // not feature spec. The working branch is whatever the user has checked out
+  // when they invoke `marmite cook`; marmite never switches branches.
   baseBranch?: string;
   // Model & pricing
   model: string;

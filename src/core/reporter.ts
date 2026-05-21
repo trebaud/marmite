@@ -5,8 +5,6 @@ import type { RunStats, SessionStats } from "./types.ts";
 // The CLI provides a console-backed implementation (src/cli/logger.ts);
 // tests and alternative hosts can pass `silentReporter` or their own.
 
-export type BranchAction = "created" | "switched" | "already_on";
-
 export type Phase = "orchestrate" | "build" | "verify" | "fix";
 
 export interface PhaseStartOpts {
@@ -41,7 +39,6 @@ export interface Reporter {
   maxReached(max: number): void;
   // Run was interrupted (SIGINT/SIGTERM).
   aborted(): void;
-  branchSetup(branch: string, action: BranchAction): void;
   // PRD update was committed by the harness — sha is the short hash.
   gitCommit(sha: string, message: string): void;
   feedbackDetected(bytes: number, preview: string): void;
@@ -74,7 +71,6 @@ export const silentReporter: Reporter = {
   complete: () => {},
   maxReached: () => {},
   aborted: () => {},
-  branchSetup: () => {},
   gitCommit: () => {},
   feedbackDetected: () => {},
   feedbackForceCleared: () => {},

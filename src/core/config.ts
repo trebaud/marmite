@@ -36,11 +36,10 @@ const DurationSchema = z.union([z.string(), z.number()]);
 export const MarmiteConfigSchema = z.object({
   app: z.string().optional(),
   prd: z.string().optional(),
-  // Working branch the harness checks out (or creates) before running. If
-  // omitted, the harness stays on whatever branch is currently checked out.
-  branchName: z.string().optional(),
   // Base branch that PRs target and that the working branch reconciles against
-  // after a merge. Consumed by workflows like pr-on-checkpoint.
+  // after a merge. Consumed by workflows like pr-on-checkpoint. The working
+  // branch is always whatever the user has checked out — marmite does not
+  // manage it.
   baseBranch: z.string().optional(),
   // Workflow controls which agent prompts were installed at init time and which
   // optional behaviors the orchestrator runs (e.g. opening PRs and halting). The

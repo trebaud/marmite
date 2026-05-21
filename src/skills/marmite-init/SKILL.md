@@ -62,12 +62,15 @@ Ask **one question at a time**. Adapt based on previous answers. Always offer se
 
    Save the chosen workflow's `name` value (e.g. `"one-shot"`, `"pr-on-checkpoint"`, `"tdd"`) for later — both the install step (step 4) and `marmite.json` (the `workflow` key) need it.
 
-   Each `workflow.json` may carry additional fields the wizard asks follow-ups for:
+   **Workflow-specific follow-ups (extended wizard).** Each workflow may ship a `wizard.md` next to its `workflow.json` that declares extra questions, detection commands, and `marmite.json` keys specific to that workflow (e.g. branch names, checkpoint triggers, auth checks). After the user picks a workflow, check for:
 
-   - **pr-on-checkpoint trigger** (only if `workflow.name === "pr-on-checkpoint"`): ask **checkpoint trigger**. Two options:
-     - `every` (default) — open a PR after every N passing stories. Ask for N (default `1`, which is one PR per story). Save as `workflowConfig: { "kind": "every", "stories": N }`.
-     - `epic` — open a PR after the last story of each PRD epic passes. Save as `workflowConfig: { "kind": "epic" }`. Stories in `.marmite/prd.json` always carry an `epic` field (`marmite to-prd` enforces it); for this trigger to be useful the user should split work into distinct epics rather than the default single-epic PRD.
-     - Also run `gh auth status` to verify the GitHub CLI is installed and authenticated. If it isn't, mention it as a follow-up step the user must complete before `marmite cook` will work — but don't block init on it.
+   ```
+   $MARMITE_TEMPLATES/workflows/$WF/wizard.md
+   ```
+
+   If it exists, read it inline and execute its steps in order — same conventions as this skill (one question at a time, sensible defaults, never overwrite). Anything the workflow's `wizard.md` instructs you to add to `marmite.json` (top-level keys or `workflowConfig`) must be carried through to step 3's plan summary and step 4's write. If no `wizard.md` exists, skip — the workflow has no extra setup.
+
+   Treat `wizard.md` as workflow-owned content: do not duplicate its instructions in this skill, and do not hardcode logic here for any specific workflow name. Sensors (below) are a separate, cross-workflow mechanism driven by `workflow.json.sensors[]`.
 
    - **Sensors** (only if `workflow.json.sensors[]` is present and non-empty): the workflow ships one or more deterministic checks the orchestrator runs between stories. Each entry has a `type` (currently `debt` or `drift`); the concrete config files live under `$MARMITE_TEMPLATES/sensors/` and are copied into `./.marmite/sensors/` at install time. Sensors are always **scoped to files modified by the marmite run** (`git diff --name-only $baseBranch...HEAD`), never to the brownfield project's existing files.
 
@@ -95,6 +98,8 @@ Ask **one question at a time**. Adapt based on previous answers. Always offer se
 
      Do **not** ask the user to type config paths and do **not** detect/rewire the project's own tool configs — sensor templates are self-contained, and any extension or customization is something the user does by editing files under `.marmite/sensors/` after init. Mention that as a follow-up in the final summary if relevant.
 
+     **Thresholds.** Whenever at least one sensor is enabled, the wizard MUST also emit a top-level `janitor` block in `marmite.json` (see step 4). Without it the orchestrator's threshold detection short-circuits and no janitor maintenance pass ever fires — sensors run but never route to a fix. Use sensible defaults; do not prompt the user for numbers here. Mention the defaults briefly in the plan summary (step 3) and tell the user they can tune them later by editing `marmite.json`.
+
 3. **Models** — which Claude models for each role?
    - Default to `{ default: claude-sonnet-4-6, builder: claude-sonnet-4-6, verifier: claude-haiku-4-5, orchestrator: claude-sonnet-4-6 }` and just confirm.
    - Offer a "thorough" preset (Opus for builder) and a "fast" preset (Haiku everywhere) for users who want them.
@@ -116,6 +121,8 @@ Before writing anything, summarize what you're about to do:
 ```
 I'll write:
   marmite.json         (app=<chosen path>, workflow=<chosen>, sensors=<list of enabled sensor names, or "none">, balanced models)
+                       (plus any workflow-specific keys the extended wizard collected — list them by name)
+                       (if sensors enabled: janitor.thresholds defaulted to debt:20 / drift:1, maxFindingsPerRun:5 — tune later)
   .marmite/prompts/    (install agent prompts from workflows/<chosen>/: builder, verifier, orchestrator)
   .marmite/sensors/    (only if sensors enabled — list the files from $MARMITE_TEMPLATES/sensors/ being copied)
   .claude/skills/      (install helper skills: list whatever folders are under $MARMITE_TEMPLATES/skills/)
@@ -145,9 +152,9 @@ JSONC (comments allowed). Inline structure:
   "app": "./apps/web",
   "prd": "./.marmite/prd.json",
   "workflow": "one-shot",
-  // Only emit `workflowConfig` when the chosen workflow uses it (today: pr-on-checkpoint).
-  // "workflowConfig": { "kind": "every", "stories": 3 },
-  // "workflowConfig": { "kind": "epic" },
+  // Workflow-specific keys (e.g. `baseBranch`, `workflowConfig`) are emitted
+  // only when the chosen workflow's `wizard.md` instructs the wizard to add
+  // them. Do not invent these keys here — the workflow owns its own setup.
   // `sensors` is optional. Omit the key entirely if the user picked "skip"
   // in the sensors follow-up under step 2 — the harness then runs with no
   // deterministic checks between stories. Otherwise include one entry per
@@ -166,6 +173,19 @@ JSONC (comments allowed). Inline structure:
     //   "guidance": "<exact shell invocation, scoped to $CHANGED files>"
     // }
   ],
+  // REQUIRED whenever `sensors` is non-empty. Without this block the orchestrator
+  // runs sensors but never materializes a janitor entry, so accumulated findings
+  // are silently ignored. Emit one threshold per sensor `type` present in
+  // `sensors[]` (today: "debt" and/or "drift"). Defaults below are starting
+  // points — the user can tune them later. Omit the entire `janitor` block only
+  // when `sensors` is also omitted.
+  "janitor": {
+    "thresholds": {
+      "debt": 20,    // include only if any enabled sensor has type:"debt"
+      "drift": 1     // include only if any enabled sensor has type:"drift"
+    },
+    "maxFindingsPerRun": 5
+  },
   "models": {
     "default": "claude-sonnet-4-6",
     "builder": "claude-sonnet-4-6",
@@ -190,11 +210,12 @@ $MARMITE_TEMPLATES/
 ├── workflows/                                          (one subdir per workflow)
 │   ├── one-shot/
 │   │   ├── workflow.json
+│   │   ├── wizard.md       (OPTIONAL — extra wizard steps for this workflow; read by init, not copied anywhere)
 │   │   └── prompts/        → ./.marmite/prompts/       (only the chosen workflow)
 │   │       ├── builder-prompt.md
 │   │       ├── verifier-prompt.md
 │   │       └── orchestrator-prompt.md
-│   ├── pr-on-checkpoint/{ workflow.json, prompts/ }
+│   ├── pr-on-checkpoint/{ workflow.json, wizard.md, prompts/ }
 │   └── tdd/{ workflow.json, prompts/ }
 ├── sensors/                 → ./.marmite/sensors/       (only the ones the workflow declares + user enabled in step 2's sensors follow-up)
 │   └── <config files referenced by the chosen workflow's workflow.json `sensors[].file`>
@@ -212,7 +233,7 @@ Procedure (let `WF` be the workflow name selected in step 2):
    - target = `./.marmite/prompts/<filename>`
    - if target does not exist: `cp "$MARMITE_TEMPLATES/workflows/$WF/prompts/<filename>" "$target"`
    - if target exists: leave it alone (user has customized it). Note "skipped (already present)" in the summary.
-3. **Sensors are optional.** If the user picked "skip" in step 2's sensors follow-up (or the workflow declares no sensors), do nothing here — do not create `./.marmite/sensors/` and do not emit a `sensors` key in `marmite.json`. Otherwise: `mkdir -p ./.marmite/sensors` and for each `workflow.json.sensors[]` entry the user enabled, `cp -n "$MARMITE_TEMPLATES/sensors/<entry.file>" "./.marmite/sensors/<entry.file>"`. Do not edit the freshly-copied files — they are self-contained; any extension/customization is something the user does themselves after init. For each enabled entry, emit one object into `marmite.json.sensors[]` containing the workflow entry's `name`, `type`, `package`, `guidance` (verbatim) and `configPath: "./.marmite/sensors/<entry.file>"`.
+3. **Sensors are optional.** If the user picked "skip" in step 2's sensors follow-up (or the workflow declares no sensors), do nothing here — do not create `./.marmite/sensors/`, do not emit a `sensors` key in `marmite.json`, and do not emit a `janitor` key either. Otherwise: `mkdir -p ./.marmite/sensors` and for each `workflow.json.sensors[]` entry the user enabled, `cp -n "$MARMITE_TEMPLATES/sensors/<entry.file>" "./.marmite/sensors/<entry.file>"`. Do not edit the freshly-copied files — they are self-contained; any extension/customization is something the user does themselves after init. For each enabled entry, emit one object into `marmite.json.sensors[]` containing the workflow entry's `name`, `type`, `package`, `guidance` (verbatim) and `configPath: "./.marmite/sensors/<entry.file>"`. **Also** emit the `janitor` block: collect the distinct `type` values across the enabled sensors and write `janitor.thresholds` with one entry per type (`debt: 20`, `drift: 1` as defaults) plus `maxFindingsPerRun: 5`. Skipping this block is a setup bug — the orchestrator will run sensors but never trigger a janitor pass.
 4. For each sub-directory under `$MARMITE_TEMPLATES/skills/`:
    - target = `./.claude/skills/<skill-name>`
    - if target does not exist: `cp -R "$MARMITE_TEMPLATES/skills/<skill-name>" "$target"`
