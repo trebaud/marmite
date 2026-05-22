@@ -61,7 +61,7 @@ my-project/
 | `BUILD` | Builder | Implements, commits |
 | `VERIFY` | Verifier | Approves or rejects |
 | `FIX` | Builder | Resumes the same session to address feedback |
-| `JANITOR` | Builder | Maintenance pass that pays down debt and reverses architecture drift when sensor counts cross the configured threshold |
+| `JANITOR (optional)` | Builder | Maintenance pass that pays down debt and reverses architecture drift when sensor counts cross the configured threshold |
 
 `current-task.json` is the single handoff. If a run crashes, run `marmite cook` again: the orchestrator picks the next non-passing story, and any in-flight story without a `verify:` commit gets re-attempted.
 
