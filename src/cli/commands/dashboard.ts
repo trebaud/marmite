@@ -698,15 +698,7 @@ function buildDashboard(
     };
   }
 
-  const startedAt = typeof runStart?.ts === "string" ? runStart.ts : null;
   const endedAt = typeof runEnd?.ts === "string" ? runEnd.ts : null;
-
-  let durationMs: number | null = null;
-  if (startedAt) {
-    const start = Date.parse(startedAt);
-    const end = endedAt ? Date.parse(endedAt) : halt?.at ? Date.parse(halt.at) : Date.now();
-    if (!isNaN(start) && !isNaN(end)) durationMs = end - start;
-  }
 
   const status: Dashboard["status"] = runEnd
     ? (runEnd.passed === false || (typeof runEnd.exitCode === "number" && runEnd.exitCode !== 0)
@@ -717,6 +709,47 @@ function buildDashboard(
       : runStart
         ? "in_progress"
         : "unknown";
+
+  // "Run Duration" reflects cumulative active time across every `marmite run`
+  // invocation in the events log — a halt+resume cycle splits the work over
+  // several runIds but the user thinks of it as one project run. We sum each
+  // run's (start → end) window: end is run_end/run_halt when present, Date.now()
+  // for the currently in-flight run, and otherwise the last event we saw for
+  // that runId (so a crashed run doesn't tick forever).
+  interface RunWindow { start: number; end: number | null; lastTs: number }
+  const runWindows = new Map<string, RunWindow>();
+  for (const e of events) {
+    if (typeof e.ts !== "string" || typeof e.runId !== "string") continue;
+    const ts = Date.parse(e.ts);
+    if (isNaN(ts)) continue;
+    let w = runWindows.get(e.runId);
+    if (e.kind === "run_start") {
+      if (!w) { w = { start: ts, end: null, lastTs: ts }; runWindows.set(e.runId, w); }
+      continue;
+    }
+    if (!w) continue;
+    w.lastTs = ts;
+    if (e.kind === "run_end" || e.kind === "run_halt") w.end = ts;
+  }
+
+  let startedAt: string | null = null;
+  let durationMs: number | null = null;
+  if (runWindows.size) {
+    let total = 0;
+    let earliest = Infinity;
+    for (const [id, w] of runWindows) {
+      if (w.start < earliest) earliest = w.start;
+      let end: number;
+      if (w.end != null) end = w.end;
+      else if (id === runId && status === "in_progress") end = Date.now();
+      else end = w.lastTs;
+      total += Math.max(0, end - w.start);
+    }
+    durationMs = total;
+    if (earliest !== Infinity) startedAt = new Date(earliest).toISOString();
+  } else if (runStart && typeof runStart.ts === "string") {
+    startedAt = runStart.ts;
+  }
 
   let iteration: number | null = null;
   for (let i = currentRunEvents.length - 1; i >= 0; i--) {
@@ -1047,7 +1080,19 @@ const INDEX_HTML = `<!DOCTYPE html>
         .pipeline-icon.pass { background: #22c55e; }
         .pipeline-icon.fail { background: #ef4444; }
         .pipeline-icon.pending { background: #d1d5db; color: #4b5563; }
-        .pipeline-icon.active-run { background: #eab308; box-shadow: 0 0 0 4px rgba(234,179,8,0.25); }
+        .pipeline-icon.active-run {
+            background: #eab308;
+            box-shadow: 0 0 0 4px rgba(234,179,8,0.25);
+            animation: pipeline-active-pulse 1.6s ease-in-out infinite;
+        }
+        @keyframes pipeline-active-pulse {
+            0%   { box-shadow: 0 0 0 0   rgba(234,179,8,0.55); }
+            70%  { box-shadow: 0 0 0 8px rgba(234,179,8,0);    }
+            100% { box-shadow: 0 0 0 0   rgba(234,179,8,0);    }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .pipeline-icon.active-run { animation: none; }
+        }
         .pipeline-icon.janitor { background: #8b5cf6; }
         .pipeline-text { flex: 1; min-width: 0; }
         .pipeline-id { font-size: 11px; font-weight: 700; color: #667eea; text-transform: uppercase; }
@@ -2039,16 +2084,33 @@ const INDEX_HTML = `<!DOCTYPE html>
           : 'Resolve the halt condition, then re-run <code>marmite cook</code> to resume.';
 
         const haltedStory = findStory(d, d.halt.haltedStoryId);
-        const haltedRow = haltedStory
-          ? '<div class="halt-banner-story">'
+        // PR-based halts review an entire epic's worth of stories, not just
+        // the last one worked on. When we can resolve the halted story's epic,
+        // surface the epic instead so the label matches the PR's scope.
+        const haltedEpic = reason === 'awaiting_pr_review' && haltedStory && haltedStory.epic
+          ? (d.epics || []).find((e) => e.slug === haltedStory.epic)
+          : null;
+        let haltedRow = '';
+        if (haltedEpic) {
+          const passed = haltedEpic.storiesPassed || 0;
+          const total = haltedEpic.storiesTotal || 0;
+          haltedRow = '<div class="halt-banner-story">'
+            + '<span class="halt-banner-story-label">In review</span>'
+            + '<a class="halt-banner-story-link" href="#epic-' + escape(haltedEpic.slug) + '">'
+            +   '<strong>Epic · ' + escape(haltedEpic.label) + '</strong>'
+            + '</a>'
+            + '<span class="halt-banner-next-epic">' + passed + ' / ' + total + ' stories</span>'
+            + '</div>';
+        } else if (haltedStory) {
+          haltedRow = '<div class="halt-banner-story">'
             + '<span class="halt-banner-story-label">'
             +   (reason === 'awaiting_pr_review' ? 'In review' : 'Halted on')
             + '</span>'
             + '<a class="halt-banner-story-link" href="#story-' + escape(haltedStory.storyId) + '">'
             +   '<strong>' + escape(haltedStory.storyId) + '</strong> · ' + escape(haltedStory.title || haltedStory.storyId)
             + '</a>'
-            + '</div>'
-          : '';
+            + '</div>';
+        }
 
         const nextUp = d.halt.nextUp;
         const nextRow = nextUp && typeof nextUp.storyId === 'string'
@@ -2083,7 +2145,6 @@ const INDEX_HTML = `<!DOCTYPE html>
           rows.push(['Workflow', '<span class="config-workflow-badge">' + escape(c.workflow) + '</span>']);
         }
         if (c.baseBranch) rows.push(['Base branch', '<code>' + escape(c.baseBranch) + '</code>']);
-        if (c.app) rows.push(['App', '<code>' + escape(c.app) + '</code>']);
         if (d.githubSlug) {
           rows.push([
             'Repo',
@@ -2191,7 +2252,7 @@ const INDEX_HTML = `<!DOCTYPE html>
         return d.epics.map((g) => {
           const isCollapsed = collapsed.has(g.slug);
           const pct = g.storiesTotal === 0 ? 0 : (g.storiesPassed / g.storiesTotal) * 100;
-          return '<div class="epic-main epic-group ' + (isCollapsed ? 'collapsed' : '') + '" data-epic-main="' + escape(g.slug) + '">'
+          return '<div id="epic-' + escape(g.slug) + '" class="epic-main epic-group ' + (isCollapsed ? 'collapsed' : '') + '" data-epic-main="' + escape(g.slug) + '">'
             + '<div class="epic-main-header" data-toggle-epic="' + escape(g.slug) + '">'
             + '<div><div class="epic-main-title">' + escape(g.label) + '</div>'
             + '<div class="epic-progress"><div class="epic-progress-bar" style="width:' + pct.toFixed(1) + '%"></div></div></div>'
@@ -2293,10 +2354,7 @@ const INDEX_HTML = `<!DOCTYPE html>
           : '';
         document.getElementById('meta').innerHTML = live
           + 'Run ID: <code>' + escape((d && d.runId) || 'n/a') + '</code>'
-          + workflowBit
-          + ' · Events file: <code>' + escape((d && d.source) || 'n/a') + '</code>'
-          + ' · Events: ' + ((d && d.totalEvents) || 0)
-          + (d && d.iteration != null ? ' · Iteration ' + d.iteration : '');
+          + workflowBit;
         renderInto('haltBanner',  safe('halt banner',  () => renderHaltBanner(d)));
         renderInto('currentTask', safe('current task', () => renderCurrentTask(d && d.currentTask)));
         renderInto('summary',     safe('summary',      () => renderSummary(d)));
