@@ -186,7 +186,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
     // Read orchestrator decision from current-task.json — determine actual task selected.
     const decisionParsed = await readCurrentTaskDecision();
-    let currentTaskKind: "story" | "janitor" = initialTask.kind;
+    let currentTaskKind: "story" | "janitor" | "pr-review" = initialTask.kind;
     let currentTaskId = initialTask.id;
     let currentTaskTitle = initialTask.title;
     let storySource: "orchestrator" | "fallback" = "fallback";
@@ -242,6 +242,23 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
             undefined,
             "orchestrate",
           );
+        }
+      } else if (decision.kind === "pr-review") {
+        // Addressing review comments on an already-passing story while the
+        // pr-on-checkpoint workflow waits for merge. storyId points at the
+        // underlying story (already passes:true); harness will NOT re-mark it
+        // or write a verify commit.
+        const decidedStory = prdState.stories.find((s) => s.id === decision.storyId);
+        if (decidedStory) {
+          currentTaskId = decidedStory.id;
+          currentTaskTitle = decidedStory.title;
+          storySource = "orchestrator";
+        } else {
+          // Fall back to the storyId verbatim — pr-review may target an epic-
+          // level identifier that isn't in prd.json.
+          currentTaskId = decision.storyId;
+          currentTaskTitle = decision.storyTitle || decision.storyId;
+          storySource = "orchestrator";
         }
       } else {
         const decidedStory = prdState.stories.find((s) => s.id === decision.storyId);
@@ -427,6 +444,11 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
         if (marked) {
           gitCommit(PATHS.projectRoot, PATHS.progress, `verify(janitor): ${currentTaskId} - passed verification`, reporter);
         }
+      } else if (currentTaskKind === "pr-review") {
+        // The underlying story is already passes:true; addressing PR review
+        // comments does not advance state. Skip mark-passing and the verify:
+        // commit so passedCount in Phase B (origin/base..HEAD) stays accurate
+        // and we don't refire the checkpoint on the next orchestrate.
       } else {
         const marked = await markStoryPassing(config, currentTaskId, reporter);
         if (marked) {

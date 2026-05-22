@@ -95,10 +95,13 @@ const CurrentTaskDecisionSchema = z
     storyTitle: z.string().optional(),
     ranSensors: z.array(z.string()).default([]),
     halt: HaltSchema.optional(),
-    // Set to "janitor" by the orchestrator when the current iteration is a
-    // sensor-debt-driven refactor task instead of a user story. The harness
-    // routes mark-passing to progress.json instead of prd.json in this case.
-    kind: z.enum(["story", "janitor"]).optional(),
+    // "janitor" — sensor-debt-driven refactor task instead of a user story
+    // (mark-passing routes to progress.json instead of prd.json).
+    // "pr-review" — addressing PR review comments on an already-passing story
+    // while the pr-on-checkpoint workflow is awaiting merge. The harness runs
+    // build+verify but does NOT mark anything passing or write a verify commit
+    // (the underlying story is already passes:true).
+    kind: z.enum(["story", "janitor", "pr-review"]).optional(),
   })
   .transform((r) => ({
     storyId: r.storyId,

@@ -1,8 +1,8 @@
 # Orchestrator Agent Instructions (pr-on-checkpoint workflow)
 
-You handle standard orchestration (story selection, sensors, `current-task.json`) plus PR lifecycle: when a checkpoint fires, you open a PR and halt; on the next run, you detect merge before continuing.
+You handle standard orchestration (story selection, sensors, `current-task.json`) plus the full PR lifecycle: when a checkpoint fires, you open a PR and halt; on subsequent runs, while the PR is open you check for **unaddressed reviewer comments** and fork a fix cycle when needed; you only let the harness advance to the next story / epic once the PR is merged into `baseBranch`.
 
-The only halt kind is `halt.kind = "awaiting_pr_review"` (with or without `prNum` depending on whether `gh` opened the PR). **Never silently proceed to the next story when a checkpoint should have fired.**
+The only halt kind is `halt.kind = "awaiting_pr_review"` (with or without `prNum` depending on whether `gh` opened the PR). **Never silently proceed to the next story when a checkpoint should have fired, and never advance to the next epic while an opened PR is still un-merged.**
 
 ## Probe `gh` once
 
@@ -25,30 +25,132 @@ If missing/invalid, default to `{ "kind": "every", "stories": 1 }` and note in `
 
 Commit any uncommitted changes under `.marmite/`.
 
-## Phase A — Resume from an outstanding halt
+## Phase A — PR state check (resume / mid-flight)
 
-Read `.marmite/current-task.json`. If it has `halt.kind === "awaiting_pr_review"`, a previous iteration is waiting on a PR.
+This phase runs whenever an open PR for the current branch may exist — either because a prior iteration set `halt.kind === "awaiting_pr_review"`, or because the prior iteration was a `pr-review` task that just pushed comment fixes, or because a manual run left a marmite PR open.
 
-Resolve `branch = halt.branch || $(git rev-parse --abbrev-ref HEAD)` and `baseBranch = halt.baseBranch || marmite.json.baseBranch`.
-
-**Find PR number if missing.** If `halt.prNum` is unset and `GH_OK=1`:
+**Entry condition.** Read `.marmite/current-task.json` and compute:
 
 ```bash
-gh pr list --head <branch> --base <baseBranch> --state all --json number,state --limit 1
+branch=$(git rev-parse --abbrev-ref HEAD)
+baseBranch=$(jq -r '.baseBranch // empty' marmite.json)
+prAuthor=$(gh api user -q .login 2>/dev/null)   # the marmite agent's gh identity
 ```
 
-If exactly one result, set `prNum`.
+If the file has `halt.kind === "awaiting_pr_review"`, take `prNum`/`branch`/`baseBranch` from the halt where set (override the local-branch default with `halt.branch`).
 
-**Detect merge state:**
+Otherwise — there is no halt, but a prior iteration may have been a `pr-review` task that already pushed comment fixes, or a manual run may have left a PR open. Decide whether to enter PR-handling:
 
-| Condition | Action |
-|-----------|--------|
-| `gh pr view <prNum> --json state` returns `MERGED` | Continue to reconciliation. |
-| Returns `OPEN` | Re-write `current-task.json` preserving `halt` (back-fill `prNum` if just discovered); stop. |
-| Returns `CLOSED` (not merged) | Surface in `guidance` ("reopen or revert and re-run"); preserve halt; stop. |
-| `GH_OK=0` or no `prNum` — fall back: `git fetch origin && git log --format='%H' origin/<baseBranch>..HEAD` | Empty output = user merged manually → reconciliation. Non-empty → preserve halt, install/manual-merge reminder in `guidance`, stop. |
+- If the file's `kind == "pr-review"` → **always** enter A.1 (the prior iteration just addressed comments; we must re-check PR state).
+- Else if `branch != baseBranch` AND `git log --format='%H' origin/<baseBranch>..HEAD` is non-empty → probe for any associated PR (open or merged):
 
-**Reconciliation (PR merged).** `baseBranch` must be set in `marmite.json`; otherwise surface in `guidance` and halt.
+  ```bash
+  gh pr list --head "$branch" --base "$baseBranch" --state all --json number,state,mergedAt --limit 1
+  ```
+
+  Non-empty result → set `prNum` and continue to A.1. Empty → no PR is associated → skip to Phase B.
+- Else → skip to Phase B.
+
+If you have a halt but `halt.prNum` is unset (e.g. the prior run's `gh pr create` failed): `gh pr list --head "$branch" --base "$baseBranch" --state all --json number,state --limit 1`. If exactly one result, set `prNum`. If still none, fall through to **A.1** with `prNum` unset and lean on the `gh`-failure fallback row there.
+
+### A.1 — Detect PR state
+
+```bash
+gh pr view <prNum> --json state,mergedAt,reviewDecision
+```
+
+| State | Branch to |
+|-------|-----------|
+| `MERGED` | **A.4 — Reconciliation** (merge is sufficient; `reviewDecision` is advisory and surfaced in `reasoning` if it was not `APPROVED`). |
+| `CLOSED` (not merged) | Preserve halt; set `guidance` to *"PR #<N> was closed without merging — reopen or revert before re-running."*; stop. |
+| `OPEN` | Continue to **A.2 — Detect unaddressed reviewer comments**. |
+| `gh` failure / `GH_OK=0` / no `prNum` | Fall back: `git fetch origin && git log --format='%H' origin/<baseBranch>..HEAD`. Empty → treat as MERGED (manual merge), go to A.4. Non-empty → preserve halt, set `guidance` to the install/manual-merge reminder, stop. |
+
+### A.2 — Detect unaddressed reviewer comments (PR is OPEN)
+
+You combine two signals:
+
+**Signal 1 — unresolved inline review threads** (GraphQL):
+
+```bash
+OWNER_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+OWNER=${OWNER_REPO%/*}; REPO=${OWNER_REPO#*/}
+gh api graphql -f query='
+  query($owner:String!,$repo:String!,$pr:Int!){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$pr){
+        reviewThreads(first:100){
+          nodes{
+            isResolved isOutdated
+            path line
+            comments(first:50){ nodes{ author{login} body createdAt url } }
+          }
+        }
+      }
+    }
+  }' -F owner="$OWNER" -F repo="$REPO" -F pr=<prNum>
+```
+
+Treat a thread as **unaddressed** when `isResolved == false` AND it contains at least one comment whose `author.login != prAuthor`. (Outdated threads still count — the reviewer must mark them resolved.) Capture `{path, line, body, url}` of the latest non-author comment in each unresolved thread.
+
+**Signal 2 — top-level (non-inline) comments newer than HEAD**:
+
+```bash
+headTs=$(git log -1 --format='%cI' HEAD)   # ISO-8601 of HEAD's commit time
+gh pr view <prNum> --json comments,reviews
+```
+
+From `comments[]` keep entries where `author.login != prAuthor` AND `createdAt > headTs`. From `reviews[]` keep entries where `author.login != prAuthor` AND `submittedAt > headTs` AND `body` is non-empty (an empty-body APPROVED/COMMENTED carries no actionable feedback). Capture `{author, body, url, createdAt}`.
+
+**Decision:**
+
+- If both signals are empty → reviewers have nothing pending. Preserve the halt, back-fill `prNum` if discovered, and stop. Set `reasoning` to e.g. *"PR #<N> still open; no unaddressed review comments since HEAD (`<sha>` @ `<headTs>`); awaiting merge."* If `reviewDecision == "CHANGES_REQUESTED"` with no pending comments (reviewer marked but said nothing), call that out in `guidance` so the user knows to nudge.
+- Otherwise → continue to **A.3 — Fork a pr-review task**.
+
+### A.3 — Fork a pr-review task
+
+The harness will run build+verify on this task. The underlying story is already `passes:true`; the harness skips mark-passing and the `verify:` commit when `kind == "pr-review"`.
+
+Pick `storyId` and `storyTitle` from the most recent `verify: <ID> ...` commit on the branch (`git log --format='%s' origin/<baseBranch>..HEAD | grep '^verify: ' | head -1`). For an epic checkpoint where the PR aggregates multiple stories, still use the latest passed story as the identifier — the guidance is what matters.
+
+Render the `guidance` field as a self-contained brief the builder can act on without re-fetching, e.g.:
+
+```
+Address PR review feedback on #<prNum> before this PR can merge. Do NOT pick a
+new story — only fix what reviewers raised. After fixes, commit with prefix
+`fix(pr-review):` (NOT `verify:`) and push to <branch>.
+
+Unresolved review threads:
+- <path>:<line> — <reviewer-login>: "<body>" (<url>)
+- ...
+
+Top-level comments since HEAD (<short-sha> @ <headTs>):
+- <reviewer-login> @ <createdAt>: "<body>" (<url>)
+- ...
+```
+
+Write `.marmite/current-task.json`:
+
+```json
+{
+  "version": "1",
+  "storyId": "<latest-verified storyId>",
+  "storyTitle": "<that story's title>",
+  "kind": "pr-review",
+  "guidance": "<the brief above>",
+  "sensorSummary": "",
+  "ranSensors": [],
+  "reasoning": "PR #<N> open with <U> unresolved threads and <C> new top-level comments; forking pr-review cycle."
+}
+```
+
+**Do NOT include `halt`.** The harness will run build+verify; the builder addresses the comments and pushes. On the next `marmite cook` iteration, you re-enter Phase A: if HEAD has been pushed and reviewers have nothing newer, you re-halt awaiting merge.
+
+If `GH_OK=0` (you can't reliably read comments) → preserve the existing halt and surface the install reminder; do not fork a blind pr-review cycle. Stop.
+
+### A.4 — Reconciliation (PR merged)
+
+`baseBranch` must be set in `marmite.json`; otherwise surface in `guidance` and halt.
 
 ```bash
 git fetch origin
@@ -60,11 +162,11 @@ Then branch-lifecycle handling depends on `workflowConfig.kind`:
 - **`epic`** — leave the merged local branch in place (preserves history); stay on `<baseBranch>`. Phase C step 3.5 will create the next epic branch.
 - **`every`** — reuse the working branch: `git checkout <halt.branch>` (recreate from base if gone) then `git reset --hard origin/<baseBranch>` to drop pre-merge story commits in favor of the canonical squash/merge commit on base.
 
-Clear the halt by omitting it when writing `current-task.json` in Phase C. Record the reconciliation in `reasoning` (e.g. *"resumed after PR #42 merged into main; reset marmite/work to origin/main"*).
-
-If no halt, continue to Phase B.
+Clear the halt by omitting it when writing `current-task.json` in Phase C. Record the reconciliation in `reasoning` (e.g. *"resumed after PR #42 merged into main; reset marmite/work to origin/main"*). If `reviewDecision` at merge time was not `APPROVED`, append *"(merged without explicit GitHub approval)"* — informational only, do not block.
 
 ## Phase B — Fire checkpoint if predicate matches
+
+Only reachable when Phase A determined no PR is in-flight for the current branch. As a defensive guard, also skip Phase B (continue to Phase C) when the previous iteration's `current-task.json` has `kind == "pr-review"` — that task addressed reviewer feedback, not a new story, and must never refire a checkpoint.
 
 Only fires when the previous story just passed (`verdict: "pass"` in `current-task.json`). Otherwise skip to Phase C.
 
@@ -268,7 +370,7 @@ ID format `JANITOR-<YYYY-MM-DD>-<NNNN>`: `NNNN` is one more than the highest exi
 
 - `guidance`, `sensorSummary` → `""` when nothing to convey.
 - `ranSensors` → `[]` when none ran. The harness emits `sensors_ran` from this array.
-- `kind` defaults to `"story"`; set to `"janitor"` only when routing to a janitor entry (step 6).
+- `kind` defaults to `"story"`; set to `"janitor"` when routing to a janitor entry (step 6); set to `"pr-review"` only from Phase A.3 (addressing PR review comments — the harness will run build+verify but skip mark-passing and the `verify:` commit).
 - Do NOT include `halt` in Phase C (normal forward progress).
 <!-- marmite:contract end -->
 
@@ -291,4 +393,4 @@ If feedback was applied, `guidance` MUST repeat the user's directive — the fil
 
 ## Hard rules
 
-Never write code, never edit `.marmite/prd.json`, never install/update dependencies, never copy or move sensor configs. The `halt` field is the only mechanism that stops the harness mid-run; use it only for awaiting-PR-merge.
+Never write code, never edit `.marmite/prd.json`, never install/update dependencies, never copy or move sensor configs. The `halt` field is the only mechanism that stops the harness mid-run; use it only for awaiting-PR-merge. **Do not advance the harness past an open PR by skipping Phase A** — if a PR is open against `baseBranch` for the current branch, you must either re-halt (no new comments) or fork a `pr-review` task (unaddressed comments). Reconcile and proceed only on MERGED.

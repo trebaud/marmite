@@ -425,7 +425,7 @@ function readCurrentTask(path: string): CurrentTaskFile | null {
 interface CurrentTask {
   storyId: string;
   title: string;
-  kind: "story" | "janitor" | "unknown";
+  kind: "story" | "janitor" | "pr-review" | "unknown";
   phase: string | null;
   attempt: number | null;
   iteration: number | null;
@@ -445,6 +445,10 @@ interface CurrentTask {
   verifierSummary?: string;
   qaResults?: QaResult[];
   verifiedAt?: string;
+  epic?: string;
+  epicLabel?: string;
+  prNum?: number;
+  prUrl?: string;
 }
 
 function deriveCurrentTask(
@@ -526,7 +530,7 @@ function deriveCurrentTask(
 
   const ctKind = ct && ct.storyId === storyId ? ct.kind : undefined;
   const kind: CurrentTask["kind"] =
-    ctKind === "janitor" || ctKind === "story"
+    ctKind === "janitor" || ctKind === "story" || ctKind === "pr-review"
       ? ctKind
       : storyId.toUpperCase().startsWith("JANITOR") ? "janitor" : "story";
 
@@ -649,6 +653,16 @@ function buildDashboard(
   // A run_halt is "current" only if no later run_start/run_end has happened
   // (run_start would mean we resumed; run_end would override the halt anyway).
   const haltIsCurrent = runHalt && !runEnd;
+  // current-task.json's halt block is the orchestrator's authoritative "next
+  // action" record. When it carries `awaiting_pr_review` we treat the harness
+  // as halted even if the latest run_halt event was overwritten by a later
+  // run_start (e.g. a follow-up `marmite cook` invocation that didn't yet
+  // produce its own run_halt). Without this, stale phase_start events from a
+  // previous build would make the dashboard claim a story is in progress
+  // while the harness is actually waiting on PR review.
+  const fileHalt = currentTaskFile?.halt?.kind === "awaiting_pr_review"
+    ? currentTaskFile.halt
+    : null;
 
   let halt: HaltStatus | null = null;
   if (haltIsCurrent && runHalt) {
@@ -693,6 +707,37 @@ function buildDashboard(
       prUrl,
       branch,
       at: typeof runHalt.ts === "string" ? runHalt.ts : null,
+      haltedStoryId,
+      nextUp,
+    };
+  } else if (fileHalt && !runEnd) {
+    // Fallback: no live run_halt event in the current run, but current-task.json
+    // still declares an awaiting_pr_review halt. Trust the file.
+    const prNum = typeof fileHalt.prNum === "number" ? fileHalt.prNum : null;
+    const branch = typeof fileHalt.branch === "string" ? fileHalt.branch : null;
+    const prUrl = prNum && githubSlug ? `https://github.com/${githubSlug}/pull/${prNum}` : null;
+
+    const haltedStoryId = currentTaskFile?.storyId ?? null;
+
+    let nextUp: NextUpInfo | null = null;
+    if (prd) {
+      const sorted = [...prd.userStories].sort((a, b) => {
+        const ap = typeof a.priority === "number" ? a.priority : Number.MAX_SAFE_INTEGER;
+        const bp = typeof b.priority === "number" ? b.priority : Number.MAX_SAFE_INTEGER;
+        if (ap !== bp) return ap - bp;
+        return a.id.localeCompare(b.id, undefined, { numeric: true });
+      });
+      const next = sorted.find((s) => s.passes !== true && s.id !== haltedStoryId);
+      if (next) nextUp = { storyId: next.id, title: next.title || next.id, epic: next.epic };
+    }
+
+    halt = {
+      reason: "awaiting_pr_review",
+      iteration: null,
+      prNum,
+      prUrl,
+      branch,
+      at: null,
       haltedStoryId,
       nextUp,
     };
@@ -977,7 +1022,23 @@ function buildDashboard(
     // misleading because nothing is actually running.
     currentTask:
       status === "in_progress"
-        ? deriveCurrentTask(events, runId, currentTaskFile)
+        ? (() => {
+            const ct = deriveCurrentTask(events, runId, currentTaskFile);
+            if (ct) {
+              const story = storyMap.get(ct.storyId);
+              if (story?.epic) {
+                ct.epic = story.epic;
+                ct.epicLabel = epicMap.get(story.epic)?.label ?? epicLabel(story.epic);
+              }
+              if (ct.kind === "pr-review" && ct.halt?.prNum) {
+                ct.prNum = ct.halt.prNum;
+                if (githubSlug) {
+                  ct.prUrl = `https://github.com/${githubSlug}/pull/${ct.halt.prNum}`;
+                }
+              }
+            }
+            return ct;
+          })()
         : null,
     patterns: progress?.patterns ?? [],
     totalEvents: events.length,
@@ -995,79 +1056,202 @@ const INDEX_HTML = `<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Marmite Dashboard</title>
+    <link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%239ca3af'/%3E%3C/svg%3E">
     <style>
+        :root {
+            color-scheme: light dark;
+            --bg-page: #f8fafc;
+            --bg-surface: #ffffff;
+            --bg-surface-2: #f9fafb;
+            --bg-sidebar: #ffffff;
+            --bg-input: #ffffff;
+            --bg-muted: #f3f4f6;
+            --bg-code: #f3f4f6;
+            --text-primary: #1f2937;
+            --text-secondary: #4b5563;
+            --text-muted: #6b7280;
+            --text-faint: #9ca3af;
+            --border: #e5e7eb;
+            --border-strong: #d1d5db;
+            --accent: #4f46e5;
+            --accent-2: #6366f1;
+            --accent-soft: #eef2ff;
+            --accent-on: #ffffff;
+            --success: #16a34a;
+            --success-soft: #f0fdf4;
+            --success-strong: #15803d;
+            --danger: #dc2626;
+            --danger-soft: #fef2f2;
+            --warning: #d97706;
+            --warning-soft: #fefce8;
+            --warning-strong: #92400e;
+            --janitor: #7c3aed;
+            --janitor-soft: #ede9fe;
+            --shadow-sm: 0 1px 3px rgba(15,23,42,0.06);
+            --shadow: 0 2px 8px rgba(15,23,42,0.06);
+            --shadow-hover: 0 6px 18px rgba(15,23,42,0.10);
+        }
+        [data-theme="dark"], html[data-theme="dark"] {
+            color-scheme: dark;
+            --bg-page: #0b1220;
+            --bg-surface: #111827;
+            --bg-surface-2: #0f172a;
+            --bg-sidebar: #0f172a;
+            --bg-input: #0b1220;
+            --bg-muted: #1f2937;
+            --bg-code: #1f2937;
+            --text-primary: #e5e7eb;
+            --text-secondary: #cbd5e1;
+            --text-muted: #94a3b8;
+            --text-faint: #64748b;
+            --border: #1f2937;
+            --border-strong: #334155;
+            --accent: #818cf8;
+            --accent-2: #a5b4fc;
+            --accent-soft: #1e1b4b;
+            --accent-on: #0b1220;
+            --success: #22c55e;
+            --success-soft: #052e1f;
+            --success-strong: #4ade80;
+            --danger: #f87171;
+            --danger-soft: #2a1014;
+            --warning: #fbbf24;
+            --warning-soft: #2a1f08;
+            --warning-strong: #fcd34d;
+            --janitor: #a78bfa;
+            --janitor-soft: #1e1b4b;
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
+            --shadow: 0 2px 8px rgba(0,0,0,0.5);
+            --shadow-hover: 0 6px 18px rgba(0,0,0,0.6);
+        }
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                color-scheme: dark;
+                --bg-page: #0b1220;
+                --bg-surface: #111827;
+                --bg-surface-2: #0f172a;
+                --bg-sidebar: #0f172a;
+                --bg-input: #0b1220;
+                --bg-muted: #1f2937;
+                --bg-code: #1f2937;
+                --text-primary: #e5e7eb;
+                --text-secondary: #cbd5e1;
+                --text-muted: #94a3b8;
+                --text-faint: #64748b;
+                --border: #1f2937;
+                --border-strong: #334155;
+                --accent: #818cf8;
+                --accent-2: #a5b4fc;
+                --accent-soft: #1e1b4b;
+                --accent-on: #0b1220;
+                --success: #22c55e;
+                --success-soft: #052e1f;
+                --success-strong: #4ade80;
+                --danger: #f87171;
+                --danger-soft: #2a1014;
+                --warning: #fbbf24;
+                --warning-soft: #2a1f08;
+                --warning-strong: #fcd34d;
+                --janitor: #a78bfa;
+                --janitor-soft: #1e1b4b;
+                --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
+                --shadow: 0 2px 8px rgba(0,0,0,0.5);
+                --shadow-hover: 0 6px 18px rgba(0,0,0,0.6);
+            }
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--bg-page);
+            color: var(--text-primary);
             min-height: 100vh;
             display: flex;
         }
+        a { color: var(--accent); }
+        code { font-family: ui-monospace, SFMono-Regular, monospace; }
 
         /* ── Sidebar ─────────────────────────────────────────────── */
         .sidebar {
             width: 320px;
             min-width: 320px;
-            background: rgba(255,255,255,0.96);
-            box-shadow: 4px 0 20px rgba(0,0,0,0.1);
-            padding: 20px 0;
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border);
+            padding: 16px 0;
             position: sticky;
             top: 0;
             height: 100vh;
             overflow-y: auto;
-            transition: min-width 0.25s ease, width 0.25s ease, padding 0.25s ease;
+            display: flex;
+            flex-direction: column;
+            transition: min-width 0.2s ease, width 0.2s ease;
         }
-        .sidebar.collapsed { width: 48px; min-width: 48px; padding: 20px 0; }
+        .sidebar { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+        .sidebar:hover { scrollbar-color: var(--border-strong) transparent; }
+        .sidebar::-webkit-scrollbar { width: 6px; }
+        .sidebar::-webkit-scrollbar-track { background: transparent; }
+        .sidebar::-webkit-scrollbar-thumb {
+            background: transparent;
+            border-radius: 3px;
+            transition: background 0.2s;
+        }
+        .sidebar:hover::-webkit-scrollbar-thumb { background: var(--border-strong); }
+        .sidebar::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+        .sidebar.collapsed { width: 48px; min-width: 48px; padding: 16px 0; }
         .sidebar.collapsed .sidebar-body { display: none; }
-        .sidebar-toggle {
-            width: 32px; height: 32px; margin: 0 8px 12px auto; display: block;
-            background: #667eea; color: white; border: none; border-radius: 6px;
-            cursor: pointer; font-size: 16px; line-height: 1;
+        .sidebar-controls { display: flex; align-items: center; justify-content: flex-end; padding: 0 8px; gap: 6px; }
+        .sidebar-toggle, .theme-toggle {
+            width: 32px; height: 32px;
+            background: var(--bg-muted); color: var(--text-secondary);
+            border: 1px solid var(--border); border-radius: 6px;
+            cursor: pointer; font-size: 14px; line-height: 1;
+            display: inline-flex; align-items: center; justify-content: center;
         }
-        .sidebar.collapsed .sidebar-toggle { margin: 0 auto 12px auto; }
+        .sidebar-toggle:hover, .theme-toggle:hover { background: var(--accent-soft); color: var(--accent); }
+        .sidebar.collapsed .sidebar-controls { justify-content: center; }
+        .sidebar.collapsed .theme-toggle { display: none; }
         .sidebar-header {
-            padding: 0 20px 12px 20px;
-            border-bottom: 1px solid #eee;
-            margin-bottom: 12px;
+            padding: 12px 18px 10px 18px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 8px;
         }
-        .sidebar-header h2 { font-size: 14px; color: #333; text-transform: uppercase; letter-spacing: 1px; }
-        .sidebar-header .subtitle { font-size: 12px; color: #777; margin-top: 4px; }
-        .epic-group { margin-bottom: 6px; }
+        .sidebar-header h2 { font-size: 13px; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.6px; }
+        .sidebar-header .subtitle { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+        .epic-group { margin-bottom: 4px; }
         .epic-group-header {
             display: flex; align-items: center; gap: 6px;
-            padding: 8px 12px; margin: 8px 0 4px 0;
-            font-size: 11px; font-weight: 700; color: #555;
-            text-transform: uppercase; letter-spacing: 0.8px;
+            padding: 7px 12px; margin: 4px 6px;
+            font-size: 11px; font-weight: 700; color: var(--text-secondary);
+            text-transform: uppercase; letter-spacing: 0.6px;
             cursor: pointer; user-select: none;
             border-radius: 6px;
         }
-        .epic-group-header:hover { background: #f3f4f6; }
-        .epic-caret { font-size: 10px; color: #888; transition: transform 0.2s; display: inline-block; width: 10px; }
+        .epic-group-header:hover { background: var(--bg-muted); }
+        .epic-caret { font-size: 10px; color: var(--text-muted); transition: transform 0.15s; display: inline-block; width: 10px; }
         .epic-group.collapsed .epic-caret { transform: rotate(-90deg); }
         .epic-group.collapsed .epic-items,
         .epic-group.collapsed .epic-main-grid { display: none; }
         .epic-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .epic-count { font-size: 10px; color: #888; font-weight: 600; }
-        .epic-count.complete { color: #22c55e; }
-        .pipeline { padding: 0 8px; }
-        .epic-items { padding: 0 4px; }
+        .epic-count { font-size: 10px; color: var(--text-muted); font-weight: 600; }
+        .epic-count.complete { color: var(--success); }
+        .pipeline { padding: 0 6px; }
         .pipeline-item {
             position: relative;
             display: flex; align-items: flex-start; gap: 10px;
-            padding: 10px 8px 10px 8px;
+            padding: 8px 8px;
             border-radius: 6px;
             cursor: pointer;
-            transition: background 0.15s;
+            transition: background 0.12s;
             text-decoration: none;
             color: inherit;
         }
-        .pipeline-item:hover { background: #f3f4f6; }
-        .pipeline-item.active { background: #eef2ff; }
+        .pipeline-item:hover { background: var(--bg-muted); }
+        .pipeline-item.active { background: var(--accent-soft); }
         .pipeline-item:not(:last-child)::after {
             content: '';
             position: absolute;
-            left: 19px; top: 32px; bottom: -2px;
-            width: 2px; background: #e5e7eb;
+            left: 19px; top: 30px; bottom: -2px;
+            width: 2px; background: var(--border);
             z-index: 0;
         }
         .pipeline-icon {
@@ -1077,12 +1261,12 @@ const INDEX_HTML = `<!DOCTYPE html>
             flex-shrink: 0;
             z-index: 1; position: relative;
         }
-        .pipeline-icon.pass { background: #22c55e; }
-        .pipeline-icon.fail { background: #ef4444; }
-        .pipeline-icon.pending { background: #d1d5db; color: #4b5563; }
+        .pipeline-icon.pass { background: var(--success); }
+        .pipeline-icon.fail { background: var(--danger); }
+        .pipeline-icon.pending { background: var(--border-strong); color: var(--text-secondary); }
         .pipeline-icon.active-run {
-            background: #eab308;
-            box-shadow: 0 0 0 4px rgba(234,179,8,0.25);
+            background: var(--warning);
+            box-shadow: 0 0 0 0 rgba(234,179,8,0.55);
             animation: pipeline-active-pulse 1.6s ease-in-out infinite;
         }
         @keyframes pipeline-active-pulse {
@@ -1093,393 +1277,449 @@ const INDEX_HTML = `<!DOCTYPE html>
         @media (prefers-reduced-motion: reduce) {
             .pipeline-icon.active-run { animation: none; }
         }
-        .pipeline-icon.janitor { background: #8b5cf6; }
+        .pipeline-icon.janitor { background: var(--janitor); }
         .pipeline-text { flex: 1; min-width: 0; }
-        .pipeline-id { font-size: 11px; font-weight: 700; color: #667eea; text-transform: uppercase; }
+        .pipeline-id { font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; }
         .pipeline-title {
-            font-size: 13px; color: #333; line-height: 1.3; margin-top: 2px;
+            font-size: 13px; color: var(--text-primary); line-height: 1.3; margin-top: 2px;
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
 
         /* ── Main ────────────────────────────────────────────────── */
         .main {
             flex: 1;
-            padding: 40px 20px;
+            padding: 28px 24px;
             min-width: 0;
         }
         .container { max-width: 1200px; margin: 0 auto; }
         header {
-            background: white; border-radius: 12px; padding: 30px; margin-bottom: 30px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px 26px;
+            margin-bottom: 20px;
+            box-shadow: var(--shadow);
         }
-        h1 { color: #333; margin-bottom: 8px; font-size: 28px; }
-        .meta { color: #666; font-size: 13px; margin-bottom: 20px; }
-        .meta code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+        .header-top {
+            display: flex; align-items: flex-start; gap: 12px;
+            margin-bottom: 6px;
+        }
+        .header-top h1 { color: var(--text-primary); font-size: 24px; flex: 1; min-width: 0; }
+        .header-actions { display: flex; gap: 8px; flex-shrink: 0; }
+        .header-btn {
+            background: var(--bg-muted); color: var(--text-secondary);
+            border: 1px solid var(--border); border-radius: 6px;
+            padding: 6px 12px; font-size: 12px; font-weight: 600;
+            cursor: pointer; font-family: inherit;
+            display: inline-flex; align-items: center; gap: 6px;
+        }
+        .header-btn:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+        .header-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
+        .meta { color: var(--text-muted); font-size: 13px; margin-bottom: 16px; }
+        .meta code { background: var(--bg-code); color: var(--text-primary); padding: 2px 6px; border-radius: 4px; font-size: 11px; }
         .summary-grid {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 16px; margin-top: 20px;
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            gap: 12px; margin-top: 16px;
         }
         .summary-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white; padding: 18px; border-radius: 8px; text-align: center;
+            background: var(--bg-surface-2);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 14px 16px;
+            border-radius: 8px;
         }
         .summary-card h3 {
-            font-size: 13px; opacity: 0.9; margin-bottom: 8px;
-            text-transform: uppercase; letter-spacing: 1px;
+            font-size: 11px; color: var(--text-muted);
+            margin-bottom: 6px;
+            text-transform: uppercase; letter-spacing: 0.6px;
+            font-weight: 600;
         }
-        .summary-card .value { font-size: 28px; font-weight: bold; }
-        .summary-card.success { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); }
-        .summary-card.warning { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
-        .summary-card.danger  { background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%); }
-        .summary-card.halted  { background: linear-gradient(135deg, #f59e0b 0%, #b45309 100%); }
+        .summary-card .value { font-size: 22px; font-weight: 700; color: var(--text-primary); }
+        .summary-card.success { border-left: 3px solid var(--success); }
+        .summary-card.success .value { color: var(--success); }
+        .summary-card.warning { border-left: 3px solid var(--warning); }
+        .summary-card.warning .value { color: var(--warning); }
+        .summary-card.danger  { border-left: 3px solid var(--danger); }
+        .summary-card.danger .value { color: var(--danger); }
+        .summary-card.halted  { border-left: 3px solid var(--warning); }
+        .summary-card.halted .value { color: var(--warning); }
+        .budget-bar {
+            position: relative;
+            height: 18px;
+            background: var(--bg-muted);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 6px;
+        }
+        .budget-fill {
+            height: 100%;
+            background: var(--accent);
+            transition: width 0.4s;
+        }
+        .budget-fill.warn { background: var(--warning); }
+        .budget-fill.over { background: var(--danger); }
+        .budget-label {
+            position: absolute; inset: 0;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 11px; font-weight: 600; color: var(--text-primary);
+            mix-blend-mode: difference;
+            filter: invert(1) grayscale(1) contrast(9);
+        }
+        .sparkline-wrap {
+            margin-top: 14px;
+            padding: 10px 14px;
+            background: var(--bg-surface-2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .sparkline-label {
+            font-size: 10px; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.6px;
+            margin-bottom: 6px;
+            display: flex; align-items: baseline; justify-content: space-between;
+        }
+        .sparkline-label .max { color: var(--text-faint); font-size: 10px; text-transform: none; letter-spacing: 0; }
+        .sparkline {
+            display: block; width: 100%; height: 32px;
+        }
+        .sparkline rect { fill: var(--accent); }
+        .sparkline rect.pass { fill: var(--success); }
+        .sparkline rect.fail { fill: var(--danger); }
+        .sparkline rect.pending { fill: var(--warning); }
+
+        /* ── Halt banner ────────────────────────────────────────── */
         .halt-banner {
-            background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-            border: 2px solid #f59e0b;
+            background: var(--warning-soft);
+            border: 1px solid var(--warning);
             border-radius: 12px;
-            padding: 18px 22px;
-            margin-bottom: 20px;
+            padding: 16px 18px;
+            margin-bottom: 16px;
             display: flex;
-            gap: 16px;
+            gap: 14px;
             align-items: flex-start;
-            box-shadow: 0 6px 20px rgba(245,158,11,0.2);
+            box-shadow: var(--shadow);
         }
         .halt-banner-icon {
-            font-size: 28px;
-            line-height: 1;
+            width: 24px; height: 24px;
+            color: var(--warning);
+            flex-shrink: 0;
             margin-top: 2px;
         }
+        .halt-banner-icon svg { width: 100%; height: 100%; display: block; }
         .halt-banner-body { flex: 1; min-width: 0; }
         .halt-banner-label {
-            font-size: 11px; font-weight: 700; color: #92400e;
-            text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;
+            font-size: 11px; font-weight: 700; color: var(--warning-strong);
+            text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px;
         }
-        .halt-banner-title { font-size: 17px; font-weight: 700; color: #1f2937; line-height: 1.3; }
+        .halt-banner-title { font-size: 16px; font-weight: 700; color: var(--text-primary); line-height: 1.3; }
         .halt-banner-meta {
-            display: flex; flex-wrap: wrap; gap: 12px;
-            margin-top: 8px; font-size: 13px; color: #4b5563;
+            display: flex; flex-wrap: wrap; gap: 10px;
+            margin-top: 8px; font-size: 12px; color: var(--text-secondary);
         }
-        .halt-banner-meta strong { color: #1f2937; font-weight: 600; }
+        .halt-banner-meta strong { color: var(--text-primary); font-weight: 600; }
         .halt-banner-meta a {
-            color: #1d4ed8; text-decoration: none; font-weight: 600;
-            background: rgba(255,255,255,0.7); padding: 3px 10px; border-radius: 12px;
+            color: var(--accent); text-decoration: none; font-weight: 600;
+            background: var(--bg-surface); padding: 2px 8px; border-radius: 10px;
+            border: 1px solid var(--border);
         }
-        .halt-banner-meta a:hover { background: rgba(255,255,255,1); text-decoration: underline; }
+        .halt-banner-meta a:hover { text-decoration: underline; }
         .halt-banner-story, .halt-banner-next {
-            margin-top: 10px;
+            margin-top: 8px;
             display: flex;
             align-items: center;
             gap: 10px;
             flex-wrap: wrap;
             font-size: 13px;
-            color: #1f2937;
+            color: var(--text-primary);
         }
         .halt-banner-story-label, .halt-banner-next-label {
-            font-size: 10px;
-            font-weight: 700;
-            color: #92400e;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            background: rgba(255,255,255,0.7);
-            padding: 3px 8px;
-            border-radius: 10px;
+            font-size: 10px; font-weight: 700;
+            color: var(--warning-strong);
+            text-transform: uppercase; letter-spacing: 0.7px;
+            background: var(--bg-surface);
+            padding: 2px 8px; border-radius: 10px;
+            border: 1px solid var(--border);
             white-space: nowrap;
         }
-        .halt-banner-next-label { color: #1e40af; }
+        .halt-banner-next-label { color: var(--accent); }
         .halt-banner-story-link, .halt-banner-next-link {
-            color: #1f2937;
+            color: var(--text-primary);
             text-decoration: none;
         }
         .halt-banner-story-link:hover, .halt-banner-next-link:hover { text-decoration: underline; }
         .halt-banner-next-epic {
             font-size: 11px;
-            color: #4b5563;
-            background: rgba(255,255,255,0.5);
-            padding: 2px 8px;
+            color: var(--text-muted);
+            background: var(--bg-surface);
+            padding: 1px 8px;
             border-radius: 10px;
+            border: 1px solid var(--border);
         }
+        .halt-banner-action {
+            margin-top: 10px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        }
+        .halt-banner-action code {
+            background: var(--bg-code);
+            color: var(--text-primary);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+        }
+        .copy-btn {
+            background: var(--bg-surface);
+            color: var(--accent);
+            border: 1px solid var(--accent);
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .copy-btn:hover { background: var(--accent); color: var(--accent-on); }
+        .copy-btn.done { background: var(--success); color: white; border-color: var(--success); }
+
+        /* ── Config panel ───────────────────────────────────────── */
         .config-panel {
-            background: rgba(255,255,255,0.92);
+            background: var(--bg-surface-2);
+            border: 1px solid var(--border);
             border-radius: 10px;
-            padding: 14px 18px;
-            margin-top: 16px;
+            padding: 12px 16px;
+            margin-top: 14px;
             font-size: 13px;
-            color: #1f2937;
+            color: var(--text-primary);
         }
         .config-panel-header {
-            font-size: 11px; font-weight: 700; color: #4b5563;
-            text-transform: uppercase; letter-spacing: 1px;
+            font-size: 11px; font-weight: 700; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.7px;
             margin-bottom: 8px;
             display: flex; justify-content: space-between; align-items: baseline;
         }
-        .config-panel-header code { background: #f3f4f6; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 500; }
+        .config-panel-header code { background: var(--bg-code); padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 500; color: var(--text-primary); }
         .config-grid {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 10px 18px;
         }
         .config-row { display: flex; flex-direction: column; }
         .config-row-label {
-            font-size: 10px; font-weight: 600; color: #6b7280;
+            font-size: 10px; font-weight: 600; color: var(--text-muted);
             text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;
         }
-        .config-row-value { font-size: 13px; color: #1f2937; word-break: break-word; }
+        .config-row-value { font-size: 13px; color: var(--text-primary); word-break: break-word; }
         .config-row-value code {
-            background: #f3f4f6; padding: 1px 6px; border-radius: 3px;
-            font-size: 12px; font-family: ui-monospace, SFMono-Regular, monospace;
+            background: var(--bg-code); color: var(--text-primary);
+            padding: 1px 6px; border-radius: 3px;
+            font-size: 12px;
         }
         .config-tag {
             display: inline-block;
-            background: #eef2ff; color: #4338ca;
+            background: var(--accent-soft); color: var(--accent);
             font-size: 11px; font-weight: 600;
             padding: 2px 8px; border-radius: 10px; margin-right: 4px;
         }
         .config-workflow-badge {
             display: inline-block;
-            background: #1e293b; color: #f8fafc;
+            background: var(--text-primary); color: var(--bg-surface);
             font-size: 12px; font-weight: 700;
             padding: 3px 10px; border-radius: 12px;
             text-transform: uppercase; letter-spacing: 0.5px;
         }
+
+        /* ── Stories ───────────────────────────────────────────── */
         .stories-grid {
             display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-            gap: 20px; margin-top: 16px;
+            gap: 18px; margin-top: 14px;
         }
         .epic-main {
-            background: rgba(255,255,255,0.08);
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
             border-radius: 12px;
-            padding: 20px;
-            margin-top: 24px;
+            padding: 18px;
+            margin-top: 18px;
+            box-shadow: var(--shadow-sm);
         }
         .epic-main-header {
             display: flex; align-items: center; justify-content: space-between;
-            color: white; cursor: pointer; user-select: none;
+            color: var(--text-primary); cursor: pointer; user-select: none;
             padding-bottom: 8px;
+            gap: 12px;
         }
-        .epic-main-title { font-size: 18px; font-weight: 700; letter-spacing: 0.5px; }
-        .epic-main-meta { font-size: 13px; opacity: 0.85; }
-        .epic-main .epic-caret { color: rgba(255,255,255,0.85); font-size: 14px; }
+        .epic-main-title { font-size: 17px; font-weight: 700; }
+        .epic-main-meta { font-size: 12px; color: var(--text-muted); }
+        .epic-main .epic-caret { color: var(--text-muted); font-size: 13px; }
         .epic-progress {
-            height: 4px; background: rgba(255,255,255,0.25); border-radius: 2px; overflow: hidden;
-            margin-top: 6px;
+            height: 4px; background: var(--bg-muted); border-radius: 2px; overflow: hidden;
+            margin-top: 4px;
         }
-        .epic-progress-bar { height: 100%; background: #22c55e; transition: width 0.4s; }
+        .epic-progress-bar { height: 100%; background: var(--success); transition: width 0.4s; }
         .story-card {
-            background: white; border-radius: 12px; overflow: hidden;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-            transition: transform 0.3s, box-shadow 0.3s;
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+            transition: transform 0.2s, box-shadow 0.2s;
             scroll-margin-top: 20px;
         }
-        .story-card:target { box-shadow: 0 0 0 3px #667eea, 0 10px 40px rgba(0,0,0,0.1); }
-        .story-card:hover { transform: translateY(-3px); box-shadow: 0 15px 50px rgba(0,0,0,0.15); }
+        .story-card:target { box-shadow: 0 0 0 2px var(--accent), var(--shadow-sm); }
+        .story-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); }
         .story-header {
-            padding: 18px 20px; border-bottom: 2px solid #eee;
+            padding: 14px 18px; border-bottom: 1px solid var(--border);
             display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;
+            background: var(--bg-surface);
         }
-        .story-header.passed { background: #f0fdf4; border-bottom-color: #22c55e; }
-        .story-header.failed { background: #fef2f2; border-bottom-color: #ef4444; }
-        .story-header.pending { background: #fefce8; border-bottom-color: #eab308; }
-        .story-id { font-size: 13px; font-weight: 600; color: #667eea; text-transform: uppercase; }
-        .story-title { font-size: 15px; font-weight: 600; color: #333; margin: 6px 0 0 0; line-height: 1.4; }
-        .story-epic { font-size: 11px; color: #888; margin-top: 4px; }
+        .story-header.passed { border-bottom-color: var(--success); }
+        .story-header.failed { border-bottom-color: var(--danger); }
+        .story-header.pending { border-bottom-color: var(--warning); }
+        .story-id { font-size: 12px; font-weight: 700; color: var(--accent); text-transform: uppercase; }
+        .story-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin: 4px 0 0 0; line-height: 1.4; }
+        .story-epic { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+        .story-cost-chip {
+            font-size: 11px; color: var(--text-muted); margin-top: 4px;
+        }
+        .story-cost-chip.over { color: var(--danger); font-weight: 600; }
+        .story-cost-bar {
+            height: 3px; background: var(--bg-muted); border-radius: 2px;
+            margin-top: 4px; overflow: hidden;
+        }
+        .story-cost-bar-fill { height: 100%; background: var(--accent); }
+        .story-cost-bar-fill.warn { background: var(--warning); }
+        .story-cost-bar-fill.over { background: var(--danger); }
         .badge {
-            display: inline-block; padding: 5px 10px; border-radius: 20px;
+            display: inline-block; padding: 4px 10px; border-radius: 20px;
             font-size: 11px; font-weight: 600; text-transform: uppercase;
-            letter-spacing: 0.5px; white-space: nowrap;
+            letter-spacing: 0.4px; white-space: nowrap;
         }
-        .badge.pass    { background: #22c55e; color: white; }
-        .badge.fail    { background: #ef4444; color: white; }
-        .badge.pending { background: #eab308; color: white; }
-        .badge.idle    { background: #d1d5db; color: #4b5563; }
-        .phases { padding: 18px 20px; }
-        .phase { margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid #eee; }
+        .badge.pass    { background: var(--success); color: white; }
+        .badge.fail    { background: var(--danger); color: white; }
+        .badge.pending { background: var(--warning); color: white; }
+        .badge.idle    { background: var(--bg-muted); color: var(--text-secondary); border: 1px solid var(--border); }
+        .phases { padding: 16px 18px; }
+        .phase { margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
         .phase:last-of-type { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
         .phase-name {
-            font-size: 11px; font-weight: 700; color: #667eea;
-            text-transform: uppercase; margin-bottom: 8px; letter-spacing: 1px;
+            font-size: 11px; font-weight: 700; color: var(--accent);
+            text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.6px;
+            cursor: help;
         }
-        .phase-metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; font-size: 13px; }
-        .metric { padding: 7px 9px; background: #f5f5f5; border-radius: 6px; }
-        .metric-label { color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 3px; }
-        .metric-value { color: #333; font-weight: 600; font-size: 13px; }
+        .phase-metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; font-size: 13px; }
+        .metric { padding: 6px 8px; background: var(--bg-muted); border-radius: 6px; }
+        .metric-label { color: var(--text-muted); font-size: 10px; text-transform: uppercase; margin-bottom: 2px; letter-spacing: 0.4px; }
+        .metric-value { color: var(--text-primary); font-weight: 600; font-size: 13px; }
         .qa-results { display: flex; gap: 10px; font-size: 13px; margin-top: 8px; }
-        .qa-pass { color: #22c55e; font-weight: 600; }
-        .qa-fail { color: #ef4444; font-weight: 600; }
-        .cost { color: #f97316; font-weight: 600; }
-        .totals { padding: 14px 20px; border-top: 1px solid #eee; font-weight: 600; font-size: 13px; background: #fafafa; }
+        .qa-pass { color: var(--success); font-weight: 600; }
+        .qa-fail { color: var(--danger); font-weight: 600; }
+        .cost { color: var(--accent); font-weight: 600; }
+        .totals { padding: 12px 18px; border-top: 1px solid var(--border); font-weight: 600; font-size: 13px; background: var(--bg-surface-2); }
         .summary-block {
-            padding: 14px 20px; background: #f9fafb; border-top: 1px solid #eee;
-            font-size: 12px; color: #444; line-height: 1.5; white-space: pre-wrap;
+            padding: 12px 18px; background: var(--bg-surface-2); border-top: 1px solid var(--border);
+            font-size: 12px; color: var(--text-secondary); line-height: 1.5; white-space: pre-wrap;
             max-height: 200px; overflow-y: auto;
         }
-        .commits { padding: 10px 20px 14px 20px; font-size: 11px; color: #6b7280; background: #f9fafb; }
-        .commits code { background: #e5e7eb; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
-        .story-details { border-top: 1px solid #eee; background: #fafbff; }
-        .story-details > summary {
+        .commits { padding: 10px 18px; font-size: 11px; color: var(--text-muted); background: var(--bg-surface-2); }
+        .commits code { background: var(--bg-code); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+        .story-details, .story-results { border-top: 1px solid var(--border); background: var(--bg-surface-2); }
+        .story-details > summary, .story-results > summary {
             list-style: none;
             cursor: pointer;
-            padding: 10px 20px;
+            padding: 9px 18px;
             font-size: 11px;
             font-weight: 700;
-            color: #4f46e5;
             text-transform: uppercase;
-            letter-spacing: 0.8px;
+            letter-spacing: 0.7px;
             display: flex;
             align-items: center;
             gap: 8px;
             user-select: none;
         }
-        .story-details > summary::-webkit-details-marker { display: none; }
-        .story-details > summary::before {
-            content: '▸';
-            display: inline-block;
-            font-size: 10px;
-            color: #6366f1;
-            transition: transform 0.2s;
-        }
-        .story-details[open] > summary::before { transform: rotate(90deg); }
-        .story-details > summary:hover { background: #eef2ff; }
-        .story-details-body {
-            padding: 4px 20px 18px 20px;
-            font-size: 13px;
-            color: #1f2937;
-            line-height: 1.55;
-        }
-        .story-details-section { margin-top: 12px; }
-        .story-details-section:first-child { margin-top: 4px; }
-        .story-details-label {
-            font-size: 10px;
-            font-weight: 700;
-            color: #6366f1;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            margin-bottom: 6px;
-        }
-        .story-details-text {
-            color: #1f2937;
-            white-space: pre-wrap;
-            font-size: 13px;
-            line-height: 1.6;
-        }
-        .story-details-criteria {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-        }
-        .story-details-criteria li {
-            position: relative;
-            padding: 4px 0 4px 22px;
-            font-size: 13px;
-            color: #1f2937;
-            line-height: 1.5;
-        }
-        .story-details-criteria li::before {
-            content: '○';
-            position: absolute;
-            left: 4px;
-            top: 4px;
-            color: #9ca3af;
-            font-weight: 700;
-        }
-        .story-details-criteria li.pass::before { content: '✓'; color: #16a34a; }
-        .story-details-criteria li.fail::before { content: '✗'; color: #dc2626; }
-
-        /* ── Run results expandable ───────────────────────────── */
-        .story-results { border-top: 1px solid #eee; background: #f9fafb; }
-        .story-results > summary {
-            list-style: none;
-            cursor: pointer;
-            padding: 10px 20px;
-            font-size: 11px;
-            font-weight: 700;
-            color: #047857;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            user-select: none;
-        }
+        .story-details > summary { color: var(--accent); }
+        .story-results > summary { color: var(--success-strong); }
+        .story-details > summary::-webkit-details-marker,
         .story-results > summary::-webkit-details-marker { display: none; }
+        .story-details > summary::before,
         .story-results > summary::before {
             content: '▸';
             display: inline-block;
             font-size: 10px;
-            color: #10b981;
-            transition: transform 0.2s;
+            transition: transform 0.15s;
         }
+        .story-details > summary::before { color: var(--accent-2); }
+        .story-results > summary::before { color: var(--success); }
+        .story-details[open] > summary::before,
         .story-results[open] > summary::before { transform: rotate(90deg); }
-        .story-results > summary:hover { background: #ecfdf5; }
+        .story-details > summary:hover { background: var(--accent-soft); }
+        .story-results > summary:hover { background: var(--success-soft); }
+        .story-details-body { padding: 4px 18px 16px 18px; font-size: 13px; color: var(--text-primary); line-height: 1.55; }
+        .story-details-section { margin-top: 10px; }
+        .story-details-section:first-child { margin-top: 4px; }
+        .story-details-label {
+            font-size: 10px; font-weight: 700; color: var(--accent-2);
+            text-transform: uppercase; letter-spacing: 0.7px;
+            margin-bottom: 5px;
+        }
+        .story-details-text {
+            color: var(--text-primary); white-space: pre-wrap;
+            font-size: 13px; line-height: 1.55;
+        }
+        .story-details-criteria { list-style: none; padding: 0; margin: 0; }
+        .story-details-criteria li {
+            position: relative;
+            padding: 3px 0 3px 22px;
+            font-size: 13px; color: var(--text-primary); line-height: 1.5;
+        }
+        .story-details-criteria li::before {
+            content: '○';
+            position: absolute; left: 4px; top: 3px;
+            color: var(--text-faint); font-weight: 700;
+        }
+        .story-details-criteria li.pass::before { content: '✓'; color: var(--success); }
+        .story-details-criteria li.fail::before { content: '✗'; color: var(--danger); }
+
         .story-results-summary-meta {
             margin-left: auto;
-            font-size: 10px;
-            font-weight: 600;
-            color: #6b7280;
-            text-transform: none;
-            letter-spacing: 0;
+            font-size: 10px; font-weight: 600;
+            color: var(--text-muted);
+            text-transform: none; letter-spacing: 0;
         }
-        .story-results-summary-meta .diff-add { color: #16a34a; }
-        .story-results-summary-meta .diff-del { color: #dc2626; }
+        .story-results-summary-meta .diff-add { color: var(--success); }
+        .story-results-summary-meta .diff-del { color: var(--danger); }
         .story-results-body { padding: 0; }
-        .results-section { padding: 12px 20px; border-top: 1px solid #eef2f7; }
+        .results-section { padding: 12px 18px; border-top: 1px solid var(--border); }
         .results-section:first-child { border-top: none; }
         .results-section-label {
-            font-size: 10px;
-            font-weight: 700;
-            color: #047857;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
+            font-size: 10px; font-weight: 700; color: var(--success-strong);
+            text-transform: uppercase; letter-spacing: 0.7px;
             margin-bottom: 8px;
         }
         .results-summary-text {
-            font-size: 13px;
-            color: #1f2937;
-            line-height: 1.55;
-            white-space: pre-wrap;
-            max-height: 240px;
-            overflow-y: auto;
+            font-size: 13px; color: var(--text-primary); line-height: 1.55;
+            white-space: pre-wrap; max-height: 240px; overflow-y: auto;
         }
         .commit-list { display: flex; flex-direction: column; gap: 10px; }
         .commit-stat {
-            background: white;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            padding: 10px 12px;
+            background: var(--bg-surface); border: 1px solid var(--border);
+            border-radius: 8px; padding: 10px 12px;
         }
-        .commit-stat-header {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-bottom: 8px;
-        }
+        .commit-stat-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
         .commit-stat-sha {
-            background: #1f2937;
-            color: #f9fafb;
-            padding: 2px 7px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-family: ui-monospace, SFMono-Regular, monospace;
+            background: var(--text-primary); color: var(--bg-surface);
+            padding: 2px 7px; border-radius: 4px;
+            font-size: 11px; font-family: ui-monospace, SFMono-Regular, monospace;
         }
         .commit-stat-subject {
-            font-size: 13px;
-            color: #111827;
-            font-weight: 500;
-            flex: 1;
-            min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            font-size: 13px; color: var(--text-primary); font-weight: 500;
+            flex: 1; min-width: 0;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
         .commit-stat-summary {
-            font-size: 11px;
-            color: #6b7280;
+            font-size: 11px; color: var(--text-muted);
             font-family: ui-monospace, SFMono-Regular, monospace;
             white-space: nowrap;
         }
-        .commit-stat-files {
-            display: flex;
-            flex-direction: column;
-            gap: 3px;
-        }
+        .commit-stat-files { display: flex; flex-direction: column; gap: 3px; }
         .diff-row {
             display: grid;
             grid-template-columns: minmax(0, 1fr) 44px 44px 100px;
@@ -1489,182 +1729,225 @@ const INDEX_HTML = `<!DOCTYPE html>
             font-family: ui-monospace, SFMono-Regular, monospace;
         }
         .diff-file {
-            color: #1f2937;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            direction: rtl;
+            color: var(--text-primary);
+            overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
             text-align: left;
         }
         .diff-count { text-align: right; font-weight: 600; font-size: 11px; }
-        .diff-add { color: #16a34a; }
-        .diff-del { color: #dc2626; }
+        .diff-add { color: var(--success); }
+        .diff-del { color: var(--danger); }
         .diff-binary {
             grid-column: 2 / span 3;
             justify-self: end;
-            color: #6b7280;
-            font-style: italic;
-            font-size: 11px;
+            color: var(--text-muted); font-style: italic; font-size: 11px;
         }
         .diff-bar {
-            display: inline-flex;
-            height: 8px;
-            background: #f1f5f9;
-            border-radius: 2px;
-            overflow: hidden;
+            display: inline-flex; height: 8px;
+            background: var(--bg-muted); border-radius: 2px; overflow: hidden;
         }
-        .diff-bar-add { background: #22c55e; height: 100%; }
-        .diff-bar-del { background: #ef4444; height: 100%; }
-        .results-phases { padding: 0 20px 12px 20px; }
+        .diff-bar-add { background: var(--success); height: 100%; }
+        .diff-bar-del { background: var(--danger); height: 100%; }
+        .results-phases { padding: 0 18px 12px 18px; }
         .results-phases .phase { margin: 0 0 14px 0; padding: 0 0 14px 0; }
         .results-phases .phase:last-child { margin-bottom: 0; padding-bottom: 0; }
-        .results-total {
-            margin-top: 4px;
-            font-size: 12px;
-            color: #4b5563;
-        }
+        .results-total { margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+
         .empty {
-            background: white; border-radius: 12px; padding: 40px; text-align: center;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1); color: #666;
+            background: var(--bg-surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: 40px; text-align: center;
+            box-shadow: var(--shadow); color: var(--text-muted);
         }
-        .section-title { color: white; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin: 32px 0 12px 0; opacity: 0.9; }
-        .patterns {
-            background: white; border-radius: 12px; padding: 20px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        .section-title {
+            color: var(--text-primary); font-size: 13px;
+            text-transform: uppercase; letter-spacing: 0.7px;
+            margin: 24px 0 10px 0; font-weight: 700;
         }
-        .pattern { padding: 10px 0; border-bottom: 1px solid #f3f4f6; }
-        .pattern:last-child { border-bottom: none; }
-        .pattern-name { font-weight: 600; color: #333; font-size: 13px; }
-        .pattern-tag { font-size: 10px; color: #888; margin-left: 8px; }
-        .pattern-desc { font-size: 12px; color: #555; margin-top: 4px; line-height: 1.5; }
-        .current-task {
-            background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-            border: 1px solid #fcd34d;
+
+        /* ── Patterns accordion ──────────────────────────────── */
+        .patterns-details {
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
             border-radius: 10px;
-            padding: 16px 20px;
-            margin: 18px 0 4px 0;
-            display: flex;
-            gap: 16px;
-            align-items: flex-start;
+            box-shadow: var(--shadow-sm);
+            margin-top: 14px;
         }
-        .current-task.janitor { background: linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%); border-color: #c4b5fd; }
+        .patterns-details > summary {
+            list-style: none; cursor: pointer;
+            padding: 12px 18px;
+            font-size: 12px; font-weight: 700;
+            color: var(--text-primary);
+            text-transform: uppercase; letter-spacing: 0.7px;
+            display: flex; align-items: center; gap: 8px; user-select: none;
+        }
+        .patterns-details > summary::-webkit-details-marker { display: none; }
+        .patterns-details > summary::before {
+            content: '▸'; font-size: 10px; color: var(--accent);
+            transition: transform 0.15s;
+        }
+        .patterns-details[open] > summary::before { transform: rotate(90deg); }
+        .patterns-list { padding: 0 18px 14px 18px; }
+        .pattern { padding: 10px 0; border-bottom: 1px solid var(--border); }
+        .pattern:last-child { border-bottom: none; }
+        .pattern-name { font-weight: 600; color: var(--text-primary); font-size: 13px; }
+        .pattern-tag { font-size: 10px; color: var(--text-muted); margin-left: 8px; }
+        .pattern-desc { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+
+        /* ── Current task ────────────────────────────────────── */
+        .current-task {
+            background: var(--warning-soft);
+            border: 1px solid var(--warning);
+            border-radius: 10px;
+            padding: 14px 18px;
+            margin: 14px 0 4px 0;
+            display: flex; gap: 14px; align-items: flex-start;
+        }
+        .current-task.janitor { background: var(--janitor-soft); border-color: var(--janitor); }
+        .current-task.pr-review { background: var(--accent-soft); border-color: var(--accent); }
         .current-task-spinner {
-            width: 28px; height: 28px; flex-shrink: 0;
-            border: 3px solid rgba(0,0,0,0.1);
-            border-top-color: #ef4444;
+            width: 24px; height: 24px; flex-shrink: 0;
+            border: 3px solid var(--border);
+            border-top-color: var(--danger);
             border-radius: 50%;
             animation: spin 1s linear infinite;
             margin-top: 2px;
         }
-        .current-task.janitor .current-task-spinner { border-top-color: #8b5cf6; }
+        .current-task.janitor .current-task-spinner { border-top-color: var(--janitor); }
+        .current-task.pr-review .current-task-spinner { border-top-color: var(--accent); }
+        @media (prefers-reduced-motion: reduce) {
+            .current-task-spinner { animation: none; }
+        }
         .current-task-body { flex: 1; min-width: 0; }
         .current-task-label {
-            font-size: 11px; font-weight: 700; color: #92400e;
-            text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;
+            font-size: 11px; font-weight: 700; color: var(--warning-strong);
+            text-transform: uppercase; letter-spacing: 0.7px; margin-bottom: 4px;
         }
-        .current-task.janitor .current-task-label { color: #5b21b6; }
-        .current-task-title { font-size: 16px; font-weight: 700; color: #1f2937; line-height: 1.4; }
-        .current-task-id { font-size: 12px; color: #6b7280; font-weight: 600; }
+        .current-task.janitor .current-task-label { color: var(--janitor); }
+        .current-task.pr-review .current-task-label { color: var(--accent); }
+        .current-task-title { font-size: 16px; font-weight: 700; color: var(--text-primary); line-height: 1.4; }
+        .current-task-id { font-size: 12px; color: var(--text-muted); font-weight: 600; }
         .current-task-meta {
-            display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px;
-            font-size: 13px; color: #4b5563;
+            display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px;
+            font-size: 13px; color: var(--text-secondary);
         }
-        .current-task-meta strong { color: #1f2937; font-weight: 600; }
+        .current-task-meta strong { color: var(--text-primary); font-weight: 600; }
         .current-task-phase {
             display: inline-flex; align-items: center; gap: 6px;
-            background: rgba(255,255,255,0.7);
+            background: var(--bg-surface); border: 1px solid var(--border);
             padding: 3px 10px; border-radius: 12px;
-            font-weight: 600; font-size: 12px; color: #1f2937;
+            font-weight: 600; font-size: 12px; color: var(--text-primary);
             text-transform: uppercase; letter-spacing: 0.5px;
         }
-        .current-task-reasoning {
+        .current-task-reasoning, .current-task-section {
             margin-top: 8px;
             font-size: 12px;
-            color: #4b5563;
-            line-height: 1.5;
-            background: rgba(255,255,255,0.4);
-            padding: 8px 10px;
-            border-radius: 6px;
-        }
-        .current-task-section {
-            margin-top: 10px;
-            font-size: 12px;
-            background: rgba(255,255,255,0.4);
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
             padding: 8px 10px;
             border-radius: 6px;
         }
         .current-task-section-label {
-            font-size: 10px;
-            font-weight: 700;
-            color: #92400e;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
+            font-size: 10px; font-weight: 700; color: var(--warning-strong);
+            text-transform: uppercase; letter-spacing: 0.7px;
             margin-bottom: 4px;
         }
-        .current-task.janitor .current-task-section-label { color: #5b21b6; }
-        .current-task-section-body { color: #1f2937; line-height: 1.5; white-space: pre-wrap; }
+        .current-task.janitor .current-task-section-label { color: var(--janitor); }
+        .current-task.pr-review .current-task-section-label { color: var(--accent); }
+        .current-task-section-body { color: var(--text-primary); line-height: 1.5; white-space: pre-wrap; }
         .current-task-description {
-            font-size: 13px;
-            color: #1f2937;
-            line-height: 1.5;
-            margin-top: 8px;
+            font-size: 13px; color: var(--text-primary); line-height: 1.5; margin-top: 8px;
         }
         .current-task-criteria { list-style: none; padding: 0; margin: 4px 0 0 0; }
         .current-task-criteria li {
-            font-size: 12px; color: #1f2937; line-height: 1.5;
+            font-size: 12px; color: var(--text-primary); line-height: 1.5;
             padding: 3px 0 3px 22px; position: relative;
         }
         .current-task-criteria li::before {
             content: '○'; position: absolute; left: 4px; top: 3px;
-            color: #9ca3af; font-weight: 700;
+            color: var(--text-faint); font-weight: 700;
         }
-        .current-task-criteria li.pass::before { content: '✓'; color: #16a34a; }
-        .current-task-criteria li.fail::before { content: '✗'; color: #dc2626; }
+        .current-task-criteria li.pass::before { content: '✓'; color: var(--success); }
+        .current-task-criteria li.fail::before { content: '✗'; color: var(--danger); }
         .current-task-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
         .current-task-tag {
             font-size: 11px; font-weight: 600;
-            background: rgba(255,255,255,0.7);
-            color: #1f2937;
+            background: var(--bg-surface); border: 1px solid var(--border);
+            color: var(--text-primary);
             padding: 2px 8px; border-radius: 10px;
         }
         .current-task-verdict {
             display: inline-block;
             font-size: 11px; font-weight: 700;
             padding: 3px 10px; border-radius: 12px;
-            text-transform: uppercase; letter-spacing: 0.5px;
+            text-transform: uppercase; letter-spacing: 0.4px;
             margin-left: 8px;
         }
-        .current-task-verdict.pass { background: #22c55e; color: white; }
-        .current-task-verdict.fail_retry { background: #eab308; color: white; }
-        .current-task-verdict.fail_abort { background: #ef4444; color: white; }
+        .current-task-verdict.pass { background: var(--success); color: white; }
+        .current-task-verdict.fail_retry { background: var(--warning); color: white; }
+        .current-task-verdict.fail_abort { background: var(--danger); color: white; }
         .current-task-halt {
             margin-top: 10px;
             font-size: 12px;
-            background: #fee2e2;
-            color: #991b1b;
+            background: var(--danger-soft);
+            color: var(--danger);
             padding: 8px 10px;
             border-radius: 6px;
-            border: 1px solid #fca5a5;
+            border: 1px solid var(--danger);
         }
-        .current-task-halt strong { color: #7f1d1d; }
+        .current-task-halt strong { color: var(--danger); }
         @keyframes spin { to { transform: rotate(360deg); } }
-        footer { text-align: center; color: white; margin-top: 32px; font-size: 13px; opacity: 0.85; }
+
+        footer {
+            text-align: center;
+            color: var(--text-muted);
+            margin-top: 28px; font-size: 12px;
+        }
         .live-dot {
-            display: inline-block; width: 8px; height: 8px; background: #22c55e;
+            display: inline-block; width: 8px; height: 8px; background: var(--success);
             border-radius: 50%; margin-right: 6px; animation: pulse 1.6s infinite;
         }
         @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.3 } }
+        @media (prefers-reduced-motion: reduce) {
+            .live-dot { animation: none; }
+        }
+
+        /* ── Mobile sidebar toggle ──────────────────────────── */
+        .mobile-toggle {
+            display: none;
+            position: fixed;
+            bottom: 18px; right: 18px;
+            width: 48px; height: 48px;
+            border-radius: 24px;
+            background: var(--accent);
+            color: var(--accent-on);
+            border: none;
+            box-shadow: var(--shadow-hover);
+            z-index: 100;
+            cursor: pointer;
+            font-size: 18px;
+            font-weight: 700;
+        }
 
         @media (max-width: 720px) {
             body { display: block; }
-            .sidebar { width: 100%; min-width: 0; height: auto; position: static; box-shadow: none; }
+            .sidebar {
+                width: 100%; min-width: 0; height: auto;
+                position: fixed; inset: 0; z-index: 90;
+                transform: translateX(-100%); transition: transform 0.2s ease;
+            }
+            .sidebar.mobile-open { transform: translateX(0); }
             .sidebar.collapsed { display: none; }
+            .mobile-toggle { display: flex; align-items: center; justify-content: center; }
+            .main { padding: 16px 14px; }
+            header { padding: 18px 16px; }
         }
     </style>
 </head>
 <body>
     <aside class="sidebar" id="sidebar">
-        <button class="sidebar-toggle" id="sidebarToggle" title="Collapse sidebar">‹</button>
+        <div class="sidebar-controls">
+            <button class="theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
+            <button class="sidebar-toggle" id="sidebarToggle" title="Collapse sidebar" aria-label="Collapse sidebar">‹</button>
+        </div>
         <div class="sidebar-body">
             <div class="sidebar-header">
                 <h2>Pipeline</h2>
@@ -1673,14 +1956,21 @@ const INDEX_HTML = `<!DOCTYPE html>
             <nav class="pipeline" id="pipeline"></nav>
         </div>
     </aside>
+    <button class="mobile-toggle" id="mobileToggle" aria-label="Open pipeline">☰</button>
     <div class="main">
         <div class="container">
             <header>
-                <h1 id="title">🚀 Marmite Dashboard</h1>
+                <div class="header-top">
+                    <h1 id="title">Marmite Dashboard</h1>
+                    <div class="header-actions">
+                        <button class="header-btn" id="jumpBtn" title="Jump to current task" disabled>↓ Current</button>
+                    </div>
+                </div>
                 <div class="meta" id="meta"><span class="live-dot"></span>Loading…</div>
                 <div id="haltBanner"></div>
                 <div id="currentTask"></div>
                 <div class="summary-grid" id="summary"></div>
+                <div id="sparkline"></div>
                 <div id="configPanel"></div>
             </header>
             <div id="content"></div>
@@ -1689,9 +1979,12 @@ const INDEX_HTML = `<!DOCTYPE html>
         </div>
     </div>
     <script>
+      'use strict';
+
+      // ── Helpers ─────────────────────────────────────────────
       const fmtDur = (ms) => {
         if (ms == null) return '—';
-        if (ms < 1000) return ms.toFixed(0) + 'ms';
+        if (ms < 1000) return Math.round(ms) + 'ms';
         const s = ms / 1000;
         if (s < 60) return s.toFixed(1) + 's';
         const m = Math.floor(s / 60);
@@ -1702,13 +1995,83 @@ const INDEX_HTML = `<!DOCTYPE html>
       };
       const fmtCost = (usd) => '$' + (usd ?? 0).toFixed(2);
       const escape = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const middleTruncate = (s, max) => {
+        if (!s || s.length <= max) return s;
+        const head = Math.max(1, Math.floor((max - 1) / 2));
+        const tail = Math.max(1, max - 1 - head);
+        return s.slice(0, head) + '…' + s.slice(-tail);
+      };
 
       const STATUS_LABEL = { in_progress: 'In Progress', completed: 'Completed', failed: 'Failed', halted: 'Halted', unknown: 'Unknown' };
       const STATUS_CLASS = { in_progress: 'warning', completed: 'success', failed: 'danger', halted: 'halted', unknown: '' };
+      const STATUS_FAVICON_COLOR = {
+        in_progress: '%23eab308',
+        completed: '%2322c55e',
+        failed: '%23ef4444',
+        halted: '%23f59e0b',
+        unknown: '%239ca3af',
+      };
+      const STATUS_TITLE_PREFIX = {
+        in_progress: '● ',
+        completed: '✓ ',
+        failed: '✗ ',
+        halted: '⏸ ',
+        unknown: '',
+      };
       const HALT_LABEL = { awaiting_pr_review: 'Awaiting PR Review' };
 
       const storyState = (s) => s.passed === true ? 'passed' : s.passed === false ? 'failed' : 'pending';
 
+      // ── Project-scoped localStorage ─────────────────────────
+      // Two projects on the same port would otherwise inherit each other's
+      // collapsed-epic / open-details state. Hash by source path (always unique
+      // per .marmite/events.jsonl install) so each project gets a clean namespace.
+      let projectNs = 'default';
+      const setProjectNs = (source) => {
+        if (!source) return;
+        let h = 5381;
+        for (let i = 0; i < source.length; i++) h = ((h << 5) + h) ^ source.charCodeAt(i);
+        projectNs = (h >>> 0).toString(36);
+      };
+      const lsKey = (k) => 'marmite-dashboard:' + projectNs + ':' + k;
+      const ls = {
+        getSet(k) {
+          try { return new Set(JSON.parse(localStorage.getItem(lsKey(k)) || '[]')); }
+          catch { return new Set(); }
+        },
+        setSet(k, set) {
+          try { localStorage.setItem(lsKey(k), JSON.stringify([...set])); } catch {}
+        },
+        get(k) {
+          try { return localStorage.getItem(lsKey(k)); } catch { return null; }
+        },
+        set(k, v) {
+          try { localStorage.setItem(lsKey(k), v); } catch {}
+        },
+      };
+
+      // ── Section render cache: only update DOM when payload changes ──
+      // The page used to wipe innerHTML every poll, which lost text selection
+      // and scroll state inside results panels. Hash the data going into each
+      // section and skip the write when nothing changed.
+      const sectionCache = new Map();
+      const renderInto = (id, payload, renderer) => {
+        const key = JSON.stringify(payload);
+        if (sectionCache.get(id) === key) return;
+        const el = document.getElementById(id);
+        if (!el) return;
+        try {
+          el.innerHTML = renderer(payload);
+          sectionCache.set(id, key);
+        } catch (e) {
+          console.error('[marmite-dashboard] ' + id + ':', e);
+          el.innerHTML = '<div style="background:var(--danger-soft);color:var(--danger);padding:10px 14px;border-radius:8px;font-size:12px;margin:6px 0;border:1px solid var(--danger);">'
+            + 'Failed to render ' + escape(id) + ': ' + escape((e && e.message) || String(e))
+            + '</div>';
+        }
+      };
+
+      // ── Phase / commit rendering ────────────────────────────
       const renderPhase = (p) => {
         const metrics = [
           ['Duration', fmtDur(p.durationMs)],
@@ -1723,67 +2086,22 @@ const INDEX_HTML = `<!DOCTYPE html>
             + '</div>'
           : '';
         const phaseLabel = p.attempts > 1 ? escape(p.phase) + ' × ' + p.attempts : escape(p.phase);
+        // Attempt breakdown on hover — we only have aggregates, not per-attempt,
+        // but average over attempt count is still a useful estimate.
+        let title = '';
+        if (p.attempts > 1) {
+          const avgDur = fmtDur(p.durationMs / p.attempts);
+          const avgCost = fmtCost(p.costUsd / p.attempts);
+          title = p.attempts + ' attempts · avg ' + avgDur + ' / ' + avgCost + ' per attempt';
+        }
         return '<div class="phase">'
-          + '<div class="phase-name">' + phaseLabel + '</div>'
+          + '<div class="phase-name"' + (title ? ' title="' + escape(title) + '"' : '') + '>' + phaseLabel + '</div>'
           + '<div class="phase-metrics">'
           + metrics.map(([k, v]) => '<div class="metric"><div class="metric-label">' + k + '</div><div class="metric-value">' + v + '</div></div>').join('')
           + '</div>' + qa + '</div>';
       };
 
-      const OPEN_DETAILS_KEY = 'marmite-dashboard-open-details';
-      const getOpenDetails = () => {
-        try { return new Set(JSON.parse(localStorage.getItem(OPEN_DETAILS_KEY) || '[]')); }
-        catch { return new Set(); }
-      };
-      const setOpenDetails = (set) => {
-        localStorage.setItem(OPEN_DETAILS_KEY, JSON.stringify([...set]));
-      };
-
-      const renderStoryDetails = (s) => {
-        const hasDescription = !!s.description;
-        const hasCriteria = s.acceptanceCriteria && s.acceptanceCriteria.length > 0;
-        if (!hasDescription && !hasCriteria) return '';
-        const sections = [];
-        if (hasDescription) {
-          sections.push(
-            '<div class="story-details-section">'
-            + '<div class="story-details-label">Description</div>'
-            + '<div class="story-details-text">' + escape(s.description) + '</div>'
-            + '</div>'
-          );
-        }
-        if (hasCriteria) {
-          const items = s.acceptanceCriteria.map((c) =>
-            '<li>' + escape(c) + '</li>'
-          ).join('');
-          sections.push(
-            '<div class="story-details-section">'
-            + '<div class="story-details-label">Acceptance Criteria</div>'
-            + '<ul class="story-details-criteria">' + items + '</ul>'
-            + '</div>'
-          );
-        }
-        const isOpen = getOpenDetails().has(s.storyId);
-        return '<details class="story-details" data-story-details="' + escape(s.storyId) + '"'
-          + (isOpen ? ' open' : '') + '>'
-          + '<summary>Story details</summary>'
-          + '<div class="story-details-body">' + sections.join('') + '</div>'
-          + '</details>';
-      };
-
-      const OPEN_RESULTS_KEY = 'marmite-dashboard-open-results';
-      const getOpenResults = () => {
-        try { return new Set(JSON.parse(localStorage.getItem(OPEN_RESULTS_KEY) || '[]')); }
-        catch { return new Set(); }
-      };
-      const setOpenResults = (set) => {
-        localStorage.setItem(OPEN_RESULTS_KEY, JSON.stringify([...set]));
-      };
-
       const renderCommitStat = (cs) => {
-        // Defensive: the harness only emits commitStats for workflows that
-        // commit per-story, but older event files or alternate workflows may
-        // surface partial commit metadata (e.g. SHA only, no diffstat).
         const files = Array.isArray(cs && cs.files) ? cs.files : [];
         const sha = cs && typeof cs.sha === 'string' ? cs.sha : '';
         const subject = cs && typeof cs.subject === 'string' ? cs.subject : '';
@@ -1796,9 +2114,10 @@ const INDEX_HTML = `<!DOCTYPE html>
           const added = typeof f.added === 'number' ? f.added : 0;
           const deleted = typeof f.deleted === 'number' ? f.deleted : 0;
           const file = typeof f.file === 'string' ? f.file : '';
+          const display = middleTruncate(file, 60);
           if (f.binary) {
             return '<div class="diff-row">'
-              + '<span class="diff-file" title="' + escape(file) + '">' + escape(file) + '</span>'
+              + '<span class="diff-file" title="' + escape(file) + '">' + escape(display) + '</span>'
               + '<span class="diff-binary">binary</span>'
               + '</div>';
           }
@@ -1807,7 +2126,7 @@ const INDEX_HTML = `<!DOCTYPE html>
           const addPct = total === 0 ? 0 : (added / total) * 100;
           const delPct = 100 - addPct;
           return '<div class="diff-row">'
-            + '<span class="diff-file" title="' + escape(file) + '">' + escape(file) + '</span>'
+            + '<span class="diff-file" title="' + escape(file) + '">' + escape(display) + '</span>'
             + '<span class="diff-count diff-add">+' + added + '</span>'
             + '<span class="diff-count diff-del">-' + deleted + '</span>'
             + '<span class="diff-bar" style="width:' + widthPct.toFixed(1) + '%">'
@@ -1830,11 +2149,38 @@ const INDEX_HTML = `<!DOCTYPE html>
           + '</div>';
       };
 
+      // ── Story rendering ─────────────────────────────────────
+      const renderStoryDetails = (s) => {
+        const hasDescription = !!s.description;
+        const hasCriteria = s.acceptanceCriteria && s.acceptanceCriteria.length > 0;
+        if (!hasDescription && !hasCriteria) return '';
+        const sections = [];
+        if (hasDescription) {
+          sections.push(
+            '<div class="story-details-section">'
+            + '<div class="story-details-label">Description</div>'
+            + '<div class="story-details-text">' + escape(s.description) + '</div>'
+            + '</div>'
+          );
+        }
+        if (hasCriteria) {
+          const items = s.acceptanceCriteria.map((c) => '<li>' + escape(c) + '</li>').join('');
+          sections.push(
+            '<div class="story-details-section">'
+            + '<div class="story-details-label">Acceptance Criteria</div>'
+            + '<ul class="story-details-criteria">' + items + '</ul>'
+            + '</div>'
+          );
+        }
+        const isOpen = ls.getSet('open-details').has(s.storyId);
+        return '<details class="story-details" data-story-details="' + escape(s.storyId) + '"'
+          + (isOpen ? ' open' : '') + '>'
+          + '<summary>Story details</summary>'
+          + '<div class="story-details-body">' + sections.join('') + '</div>'
+          + '</details>';
+      };
+
       const renderStoryResults = (s) => {
-        // Each workflow produces a different subset of these signals:
-        // one-shot may skip per-story commits entirely, pr-on-checkpoint
-        // groups them into a PR, tdd splits them across phases. Render
-        // whichever sections actually have data — never assume all are set.
         const phases = Array.isArray(s.phases) ? s.phases : [];
         const commitStats = Array.isArray(s.commitStats) ? s.commitStats : [];
         const commitShas = Array.isArray(s.commitShas) ? s.commitShas : [];
@@ -1870,7 +2216,7 @@ const INDEX_HTML = `<!DOCTYPE html>
         if (hasCommits) {
           const commitsBody = commitStats.length
             ? '<div class="commit-list">' + commitStats.map(renderCommitStat).join('') + '</div>'
-            : '<div style="font-size:12px; color:#6b7280;">'
+            : '<div style="font-size:12px; color:var(--text-muted);">'
               + commitShas.map((c) => '<code>' + escape(String(c).slice(0, 10)) + '</code>').join(' ')
               + '<div style="margin-top:4px; font-style:italic;">No diffstat available — commits may be from another repository or have been pruned.</div>'
               + '</div>';
@@ -1895,7 +2241,7 @@ const INDEX_HTML = `<!DOCTYPE html>
         }
 
         const storyId = typeof s.storyId === 'string' ? s.storyId : '';
-        const isOpen = storyId ? getOpenResults().has(storyId) : false;
+        const isOpen = storyId ? ls.getSet('open-results').has(storyId) : false;
         return '<details class="story-results" data-results-details="' + escape(storyId) + '"'
           + (isOpen ? ' open' : '') + '>'
           + '<summary>Run results' + summaryMeta + '</summary>'
@@ -1903,35 +2249,62 @@ const INDEX_HTML = `<!DOCTYPE html>
           + '</details>';
       };
 
-      const renderStory = (s) => {
-        const state = storyState(s);
+      const renderStoryCostChip = (s, budget) => {
+        if (!budget || typeof budget.perStory !== 'number') return '';
+        const cost = typeof s.totalCostUsd === 'number' ? s.totalCostUsd : 0;
+        if (cost <= 0) return '';
+        const pct = Math.min(100, (cost / budget.perStory) * 100);
+        const over = cost > budget.perStory;
+        const warn = !over && cost > budget.perStory * 0.8;
+        const cls = over ? 'over' : warn ? 'warn' : '';
+        return '<div class="story-cost-chip ' + (over ? 'over' : '') + '">'
+          + fmtCost(cost) + ' / ' + fmtCost(budget.perStory) + '</div>'
+          + '<div class="story-cost-bar"><div class="story-cost-bar-fill ' + cls + '" style="width:' + pct.toFixed(1) + '%"></div></div>';
+      };
+
+      const renderStory = (s, budget, runStatus, activeStoryId) => {
         let badge;
+        const isActive = runStatus === 'in_progress' && s.storyId === activeStoryId;
         if (s.passed === true) {
           badge = '<span class="badge pass">✓ Pass' + (s.attempts > 1 ? ' (' + s.attempts + ' attempts)' : '') + '</span>';
         } else if (s.passed === false) {
           badge = '<span class="badge fail">✗ Fail</span>';
-        } else if (s.phases.length > 0) {
+        } else if (isActive) {
           badge = '<span class="badge pending">… In Progress</span>';
+        } else if (s.phases.length > 0) {
+          // Story has prior phase events but it isn't the task currently being
+          // built (run is in-flight on a different story, or it's halted).
+          // Don't claim "In Progress" — the halt banner / current-task card
+          // shows the true active work.
+          badge = '<span class="badge idle">Paused</span>';
         } else {
           badge = '<span class="badge idle">Queued</span>';
         }
+        const state = storyState(s);
         const epic = s.epic ? '<div class="story-epic">' + escape(s.epic) + '</div>' : '';
+        const costChip = renderStoryCostChip(s, budget);
         const details = renderStoryDetails(s);
         const results = renderStoryResults(s);
-        return '<div class="story-card" id="story-' + escape(s.storyId) + '">'
+        return '<div class="story-card" id="story-' + escape(s.storyId) + '" data-story-card="' + escape(s.storyId) + '">'
           + '<div class="story-header ' + state + '">'
           + '<div><div class="story-id">' + escape(s.storyId) + '</div>'
           + '<div class="story-title">' + escape(s.title) + '</div>'
           + epic
+          + costChip
           + '</div>' + badge + '</div>'
           + details + results
           + '</div>';
       };
 
+      // ── Current task ────────────────────────────────────────
       const renderCurrentTask = (ct) => {
         if (!ct) return '';
-        const kindCls = ct.kind === 'janitor' ? 'janitor' : '';
-        const kindLabel = ct.kind === 'janitor' ? 'Janitor in progress' : 'Story in progress';
+        const kindCls = ct.kind === 'janitor' ? 'janitor' : ct.kind === 'pr-review' ? 'pr-review' : '';
+        const kindLabel = ct.kind === 'janitor'
+          ? 'Janitor in progress'
+          : ct.kind === 'pr-review'
+            ? 'PR review in progress'
+            : 'Story in progress';
         const phaseBits = [];
         if (ct.phase) {
           const phaseTxt = ct.phase + (ct.attempt && ct.attempt > 1 ? ' · attempt ' + ct.attempt : '');
@@ -1939,14 +2312,19 @@ const INDEX_HTML = `<!DOCTYPE html>
         }
         if (ct.phaseDurationMs != null) {
           const running = ct.isPhaseActive ? 'running ' : 'last phase ';
-          phaseBits.push('<span>' + running + 'for <strong>' + escape(fmtDur(ct.phaseDurationMs)) + '</strong></span>');
+          // Live-ticking duration for the active phase. data-live-base holds the
+          // ms accumulated up to phaseStartedAt; data-live-start is when we
+          // saw it. Client side ticker adds (now - start) every second so the
+          // user sees the timer increment without waiting for the next poll.
+          const startMs = ct.phaseStartedAt ? Date.parse(ct.phaseStartedAt) : null;
+          const live = ct.isPhaseActive && startMs && !isNaN(startMs)
+            ? '<strong class="js-live-duration" data-live-mode="from-start" data-live-start="' + startMs + '">'
+              + escape(fmtDur(Date.now() - startMs)) + '</strong>'
+            : '<strong>' + escape(fmtDur(ct.phaseDurationMs)) + '</strong>';
+          phaseBits.push('<span>' + running + 'for ' + live + '</span>');
         }
-        if (ct.iteration != null) {
-          phaseBits.push('<span>iteration <strong>' + ct.iteration + '</strong></span>');
-        }
-        if (ct.priority != null) {
-          phaseBits.push('<span>priority <strong>' + ct.priority + '</strong></span>');
-        }
+        if (ct.iteration != null) phaseBits.push('<span>iteration <strong>' + ct.iteration + '</strong></span>');
+        if (ct.priority != null) phaseBits.push('<span>priority <strong>' + ct.priority + '</strong></span>');
 
         const verdictBadge = ct.verdict
           ? '<span class="current-task-verdict ' + escape(ct.verdict) + '">' + escape(ct.verdict.replace('_', ' ')) + '</span>'
@@ -1990,27 +2368,13 @@ const INDEX_HTML = `<!DOCTYPE html>
             + '</div>'
           : '';
 
-        const guidance = ct.guidance
-          ? '<div class="current-task-section">'
-            + '<div class="current-task-section-label">Guidance</div>'
-            + '<div class="current-task-section-body">' + escape(ct.guidance) + '</div>'
-            + '</div>'
-          : '';
-
-        const reasoning = ct.reasoning
-          ? '<div class="current-task-section">'
-            + '<div class="current-task-section-label">Reasoning</div>'
-            + '<div class="current-task-section-body">' + escape(ct.reasoning) + '</div>'
-            + '</div>'
-          : '';
-
-        const notes = ct.notes
-          ? '<div class="current-task-section">'
-            + '<div class="current-task-section-label">Notes</div>'
-            + '<div class="current-task-section-body">' + escape(ct.notes) + '</div>'
-            + '</div>'
-          : '';
-
+        const section = (label, body) => '<div class="current-task-section">'
+          + '<div class="current-task-section-label">' + label + '</div>'
+          + '<div class="current-task-section-body">' + escape(body) + '</div>'
+          + '</div>';
+        const guidance = ct.guidance ? section('Guidance', ct.guidance) : '';
+        const reasoning = ct.reasoning ? section('Reasoning', ct.reasoning) : '';
+        const notes = ct.notes ? section('Notes', ct.notes) : '';
         const verifierSummary = ct.verifierSummary
           ? '<div class="current-task-section">'
             + '<div class="current-task-section-label">Verifier Summary'
@@ -2029,64 +2393,57 @@ const INDEX_HTML = `<!DOCTYPE html>
             + '</div>'
           : '';
 
-        return '<div class="current-task ' + kindCls + '" href="#story-' + escape(ct.storyId) + '">'
+        const isPrReview = ct.kind === 'pr-review';
+        const headerTitle = isPrReview && ct.epicLabel ? ct.epicLabel : ct.title;
+        const headerHref = isPrReview && ct.epic ? ('#epic-' + escape(ct.epic)) : ('#story-' + escape(ct.storyId));
+        const prLink = isPrReview && ct.prNum
+          ? (ct.prUrl
+              ? '<a href="' + escape(ct.prUrl) + '" target="_blank" rel="noopener">PR #' + ct.prNum + ' ↗</a>'
+              : 'PR #' + ct.prNum)
+          : '';
+        const headerSubline = isPrReview
+          ? [
+              ct.epic ? 'Epic · ' + escape(ct.epic) : null,
+              prLink || null,
+              'addressing review on ' + escape(ct.storyId),
+            ].filter(Boolean).join(' · ')
+          : escape(ct.storyId);
+        return '<div class="current-task ' + kindCls + '" data-current-task-id="' + escape(ct.storyId) + '">'
           + '<div class="current-task-spinner"></div>'
           + '<div class="current-task-body">'
           + '<div class="current-task-label">' + escape(kindLabel) + verdictBadge + '</div>'
-          + '<div class="current-task-title"><a href="#story-' + escape(ct.storyId) + '" style="color:inherit;text-decoration:none;">'
-          + escape(ct.title) + '</a></div>'
-          + '<div class="current-task-id">' + escape(ct.storyId) + '</div>'
+          + '<div class="current-task-title"><a href="' + headerHref + '" style="color:inherit;text-decoration:none;">'
+          + escape(headerTitle) + '</a></div>'
+          + '<div class="current-task-id">' + headerSubline + '</div>'
           + '<div class="current-task-meta">' + phaseBits.join('') + '</div>'
-          + description
-          + criteria
-          + sensors
-          + guidance
-          + reasoning
-          + notes
-          + verifierSummary
-          + halt
+          + description + criteria + sensors + guidance + reasoning + notes + verifierSummary + halt
           + '</div></div>';
       };
 
+      // ── Halt banner ─────────────────────────────────────────
       const findStory = (d, storyId) => {
-        if (!storyId || !d.stories) return null;
+        if (!storyId || !d || !d.stories) return null;
         return d.stories.find((s) => s.storyId === storyId) || null;
       };
 
+      const PAUSE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="10" y1="9" x2="10" y2="15"/><line x1="14" y1="9" x2="14" y2="15"/></svg>';
+
       const renderHaltBanner = (d) => {
-        if (!d.halt) return '';
-        // Different workflows emit different halt shapes. one-shot never halts.
-        // pr-on-checkpoint halts with PR+branch. Future workflows may halt for
-        // other reasons (manual_review, budget_exceeded, …) with no PR data,
-        // so every halt field is optional.
+        if (!d || !d.halt) return '';
         const reason = typeof d.halt.reason === 'string' ? d.halt.reason : 'halted';
         const label = HALT_LABEL[reason] || reason.replace(/_/g, ' ');
         const bits = [];
         if (d.halt.prNum) {
           if (d.halt.prUrl) {
-            bits.push('<a href="' + escape(d.halt.prUrl) + '" target="_blank" rel="noopener">'
-              + 'PR #' + d.halt.prNum + ' ↗</a>');
+            bits.push('<a href="' + escape(d.halt.prUrl) + '" target="_blank" rel="noopener">PR #' + d.halt.prNum + ' ↗</a>');
           } else {
             bits.push('<span>PR <strong>#' + d.halt.prNum + '</strong></span>');
           }
         }
-        if (d.halt.branch) {
-          bits.push('<span>branch <strong>' + escape(d.halt.branch) + '</strong></span>');
-        }
-        if (d.halt.iteration != null) {
-          bits.push('<span>iteration <strong>' + d.halt.iteration + '</strong></span>');
-        }
-        if (d.halt.at) {
-          bits.push('<span>since <strong>' + escape(new Date(d.halt.at).toLocaleString()) + '</strong></span>');
-        }
-        const action = reason === 'awaiting_pr_review'
-          ? 'Once the PR is merged, re-run <code>marmite cook</code> to resume.'
-          : 'Resolve the halt condition, then re-run <code>marmite cook</code> to resume.';
+        if (d.halt.branch) bits.push('<span>branch <strong>' + escape(d.halt.branch) + '</strong></span>');
+        if (d.halt.at) bits.push('<span>since <strong>' + escape(new Date(d.halt.at).toLocaleString()) + '</strong></span>');
 
         const haltedStory = findStory(d, d.halt.haltedStoryId);
-        // PR-based halts review an entire epic's worth of stories, not just
-        // the last one worked on. When we can resolve the halted story's epic,
-        // surface the epic instead so the label matches the PR's scope.
         const haltedEpic = reason === 'awaiting_pr_review' && haltedStory && haltedStory.epic
           ? (d.epics || []).find((e) => e.slug === haltedStory.epic)
           : null;
@@ -2119,38 +2476,39 @@ const INDEX_HTML = `<!DOCTYPE html>
             + '<a class="halt-banner-next-link" href="#story-' + escape(nextUp.storyId) + '">'
             +   '<strong>' + escape(nextUp.storyId) + '</strong> · ' + escape(nextUp.title || nextUp.storyId)
             + '</a>'
-            + (nextUp.epic
-                ? '<span class="halt-banner-next-epic">' + escape(nextUp.epic) + '</span>'
-                : '')
+            + (nextUp.epic ? '<span class="halt-banner-next-epic">' + escape(nextUp.epic) + '</span>' : '')
             + '</div>'
           : '';
 
+        const actionText = reason === 'awaiting_pr_review'
+          ? 'Once the PR is merged, re-run'
+          : 'Resolve the halt condition, then re-run';
+
         return '<div class="halt-banner">'
-          + '<div class="halt-banner-icon">⏸️</div>'
+          + '<div class="halt-banner-icon">' + PAUSE_SVG + '</div>'
           + '<div class="halt-banner-body">'
           + '<div class="halt-banner-label">Run halted</div>'
           + '<div class="halt-banner-title">' + escape(label) + '</div>'
           + '<div class="halt-banner-meta">' + bits.join('') + '</div>'
-          + haltedRow
-          + nextRow
-          + '<div style="margin-top:8px; font-size:12px; color:#4b5563;">' + action + '</div>'
+          + haltedRow + nextRow
+          + '<div class="halt-banner-action">'
+          +   actionText + ' <code>marmite cook</code>'
+          +   ' <button class="copy-btn" id="copyResumeBtn" type="button">Copy</button>'
+          + '</div>'
           + '</div></div>';
       };
 
+      // ── Config panel ────────────────────────────────────────
       const renderConfigPanel = (d) => {
-        if (!d.config) return '';
+        if (!d || !d.config) return '';
         const c = d.config;
         const rows = [];
-        if (c.workflow) {
-          rows.push(['Workflow', '<span class="config-workflow-badge">' + escape(c.workflow) + '</span>']);
-        }
+        if (c.workflow) rows.push(['Workflow', '<span class="config-workflow-badge">' + escape(c.workflow) + '</span>']);
         if (c.baseBranch) rows.push(['Base branch', '<code>' + escape(c.baseBranch) + '</code>']);
         if (d.githubSlug) {
-          rows.push([
-            'Repo',
+          rows.push(['Repo',
             '<a href="https://github.com/' + escape(d.githubSlug) + '" target="_blank" rel="noopener">'
-            + escape(d.githubSlug) + ' ↗</a>',
-          ]);
+            + escape(d.githubSlug) + ' ↗</a>']);
         }
         if (c.maxIterations != null) rows.push(['Max iterations', String(c.maxIterations)]);
         const modelBits = [];
@@ -2164,10 +2522,8 @@ const INDEX_HTML = `<!DOCTYPE html>
         if (c.budget.total != null) budgetBits.push('total: <strong>$' + c.budget.total.toFixed(2) + '</strong>');
         if (budgetBits.length) rows.push(['Budget', budgetBits.join('<br>')]);
         if (c.sensors && c.sensors.length) {
-          rows.push([
-            'Sensors',
-            c.sensors.map((s) => '<span class="config-tag">' + escape(s.name) + ' · ' + escape(s.type) + '</span>').join(''),
-          ]);
+          rows.push(['Sensors',
+            c.sensors.map((s) => '<span class="config-tag">' + escape(s.name) + ' · ' + escape(s.type) + '</span>').join('')]);
         }
         if (c.janitor) {
           const jBits = [];
@@ -2192,30 +2548,78 @@ const INDEX_HTML = `<!DOCTYPE html>
           + '</div>';
       };
 
+      // ── Summary cards ───────────────────────────────────────
+      const renderBudgetCard = (totalCostUsd, budget) => {
+        const totalBudget = budget && typeof budget.total === 'number' ? budget.total : null;
+        if (!totalBudget) {
+          return '<div class="summary-card"><h3>Total Cost</h3><div class="value">' + fmtCost(totalCostUsd) + '</div></div>';
+        }
+        const pct = Math.min(100, (totalCostUsd / totalBudget) * 100);
+        const over = totalCostUsd > totalBudget;
+        const warn = !over && totalCostUsd > totalBudget * 0.8;
+        const cls = over ? 'danger' : warn ? 'warning' : '';
+        const fillCls = over ? 'over' : warn ? 'warn' : '';
+        return '<div class="summary-card ' + cls + '">'
+          + '<h3>Cost / Budget</h3>'
+          + '<div class="value">' + fmtCost(totalCostUsd) + '</div>'
+          + '<div class="budget-bar"><div class="budget-fill ' + fillCls + '" style="width:' + pct.toFixed(1) + '%"></div>'
+          + '<div class="budget-label">' + pct.toFixed(0) + '% of ' + fmtCost(totalBudget) + '</div></div>'
+          + '</div>';
+      };
+
       const renderSummary = (d) => {
+        if (!d) return '';
+        const budget = d.config && d.config.budget;
+        const status = d.status || 'unknown';
+        // Duration ticks live for in-progress runs. For other states, render plain.
+        const startMs = d.startedAt ? Date.parse(d.startedAt) : null;
+        const durLive = status === 'in_progress' && d.durationMs != null && startMs && !isNaN(startMs)
+          ? '<span class="js-live-duration" data-live-mode="anchored" data-live-base="' + d.durationMs + '" data-live-anchor="' + Date.now() + '">'
+            + fmtDur(d.durationMs) + '</span>'
+          : fmtDur(d.durationMs);
         const cards = [
-          { cls: 'success', title: 'Stories Passed', value: d.storiesPassed + '/' + d.storiesTotal },
-          { cls: '',        title: 'Total Cost',    value: fmtCost(d.totalCostUsd) },
-          { cls: '',        title: 'Run Duration',  value: fmtDur(d.durationMs) },
-          { cls: STATUS_CLASS[d.status] || '', title: 'Status', value: STATUS_LABEL[d.status] || d.status },
+          '<div class="summary-card success"><h3>Stories Passed</h3><div class="value">' + d.storiesPassed + '/' + d.storiesTotal + '</div></div>',
+          renderBudgetCard(d.totalCostUsd, budget),
+          '<div class="summary-card"><h3>Run Duration</h3><div class="value">' + durLive + '</div></div>',
+          '<div class="summary-card ' + (STATUS_CLASS[status] || '') + '"><h3>Status</h3><div class="value">' + (STATUS_LABEL[status] || status) + '</div></div>',
         ];
-        return cards.map((c) => '<div class="summary-card ' + c.cls + '"><h3>' + c.title + '</h3><div class="value">' + c.value + '</div></div>').join('');
+        return cards.join('');
       };
 
-      const COLLAPSED_EPICS_KEY = 'marmite-dashboard-collapsed-epics';
-      const getCollapsedEpics = () => {
-        try { return new Set(JSON.parse(localStorage.getItem(COLLAPSED_EPICS_KEY) || '[]')); }
-        catch { return new Set(); }
-      };
-      const setCollapsedEpics = (set) => {
-        localStorage.setItem(COLLAPSED_EPICS_KEY, JSON.stringify([...set]));
+      // ── Cost sparkline ──────────────────────────────────────
+      const renderSparkline = (d) => {
+        if (!d || !Array.isArray(d.stories)) return '';
+        // Only stories that have actually been worked on; otherwise we get a
+        // forest of zeros that drowns the real data.
+        const data = d.stories.filter((s) => (s.totalCostUsd || 0) > 0);
+        if (data.length < 2) return '';
+        const max = data.reduce((a, s) => Math.max(a, s.totalCostUsd || 0), 0);
+        if (max === 0) return '';
+        const W = 600, H = 36;
+        const barW = W / data.length;
+        const bars = data.map((s, i) => {
+          const v = s.totalCostUsd || 0;
+          const h = (v / max) * H;
+          const x = i * barW;
+          const cls = s.passed === true ? 'pass' : s.passed === false ? 'fail' : 'pending';
+          const title = (s.storyId || '') + ' · ' + fmtCost(v) + (s.title ? ' — ' + s.title : '');
+          return '<a href="#story-' + escape(s.storyId) + '"><rect class="' + cls + '" x="' + x.toFixed(1) + '" y="' + (H - h).toFixed(1)
+            + '" width="' + Math.max(1, barW - 1).toFixed(1) + '" height="' + h.toFixed(1)
+            + '"><title>' + escape(title) + '</title></rect></a>';
+        }).join('');
+        return '<div class="sparkline-wrap">'
+          + '<div class="sparkline-label"><span>Cost per story</span><span class="max">max ' + fmtCost(max) + '</span></div>'
+          + '<svg class="sparkline" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' + bars + '</svg>'
+          + '</div>';
       };
 
-      const pipelineItem = (s) => {
+      // ── Pipeline (sidebar) ──────────────────────────────────
+      const pipelineItem = (s, runStatus, activeStoryId) => {
         let iconCls, iconChar;
+        const isActive = runStatus === 'in_progress' && s.storyId === activeStoryId;
         if (s.passed === true) { iconCls = 'pass'; iconChar = '✓'; }
         else if (s.passed === false) { iconCls = 'fail'; iconChar = '✗'; }
-        else if (s.phases.length > 0) { iconCls = 'active-run'; iconChar = '•'; }
+        else if (isActive) { iconCls = 'active-run'; iconChar = '•'; }
         else { iconCls = 'pending'; iconChar = '○'; }
         if (s.isJanitor && s.passed !== true && s.passed !== false) iconCls = 'janitor';
         const title = escape(s.title || s.storyId);
@@ -2228,10 +2632,10 @@ const INDEX_HTML = `<!DOCTYPE html>
       };
 
       const renderPipeline = (d) => {
-        if (!d.epics || !d.epics.length) {
-          return '<div style="padding: 0 20px; color: #999; font-size: 13px;">No stories yet.</div>';
+        if (!d || !d.epics || !d.epics.length) {
+          return '<div style="padding: 0 20px; color: var(--text-muted); font-size: 13px;">No stories yet.</div>';
         }
-        const collapsed = getCollapsedEpics();
+        const collapsed = ls.getSet('collapsed-epics');
         return d.epics.map((g) => {
           const isCollapsed = collapsed.has(g.slug);
           const countCls = g.storiesPassed === g.storiesTotal && g.storiesTotal > 0 ? 'complete' : '';
@@ -2241,14 +2645,17 @@ const INDEX_HTML = `<!DOCTYPE html>
             + '<span class="epic-label" title="' + escape(g.label) + '">' + escape(g.label) + '</span>'
             + '<span class="epic-count ' + countCls + '">' + g.storiesPassed + '/' + g.storiesTotal + '</span>'
             + '</div>'
-            + '<div class="epic-items">' + g.stories.map(pipelineItem).join('') + '</div>'
+            + '<div class="epic-items">' + g.stories.map((s) => pipelineItem(s, d.status, d.currentTask && d.currentTask.storyId)).join('') + '</div>'
             + '</div>';
         }).join('');
       };
 
       const renderEpicMain = (d) => {
-        if (!d.epics || !d.epics.length) return '';
-        const collapsed = getCollapsedEpics();
+        if (!d || !d.epics || !d.epics.length) {
+          return '<div class="empty">No stories yet — waiting for events.</div>';
+        }
+        const budget = d.config && d.config.budget;
+        const collapsed = ls.getSet('collapsed-epics');
         return d.epics.map((g) => {
           const isCollapsed = collapsed.has(g.slug);
           const pct = g.storiesTotal === 0 ? 0 : (g.storiesPassed / g.storiesTotal) * 100;
@@ -2260,14 +2667,17 @@ const INDEX_HTML = `<!DOCTYPE html>
             + '<span class="epic-main-meta">' + g.storiesPassed + ' / ' + g.storiesTotal + ' passed</span>'
             + '<span class="epic-caret">▾</span></div>'
             + '</div>'
-            + '<div class="epic-main-grid"><div class="stories-grid">' + g.stories.map(renderStory).join('') + '</div></div>'
+            + '<div class="epic-main-grid"><div class="stories-grid">' + g.stories.map((s) => renderStory(s, budget, d.status, d.currentTask && d.currentTask.storyId)).join('') + '</div></div>'
             + '</div>';
         }).join('');
       };
 
       const renderPatterns = (patterns) => {
         if (!patterns || !patterns.length) return '';
-        return '<div class="section-title">Patterns learned</div><div class="patterns">'
+        const isOpen = ls.get('patterns-open') === '1';
+        return '<details class="patterns-details" id="patternsDetails"' + (isOpen ? ' open' : '') + '>'
+          + '<summary>Patterns learned (' + patterns.length + ')</summary>'
+          + '<div class="patterns-list">'
           + patterns.map((p) =>
               '<div class="pattern">'
               + '<span class="pattern-name">' + escape(p.name) + '</span>'
@@ -2275,128 +2685,265 @@ const INDEX_HTML = `<!DOCTYPE html>
               + '<div class="pattern-desc">' + escape(p.description) + '</div>'
               + '</div>'
             ).join('')
-          + '</div>';
+          + '</div></details>';
       };
 
-      // ── Sidebar toggle ─────────────────────────────────────────
+      // ── Theme ───────────────────────────────────────────────
+      // Binary light/dark, no auto. The CSS still picks the OS preference on
+      // first paint via prefers-color-scheme; once the user toggles, the
+      // explicit data-theme attribute wins.
+      const applyTheme = (mode) => {
+        document.documentElement.setAttribute('data-theme', mode);
+        ls.set('theme', mode);
+        const btn = document.getElementById('themeToggle');
+        if (btn) btn.textContent = mode === 'dark' ? '☀' : '☾';
+        if (btn) btn.title = mode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+      };
+
+      // ── Favicon + title ─────────────────────────────────────
+      const setFavicon = (status) => {
+        const c = STATUS_FAVICON_COLOR[status] || STATUS_FAVICON_COLOR.unknown;
+        const svg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='" + c + "'/%3E%3C/svg%3E";
+        const el = document.getElementById('favicon');
+        if (el) el.href = svg;
+      };
+      const setTitle = (project, status) => {
+        const prefix = STATUS_TITLE_PREFIX[status] || '';
+        document.title = prefix + (project || 'Marmite') + ' Dashboard';
+      };
+
+      // ── Notifications ──────────────────────────────────────
+      let notifiedStatus = null;
+      const maybeNotify = (status, project) => {
+        if (!('Notification' in window)) return;
+        if (notifiedStatus === null) { notifiedStatus = status; return; }
+        if (status === notifiedStatus) return;
+        notifiedStatus = status;
+        // Only notify on terminal/halt transitions, not when entering in_progress.
+        if (status !== 'completed' && status !== 'failed' && status !== 'halted') return;
+        if (Notification.permission === 'granted') {
+          try {
+            new Notification('Marmite — ' + (STATUS_LABEL[status] || status), {
+              body: project || 'Run state changed',
+              tag: 'marmite-dashboard',
+            });
+          } catch {}
+        } else if (Notification.permission !== 'denied') {
+          Notification.requestPermission().catch(() => {});
+        }
+      };
+
+      // ── Top-level render ────────────────────────────────────
+      let lastData = null;
+      let lastStatus = null;
+
+      const safeRender = (d) => {
+        if (!d) return;
+        const status = (typeof d.status === 'string') ? d.status : 'unknown';
+        const project = typeof d.project === 'string' ? d.project : null;
+
+        if (d.source && projectNs === 'default') {
+          setProjectNs(d.source);
+          // Re-prime filter/theme state once we know the namespace.
+          const storedTheme = ls.get('theme');
+          if (storedTheme) applyTheme(storedTheme);
+        }
+
+        // Header text — small, do it directly.
+        document.getElementById('title').textContent = project ? '🚀 ' + project : '🚀 Marmite Dashboard';
+        const live = status === 'in_progress' ? '<span class="live-dot"></span>' : '';
+        const workflowBit = d.config && d.config.workflow
+          ? ' · Workflow: <code>' + escape(d.config.workflow) + '</code>'
+          : '';
+        document.getElementById('meta').innerHTML = live
+          + 'Run ID: <code>' + escape(d.runId || 'n/a') + '</code>'
+          + workflowBit;
+
+        renderInto('haltBanner',  d.halt, renderHaltBanner.bind(null, d));
+        renderInto('currentTask', d.currentTask, renderCurrentTask);
+        renderInto('summary',     { d: { status, total: d.totalCostUsd, passed: d.storiesPassed, of: d.storiesTotal, dur: d.durationMs, started: d.startedAt, budget: d.config && d.config.budget } }, () => renderSummary(d));
+        renderInto('sparkline',   d.stories ? d.stories.map((s) => [s.storyId, s.totalCostUsd, s.passed]) : null, () => renderSparkline(d));
+        renderInto('configPanel', { config: d.config, github: d.githubSlug, src: d.configSource }, () => renderConfigPanel(d));
+        renderInto('content',     d.epics, () => renderEpicMain(d));
+        renderInto('patternsWrap', d.patterns, () => renderPatterns(d.patterns));
+        renderInto('pipeline',     { epics: d.epics, collapsed: [...ls.getSet('collapsed-epics')] }, () => renderPipeline(d));
+
+        const subtitleEl = document.getElementById('sidebarSubtitle');
+        if (subtitleEl) {
+          const passed = d.storiesPassed || 0;
+          const total = d.storiesTotal || 0;
+          subtitleEl.textContent = passed + ' / ' + total + ' passed' + (project ? ' · ' + project : '');
+        }
+        const started = d.startedAt ? new Date(d.startedAt).toLocaleString() : 'unknown';
+        document.getElementById('footer').innerHTML =
+          'Source: ' + escape(d.source || 'n/a')
+          + ' · Started ' + escape(started)
+          + ' · Status: ' + (STATUS_LABEL[status] || status);
+
+        // Jump-to-current button enables only when there's something to jump to.
+        const jumpBtn = document.getElementById('jumpBtn');
+        if (jumpBtn) jumpBtn.disabled = !d.currentTask;
+
+        setFavicon(status);
+        setTitle(project, status);
+        maybeNotify(status, project);
+
+        lastStatus = status;
+      };
+
+      // ── Click handlers ─────────────────────────────────────
+      // Sidebar/theme toggles
       const sidebar = document.getElementById('sidebar');
-      const toggle = document.getElementById('sidebarToggle');
-      const COLLAPSED_KEY = 'marmite-dashboard-sidebar-collapsed';
-      if (localStorage.getItem(COLLAPSED_KEY) === '1') {
+      const sbToggle = document.getElementById('sidebarToggle');
+      if (ls.get('sidebar-collapsed') === '1') {
         sidebar.classList.add('collapsed');
-        toggle.textContent = '›';
+        sbToggle.textContent = '›';
       }
-      toggle.addEventListener('click', () => {
+      sbToggle.addEventListener('click', () => {
         const collapsed = sidebar.classList.toggle('collapsed');
-        toggle.textContent = collapsed ? '›' : '‹';
-        localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0');
+        sbToggle.textContent = collapsed ? '›' : '‹';
+        ls.set('sidebar-collapsed', collapsed ? '1' : '0');
       });
 
-      // Story details + results toggle — persisted so the 3s re-render
-      // doesn't snap an expanded section shut.
+      const themeBtn = document.getElementById('themeToggle');
+      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const initialTheme = ls.get('theme') || (prefersDark ? 'dark' : 'light');
+      applyTheme(initialTheme);
+      themeBtn.addEventListener('click', () => {
+        const cur = document.documentElement.getAttribute('data-theme') || 'light';
+        applyTheme(cur === 'dark' ? 'light' : 'dark');
+      });
+
+      // Mobile sidebar
+      const mobileToggle = document.getElementById('mobileToggle');
+      mobileToggle.addEventListener('click', () => {
+        sidebar.classList.toggle('mobile-open');
+      });
+      sidebar.addEventListener('click', (e) => {
+        if (e.target.closest('[data-story]')) {
+          sidebar.classList.remove('mobile-open');
+        }
+      });
+
+      // Jump-to-current
+      document.getElementById('jumpBtn').addEventListener('click', () => {
+        const ct = lastData && lastData.currentTask;
+        if (!ct) return;
+        const card = document.getElementById('story-' + ct.storyId);
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+
+      // Details toggle persistence
       document.addEventListener('toggle', (ev) => {
         const el = ev.target;
         if (!(el instanceof HTMLDetailsElement)) return;
         const detailsId = el.getAttribute('data-story-details');
         if (detailsId) {
-          const open = getOpenDetails();
+          const open = ls.getSet('open-details');
           if (el.open) open.add(detailsId); else open.delete(detailsId);
-          setOpenDetails(open);
+          ls.setSet('open-details', open);
           return;
         }
         const resultsId = el.getAttribute('data-results-details');
         if (resultsId) {
-          const open = getOpenResults();
+          const open = ls.getSet('open-results');
           if (el.open) open.add(resultsId); else open.delete(resultsId);
-          setOpenResults(open);
+          ls.setSet('open-results', open);
+          return;
+        }
+        if (el.id === 'patternsDetails') {
+          ls.set('patterns-open', el.open ? '1' : '0');
         }
       }, true);
 
-      // Epic toggle — collapses sidebar group AND main section in lockstep.
+      // Epic toggle
       document.addEventListener('click', (ev) => {
         const header = ev.target.closest && ev.target.closest('[data-toggle-epic]');
-        if (!header) return;
-        const slug = header.getAttribute('data-toggle-epic');
-        const collapsedSet = getCollapsedEpics();
-        if (collapsedSet.has(slug)) collapsedSet.delete(slug);
-        else collapsedSet.add(slug);
-        setCollapsedEpics(collapsedSet);
-        document.querySelectorAll('[data-epic="' + slug + '"], [data-epic-main="' + slug + '"]').forEach((el) => {
-          el.classList.toggle('collapsed', collapsedSet.has(slug));
-        });
+        if (header) {
+          const slug = header.getAttribute('data-toggle-epic');
+          const collapsedSet = ls.getSet('collapsed-epics');
+          if (collapsedSet.has(slug)) collapsedSet.delete(slug); else collapsedSet.add(slug);
+          ls.setSet('collapsed-epics', collapsedSet);
+          document.querySelectorAll('[data-epic="' + CSS.escape(slug) + '"], [data-epic-main="' + CSS.escape(slug) + '"]').forEach((el) => {
+            el.classList.toggle('collapsed', collapsedSet.has(slug));
+          });
+          return;
+        }
+        const copyBtn = ev.target.closest && ev.target.closest('#copyResumeBtn');
+        if (copyBtn) {
+          navigator.clipboard.writeText('marmite cook').then(() => {
+            copyBtn.classList.add('done');
+            const old = copyBtn.textContent;
+            copyBtn.textContent = '✓ Copied';
+            setTimeout(() => {
+              copyBtn.classList.remove('done');
+              copyBtn.textContent = old;
+            }, 1500);
+          }).catch(() => {
+            copyBtn.textContent = '✗ Copy failed';
+          });
+          return;
+        }
       });
 
-      // Defense in depth: a single render error shouldn't take down the
-      // whole page. Per-section try/catch keeps other panels visible so the
-      // user can still see status when one workflow-specific field is off.
-      const safe = (label, fn) => {
-        try { return fn(); }
-        catch (e) {
-          console.error('[marmite-dashboard] ' + label + ':', e);
-          return '<div style="background:#fee2e2;color:#991b1b;padding:10px 14px;border-radius:8px;font-size:12px;margin:6px 0;">'
-            + 'Failed to render ' + escape(label) + ': ' + escape((e && e.message) || String(e))
-            + '</div>';
-        }
-      };
+      // ── Live ticker ────────────────────────────────────────
+      // Updates duration spans every second so the user sees the clock
+      // increment without waiting for the next poll. Two modes:
+      //   - from-start: just (now - data-live-start)
+      //   - anchored:   base + (now - data-live-anchor) — for cumulative
+      //                 durations where base is the server-computed total at
+      //                 a known anchor timestamp.
+      setInterval(() => {
+        document.querySelectorAll('.js-live-duration').forEach((el) => {
+          const mode = el.getAttribute('data-live-mode');
+          if (mode === 'from-start') {
+            const start = parseInt(el.getAttribute('data-live-start') || '0', 10);
+            if (!start) return;
+            el.textContent = fmtDur(Date.now() - start);
+          } else if (mode === 'anchored') {
+            const base = parseInt(el.getAttribute('data-live-base') || '0', 10);
+            const anchor = parseInt(el.getAttribute('data-live-anchor') || '0', 10);
+            if (!anchor) return;
+            el.textContent = fmtDur(base + (Date.now() - anchor));
+          }
+        });
+      }, 1000);
 
-      const renderInto = (id, html) => {
-        const el = document.getElementById(id);
-        if (el) el.innerHTML = html;
+      // ── Adaptive polling ───────────────────────────────────
+      // 3s when in-progress, 15s otherwise, paused when the tab is hidden.
+      let pollTimer = null;
+      const pollInterval = () => {
+        if (document.hidden) return null;
+        return (lastStatus === 'in_progress') ? 3000 : 15000;
       };
-
-      const safeRender = (d) => {
-        const status = (d && typeof d.status === 'string') ? d.status : 'unknown';
-        const live = status === 'in_progress' ? '<span class="live-dot"></span>' : '';
-        const project = d && typeof d.project === 'string' ? d.project : null;
-        document.getElementById('title').textContent = '🚀 ' + (project || 'Marmite Dashboard');
-        const workflowBit = d && d.config && d.config.workflow
-          ? ' · Workflow: <code>' + escape(d.config.workflow) + '</code>'
-          : '';
-        document.getElementById('meta').innerHTML = live
-          + 'Run ID: <code>' + escape((d && d.runId) || 'n/a') + '</code>'
-          + workflowBit;
-        renderInto('haltBanner',  safe('halt banner',  () => renderHaltBanner(d)));
-        renderInto('currentTask', safe('current task', () => renderCurrentTask(d && d.currentTask)));
-        renderInto('summary',     safe('summary',      () => renderSummary(d)));
-        renderInto('configPanel', safe('config panel', () => renderConfigPanel(d)));
-        renderInto('content', safe('stories', () =>
-          (d && Array.isArray(d.stories) && d.stories.length)
-            ? renderEpicMain(d)
-            : '<div class="empty">No stories yet — waiting for events.</div>'
-        ));
-        renderInto('patternsWrap', safe('patterns', () => renderPatterns(d && d.patterns)));
-        renderInto('pipeline',     safe('pipeline', () => renderPipeline(d)));
-        const subtitleEl = document.getElementById('sidebarSubtitle');
-        if (subtitleEl) {
-          const passed = (d && d.storiesPassed) || 0;
-          const total = (d && d.storiesTotal) || 0;
-          subtitleEl.textContent = passed + ' / ' + total + ' passed' + (project ? ' · ' + project : '');
-        }
-        const started = d && d.startedAt ? new Date(d.startedAt).toLocaleString() : 'unknown';
-        document.getElementById('footer').innerHTML =
-          'Source: ' + escape((d && d.source) || 'n/a')
-          + ' · Started ' + escape(started)
-          + ' · Status: ' + (STATUS_LABEL[status] || status);
+      const schedule = () => {
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        const ivl = pollInterval();
+        if (ivl == null) return;
+        pollTimer = setTimeout(tick, ivl);
       };
-
-      let timer = null;
-      const tick = async () => {
+      async function tick() {
         try {
           const r = await fetch('/api/dashboard', { cache: 'no-store' });
           if (!r.ok) throw new Error('HTTP ' + r.status);
           const data = await r.json();
-          try { safeRender(data); }
-          catch (e) {
-            console.error('[marmite-dashboard] fatal render:', e);
-            document.getElementById('meta').innerHTML =
-              '<span style="color:#ef4444">Render error: ' + escape((e && e.message) || String(e)) + '</span>';
-          }
+          lastData = data;
+          safeRender(data);
         } catch (e) {
-          document.getElementById('meta').innerHTML = '<span style="color:#ef4444">Error: ' + escape(e.message) + '</span>';
+          document.getElementById('meta').innerHTML =
+            '<span style="color:var(--danger)">Error: ' + escape((e && e.message) || String(e)) + '</span>';
+        } finally {
+          schedule();
         }
-      };
+      }
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        } else {
+          tick();
+        }
+      });
       tick();
-      timer = setInterval(tick, 3000);
     </script>
 </body>
 </html>`;
