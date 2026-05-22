@@ -50,6 +50,11 @@ function baseOptions(config: HarnessConfig, model: string, abort: AbortControlle
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
     abortController: abort,
+    // Disable all MCP servers — the harness doesn't use any, and loading
+    // dozens of unauthenticated ones from user/global config bloats the
+    // tool list and cache_create cost on every agent spawn.
+    mcpServers: {},
+    strictMcpConfig: true,
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,

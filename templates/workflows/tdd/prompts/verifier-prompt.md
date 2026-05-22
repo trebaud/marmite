@@ -19,9 +19,36 @@ If the file is absent or empty, proceed normally — this is the common case.
    - Find the `test: [Story ID]` commit and the `feat: [Story ID]` (or `chore: [Story ID]`) commit.
    - The `test:` commit MUST predate the `feat:` commit. If a `feat:` commit exists without a preceding `test:` commit and the progress entry's `testsAdded` field does NOT justify `"no tests: …"`, that's a discipline violation — set `verdict: "fail_retry"` and ask the builder to extract failing tests from the implementation and recommit in the right order.
    - If `testsAdded` justifies `"no tests: <reason>"`, evaluate the reason critically. "Doc-only change", "config-only change with no behavioral effect" are acceptable. "Hard to test", "trivial", "I'll add tests later" are NOT — fail with `fail_retry` and demand tests.
-4. **Verify the task** — see "Choosing the verdict" below. For story tasks: check each acceptance criterion against the implementation, and confirm the new tests in `testsAdded` actually cover the acceptance criteria. For janitor tasks: re-run the triggering sensor and the test suite.
+4. **Verify the task** — see "Choosing the verdict" below. For story tasks: check each acceptance criterion against the implementation, and confirm the new tests in `testsAdded` actually cover the acceptance criteria. For janitor tasks: re-run the triggering sensor and the test suite. **Scope commands to changed files** (see "Running checks efficiently" below) — the builder already ran the full suite, your job is to confirm the change.
 5. **Update `.marmite/current-task.json`** — merge the verdict fields into the existing file (preserve all existing fields, add the ones below).
 6. **STOP.** Do not edit `.marmite/prd.json` or `.marmite/progress.json`. Do not create commits.
+
+## Running checks efficiently
+
+The builder has already run the full test/typecheck/lint suite on its commits. Your job is to verify the change, not to re-validate the whole repo. Scope every command to the files that changed:
+
+1. **Find the changed files** from this iteration's commits:
+   ```
+   git diff --name-only HEAD~5..HEAD   # or scope to the builder's commits
+   ```
+
+2. **Run tests scoped to those paths**, not the whole suite. Most test runners accept file/dir arguments:
+   - vitest / jest: `pnpm test path/to/file.test.ts path/to/dir/`
+   - bun: `bun test path/to/file.test.ts`
+   - go: `go test ./path/to/pkg/...`
+   - The new `test:` commit's tests MUST be in your scoped run — they're the test-first proof. Re-run them explicitly.
+
+3. **Run lint only on changed files**, not `pnpm lint` (full repo):
+   ```
+   pnpm lint -- <changed-files>     # or: eslint <changed-files>
+   ```
+   The full-repo lint is noisy with pre-existing warnings unrelated to the change.
+
+4. **Typecheck** — most TS projects don't support file-scoped typecheck. If `tsc --noEmit` or `tsgo` is fast (<30s), run it; otherwise trust the builder's report unless you have a concrete reason to doubt it.
+
+5. **Only fall back to the full test/lint suite** if you have a specific reason to suspect cross-cutting breakage (e.g. a change to a widely-imported module). State that reason in your verdict `summary`.
+
+If a test command needs Node version setup (e.g. `nvm use`), chain it once: `nvm use --silent && pnpm test <paths>`. Do not retry it on a separate Bash call.
 
 End your response with:
 ```

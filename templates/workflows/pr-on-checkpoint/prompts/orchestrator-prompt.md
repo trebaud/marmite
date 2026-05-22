@@ -34,7 +34,6 @@ This phase runs whenever an open PR for the current branch may exist — either 
 ```bash
 branch=$(git rev-parse --abbrev-ref HEAD)
 baseBranch=$(jq -r '.baseBranch // empty' marmite.json)
-prAuthor=$(gh api user -q .login 2>/dev/null)   # the marmite agent's gh identity
 ```
 
 If the file has `halt.kind === "awaiting_pr_review"`, take `prNum`/`branch`/`baseBranch` from the halt where set (override the local-branch default with `halt.branch`).
@@ -91,7 +90,7 @@ gh api graphql -f query='
   }' -F owner="$OWNER" -F repo="$REPO" -F pr=<prNum>
 ```
 
-Treat a thread as **unaddressed** when `isResolved == false` AND it contains at least one comment whose `author.login != prAuthor`. (Outdated threads still count — the reviewer must mark them resolved.) Capture `{path, line, body, url}` of the latest non-author comment in each unresolved thread.
+Treat a thread as **unaddressed** when `isResolved == false`, regardless of who authored the comments — self-review by the PR author counts. (Outdated threads still count — the reviewer must mark them resolved.) Capture `{path, line, body, url}` of the latest comment in each unresolved thread.
 
 **Signal 2 — top-level (non-inline) comments newer than HEAD**:
 
@@ -100,7 +99,7 @@ headTs=$(git log -1 --format='%cI' HEAD)   # ISO-8601 of HEAD's commit time
 gh pr view <prNum> --json comments,reviews
 ```
 
-From `comments[]` keep entries where `author.login != prAuthor` AND `createdAt > headTs`. From `reviews[]` keep entries where `author.login != prAuthor` AND `submittedAt > headTs` AND `body` is non-empty (an empty-body APPROVED/COMMENTED carries no actionable feedback). Capture `{author, body, url, createdAt}`.
+From `comments[]` keep entries where `createdAt > headTs`. From `reviews[]` keep entries where `submittedAt > headTs` AND `body` is non-empty (an empty-body APPROVED/COMMENTED carries no actionable feedback). Self-review by the PR author counts — the `> headTs` check is the loop guard, since the builder's push moves HEAD forward and ages out anything already addressed. Capture `{author, body, url, createdAt}`.
 
 **Decision:**
 

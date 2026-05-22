@@ -14,9 +14,36 @@ If the file is absent or empty, proceed normally — this is the common case.
 
 1. **Run `pwd`** to get your working directory, then read `.marmite/current-task.json` using the full absolute path — contains the assigned task ID, title, acceptance criteria, and a `kind` field (`"story"` or `"janitor"`).
 2. **Read `.marmite/progress.json`** — find the timeline entry matching the current task (most recent `StoryEntry` with the same `storyId`, or the `JanitorEntry` with the same `id`). Read its `summary` / `appliedFixes` / `deferredFindings` — understand what the implementer reported.
-3. **Verify the task** — see "Choosing the verdict" below for the criteria. Read code, run commands, inspect output — whatever it takes to be sure.
+3. **Verify the task** — see "Choosing the verdict" below for the criteria. Read code, run commands, inspect output — whatever it takes to be sure. **Scope your commands to changed files** (see "Running checks efficiently" below) — the builder already ran the full suite, your job is to confirm the change, not re-do their work.
 4. **Update `.marmite/current-task.json`** — merge the verdict fields into the existing file (preserve all existing fields, add the ones below).
 5. **STOP.** Do not edit `.marmite/prd.json` or `.marmite/progress.json`. Do not create commits.
+
+## Running checks efficiently
+
+The builder has already run the full test/typecheck/lint suite on its commits. Your job is to verify the change, not to re-validate the whole repo. Scope every command to the files that changed:
+
+1. **Find the changed files** from this iteration's commits:
+   ```
+   git diff --name-only HEAD~5..HEAD   # or scope to the builder's commits
+   ```
+
+2. **Run tests scoped to those paths**, not the whole suite. Most test runners accept file/dir arguments:
+   - vitest / jest: `pnpm test path/to/file.test.ts path/to/dir/`
+   - bun: `bun test path/to/file.test.ts`
+   - go: `go test ./path/to/pkg/...`
+   - Prefer running the test files corresponding to the changed source files (e.g. `Foo.ts` → `Foo.test.ts`) plus any tests under the same directory.
+
+3. **Run lint only on changed files**, not `pnpm lint` (full repo):
+   ```
+   pnpm lint -- <changed-files>     # or: eslint <changed-files>
+   ```
+   The full-repo lint is noisy with pre-existing warnings unrelated to the change.
+
+4. **Typecheck** — most TS projects don't support file-scoped typecheck. If `tsc --noEmit` or `tsgo` is fast (<30s), run it; otherwise trust the builder's report unless you have a concrete reason to doubt it.
+
+5. **Only fall back to the full test/lint suite** if you have a specific reason to suspect cross-cutting breakage (e.g. a change to a widely-imported module). State that reason in your verdict `summary`.
+
+If a test command needs Node version setup (e.g. `nvm use`), chain it once: `nvm use --silent && pnpm test <paths>`. Do not retry it on a separate Bash call.
 
 End your response with:
 ```
