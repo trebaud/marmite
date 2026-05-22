@@ -164,6 +164,24 @@ commitsAhead=$(git log --oneline origin/$baseBranch..HEAD 2>/dev/null | wc -l | 
 
 Create a new branch only when **both** hold: `currentBranch == baseBranch` AND `commitsAhead == 0`. Otherwise reuse the current branch (an epic is mid-flight).
 
+**Before creating, guard against an outstanding marmite PR.** Starting a new epic on top of base while a previous marmite PR is still open would race two branches against the same base. When `GH_OK=1`:
+
+```bash
+gh pr list --base "$baseBranch" --state open --search "head:marmite/" --json number,headRefName,url --limit 5
+```
+
+If the result is non-empty, **do not** create a new branch. Halt with:
+
+```json
+{
+  "halt": { "kind": "awaiting_pr_review", "prNum": <N>, "branch": "<headRefName>", "baseBranch": "<baseBranch>" }
+}
+```
+
+Set `guidance` to *"prior marmite PR #<N> (`<headRefName>`) is still open against `<baseBranch>`; merge or close it before starting the next epic."* and `reasoning` to note the guard fired. Stop.
+
+When `GH_OK=0`, fall back to a local check: `git for-each-ref --format='%(refname:short)' refs/heads/marmite/` and, for each branch other than `currentBranch`, `git log --format='%H' origin/$baseBranch..<branch>`. Any non-empty result means an unmerged marmite branch exists — halt with the same shape (omit `prNum`) and guidance asking the user to merge or delete the stale branch before re-running.
+
 When creating:
 
 1. Slug = lowercased story.epic, non-alphanumerics → `-`, trimmed, capped at 40 chars.

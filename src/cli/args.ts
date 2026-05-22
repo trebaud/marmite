@@ -33,6 +33,7 @@ Usage:
   marmite to-prd <PRD.md>            Convert a markdown PRD into .marmite/prd.json
   marmite doctor                     Preflight check — config, prompts, contract fences, sensors
   marmite stats [path]               Summarize a .marmite/events.jsonl run log
+  marmite dashboard [path]           Serve a live HTML dashboard for events.jsonl
   marmite emit-event <kind> [...]    Append a structured event to .marmite/events.jsonl
                                      (used by the orchestrator agent around sensor runs)
 

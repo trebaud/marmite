@@ -9,6 +9,7 @@ import { runToPrd } from "./commands/to-prd.ts";
 import { runEmitEvent } from "./commands/emit-event.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import { runStats } from "./commands/stats.ts";
+import { runDashboard } from "./commands/dashboard.ts";
 import { pickReporter } from "./logger.ts";
 
 // ── Subcommand dispatch ──
@@ -36,6 +37,10 @@ if (subcommand === "doctor") {
 if (subcommand === "stats") {
   await runStats(process.argv);
   process.exit(0);
+}
+if (subcommand === "dashboard") {
+  await runDashboard(process.argv);
+  // runDashboard starts a long-lived server; do not exit.
 }
 if (subcommand === "-h" || subcommand === "--help") usage();
 
