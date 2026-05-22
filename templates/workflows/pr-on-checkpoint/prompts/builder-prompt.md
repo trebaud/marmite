@@ -69,7 +69,7 @@ Only add patterns that are **general and reusable**, not story-specific details.
 
 ## Quality Requirements
 
-- ALL commits must pass the project's quality checks (typecheck, lint, test)
+- ALL commits must pass the project's quality checks (typecheck, test)
 - Do NOT commit broken code
 - Keep changes focused and minimal
 - Follow existing code patterns

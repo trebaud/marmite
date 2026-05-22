@@ -72,7 +72,7 @@ Ask **one question at a time**. Adapt based on previous answers. Always offer se
 
    Treat `wizard.md` as workflow-owned content: do not duplicate its instructions in this skill, and do not hardcode logic here for any specific workflow name. Sensors (below) are a separate, cross-workflow mechanism driven by `workflow.json.sensors[]`.
 
-   - **Sensors** (only if `workflow.json.sensors[]` is present and non-empty): the workflow ships one or more deterministic checks the orchestrator runs between stories. Each entry has a `type` (currently `debt` or `drift`); the concrete config files live under `$MARMITE_TEMPLATES/sensors/` and are copied into `./.marmite/sensors/` at install time. Sensors are always **scoped to files modified by the marmite run** (`git diff --name-only $baseBranch...HEAD`), never to the brownfield project's existing files.
+   - **Sensors** (only if `workflow.json.sensors[]` is present and non-empty): the workflow ships one or more deterministic checks the orchestrator runs between stories. Each entry has a `type` (currently `debt` or `drift`); the concrete config files live under `$MARMITE_TEMPLATES/sensors/` and are copied into `./.marmite/sensors/` at install time. Sensors are always **scoped to lines modified by the marmite run** — the orchestrator runs them on the changed-file set (`git diff --name-only $baseBranch...HEAD`) and then drops any finding whose line falls outside the per-file diff vs. the base branch, so warnings on untouched lines never reach the builder.
 
      Before asking, briefly explain the goal in 3–5 lines so the user can make an informed call. Cover:
 

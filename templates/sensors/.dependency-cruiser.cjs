@@ -3,7 +3,10 @@
 // Scoped at invocation time to files changed by the current marmite run. The
 // orchestrator passes the changed-file list as positional args, so the cruiser
 // only walks the import graphs rooted at modified entry points — not the whole
-// brownfield repo.
+// brownfield repo. The orchestrator further filters dependency-type violations
+// by line number against this run's per-file diff vs. the base branch (see the
+// workflow's orchestrator prompt, step 7a); module-level violations (cycles,
+// orphans) survive whenever the `from` file is in the changed-file set.
 //
 // Invoke (do not run on the whole tree):
 //   CHANGED=$(git diff --name-only "$baseBranch"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs')

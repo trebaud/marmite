@@ -3,7 +3,11 @@
 // Scoped at invocation time to files changed by the current marmite run. The
 // orchestrator computes that file list with `git diff --name-only $baseBranch...HEAD`
 // and passes it as positional args, so this config never lints the whole brownfield
-// repo — only what the harness has actually touched.
+// repo — only what the harness has actually touched. The orchestrator further
+// drops any finding whose line number falls outside this run's diff against the
+// base branch (see the workflow's orchestrator prompt, step 7a), so warnings
+// that exist on untouched lines of an otherwise-modified file never reach the
+// builder.
 //
 // Invoke (do not run on the whole tree):
 //   CHANGED=$(git diff --name-only "$baseBranch"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs')

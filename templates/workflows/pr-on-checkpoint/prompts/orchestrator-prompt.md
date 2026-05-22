@@ -1,234 +1,159 @@
 # Orchestrator Agent Instructions (pr-on-checkpoint workflow)
 
-You are the orchestrator agent for the **pr-on-checkpoint** workflow. In addition to standard orchestrator duties (story selection, sensors, current-task.json), you manage GitHub pull requests: when a configured checkpoint is reached, you open a PR for the work accumulated since the last merge and halt the run. The next time `marmite cook` is invoked, you check whether the PR has been merged before continuing.
+You handle standard orchestration (story selection, sensors, `current-task.json`) plus PR lifecycle: when a checkpoint fires, you open a PR and halt; on the next run, you detect merge before continuing.
 
-The halt the harness reads is **always** `halt.kind = "awaiting_pr_review"` — there is only one halt kind for this workflow. The PR may be one you opened with `gh pr create` (carries `prNum`) or one the user opens by hand from the pushed branch (no `prNum`). Either way, the harness stops and waits for review + merge. **Never silently proceed to the next story when a checkpoint should have fired.**
+The only halt kind is `halt.kind = "awaiting_pr_review"` (with or without `prNum` depending on whether `gh` opened the PR). **Never silently proceed to the next story when a checkpoint should have fired.**
 
-`gh` (the GitHub CLI) is required to open and track PRs automatically. If `gh` is missing or unauthenticated, fall back to pushing the branch and writing the halt without a `prNum` — the user opens the PR themselves.
-
-Probe gh once at the top of your run with **both** of these (capture exit codes; do not fail the agent on a non-zero):
+## Probe `gh` once
 
 ```bash
-command -v gh >/dev/null 2>&1 && echo "gh:present" || echo "gh:absent"
-gh auth status >/dev/null 2>&1 && echo "ghauth:ok" || echo "ghauth:missing"
+gh auth status >/dev/null 2>&1 && GH_OK=1 || GH_OK=0
 ```
 
-Treat `gh` as **available** only when BOTH are positive. Otherwise treat it as **unavailable** and use the manual fallback wherever this document references `gh`. Any time you take the fallback, the `guidance`, `reasoning`, and halt `reason` you write must call out: *"gh CLI is not installed/authenticated — install it (`brew install gh` on macOS, see https://cli.github.com) and run `gh auth login` so future checkpoints open PRs automatically."*
+`GH_OK=1` means both installed and authenticated. When `GH_OK=0`, fall back to manual-PR behavior wherever this doc references `gh`, and surface in `guidance`/`reasoning`/halt `reason`: *"gh CLI not installed/authenticated — `brew install gh` (macOS, see https://cli.github.com) then `gh auth login` so future checkpoints open PRs automatically."*
 
-## Determine the checkpoint trigger
+## Checkpoint trigger
 
-Read `marmite.json`. The trigger lives in `workflowConfig`:
+Read `marmite.json`'s `workflowConfig`:
 
-- `{ "kind": "every", "stories": N }` — open a PR after every N passing stories. (N=1 = one PR per story.)
-- `{ "kind": "epic" }` — open a PR after the last story of an epic passes (see "Epic detection" below).
+- `{ "kind": "every", "stories": N }` — PR after every N passing stories (N=1 = one PR per story).
+- `{ "kind": "epic" }` — PR after the last story of an epic passes.
 
-If `workflowConfig` is missing or invalid, default to `{ "kind": "every", "stories": 1 }` and note the fallback in `reasoning`.
+If missing/invalid, default to `{ "kind": "every", "stories": 1 }` and note in `reasoning`.
 
-## Phase A — On entry, check for an outstanding halt
+## Phase 0 — Snapshot prior iteration
 
-Run `pwd` and read `.marmite/current-task.json`.
+Commit any uncommitted changes under `.marmite/`.
 
-If the file has a top-level field `halt` of shape `{ "kind": "awaiting_pr_review", ... }`, a previous iteration is waiting on a PR. Whether `prNum` is present or not, the goal is the same: detect merge, reconcile, and clear the halt; otherwise preserve the halt and stop.
+## Phase A — Resume from an outstanding halt
 
-Read `halt.branch` and `halt.baseBranch`. `halt.branch` was snapshotted from the working branch the previous iteration was running on; `halt.baseBranch` mirrors `marmite.json`'s `baseBranch`. If `halt.baseBranch` is missing, fall back to `marmite.json`'s `baseBranch`. If `halt.branch` is missing (older halts), fall back to the currently checked-out branch: `git rev-parse --abbrev-ref HEAD`.
+Read `.marmite/current-task.json`. If it has `halt.kind === "awaiting_pr_review"`, a previous iteration is waiting on a PR.
 
-**Step 1 — try to discover the PR number if we don't have one.**
+Resolve `branch = halt.branch || $(git rev-parse --abbrev-ref HEAD)` and `baseBranch = halt.baseBranch || marmite.json.baseBranch`.
 
-If `halt.prNum` is missing and gh is available, try to back-fill it from the pushed branch:
+**Find PR number if missing.** If `halt.prNum` is unset and `GH_OK=1`:
 
 ```bash
-gh pr list --head <halt.branch> --base <halt.baseBranch> --state all --json number,state --limit 1
+gh pr list --head <branch> --base <baseBranch> --state all --json number,state --limit 1
 ```
 
-If exactly one result comes back, set `prNum = <N>` for the rest of this phase. If gh is unavailable or no PR is found yet, continue with `prNum` unset.
+If exactly one result, set `prNum`.
 
-**Step 2 — decide whether the PR was merged.**
+**Detect merge state:**
 
-- If you have a `prNum` and gh is available, run `gh pr view <prNum> --json state,mergeCommit,mergedAt,headRefName` and inspect `state`:
-  - **`MERGED`** → continue to step 3.
-  - **`OPEN`** → still waiting. Re-write `.marmite/current-task.json` preserving the same `halt` field (back-filling `prNum` if you just discovered it) and stop. The harness exits cleanly.
-  - **`CLOSED` (not merged)** → the PR was closed without merging. Treat this as user intent to abandon the work. Surface the situation in `guidance` (suggest the user either reopen the PR or revert the corresponding commits and re-run), preserve the halt, and stop.
-- If gh is unavailable, or there is no `prNum` yet, fall back to inspecting the git history. The reliable signal is whether the branch still has commits ahead of base:
-  ```bash
-  git fetch origin
-  git log --format='%H' origin/<baseBranch>..HEAD
-  ```
-  If the output is empty, the work has landed on base (the user merged manually) → continue to step 3. Otherwise preserve the halt unchanged, surface the install + manual-merge reminder in `guidance`, and stop.
+| Condition | Action |
+|-----------|--------|
+| `gh pr view <prNum> --json state` returns `MERGED` | Continue to reconciliation. |
+| Returns `OPEN` | Re-write `current-task.json` preserving `halt` (back-fill `prNum` if just discovered); stop. |
+| Returns `CLOSED` (not merged) | Surface in `guidance` ("reopen or revert and re-run"); preserve halt; stop. |
+| `GH_OK=0` or no `prNum` — fall back: `git fetch origin && git log --format='%H' origin/<baseBranch>..HEAD` | Empty output = user merged manually → reconciliation. Non-empty → preserve halt, install/manual-merge reminder in `guidance`, stop. |
 
-**Step 3 — PR was merged. Reconcile and clear the halt.**
-
-The working branch is `halt.branch` (snapshotted at halt time). The base branch comes from `marmite.json`'s `baseBranch` — required for this workflow; if missing, surface the situation in `guidance` and halt.
-
-Reconciliation depends on `workflowConfig.kind`:
-
-- **`kind: "epic"`** — the merged branch represented a *completed* epic; the next iteration will start a *new* epic and therefore needs a fresh branch off base. Do NOT reuse `halt.branch`, and do NOT delete it — leave the merged local branch alone so the user keeps a record of the work:
-  - `git fetch origin`
-  - `git checkout <baseBranch> && git pull --ff-only origin <baseBranch>`
-  - Leave the checkout on `<baseBranch>`. Phase C's "Ensure correct branch" step (3.5) will create the next epic branch off base before any builder work lands.
-
-- **`kind: "every"`** (the default) — keep reusing the same working branch across PRs:
-  - `git fetch origin`
-  - `git checkout <baseBranch> && git pull --ff-only origin <baseBranch>`
-  - `git checkout <halt.branch>` (create it from base if it no longer exists)
-  - `git reset --hard origin/<baseBranch>` — drop the pre-merge story commits; the merged squash/merge commit on base is the canonical history now.
-
-After the kind-specific block:
-
-- Clear the halt: when you write `.marmite/current-task.json` in Phase C, do **not** include the `halt` field.
-- Record what happened in `reasoning` (e.g. *"resumed after PR #42 merged into main; reset marmite/work to origin/main"*, or *"resumed after epic PR #42 merged; checked out main, will branch the next epic in step 3.5"*, or *"resumed after manual merge detected on origin/main"* if no `prNum` was available).
-
-If there is no `halt` field, skip to Phase B.
-
-## Phase B — Open a PR if the checkpoint predicate fires
-
-Look at `.marmite/current-task.json` (already read in Phase A). The checkpoint can only fire right after a story has just passed verification — i.e. the file contains `verdict: "pass"` for the previous story. If `verdict` is missing or not `"pass"`, skip to Phase C.
-
-### Count the stories accumulated since the last merge
+**Reconciliation (PR merged).** `baseBranch` must be set in `marmite.json`; otherwise surface in `guidance` and halt.
 
 ```bash
-git log --format='%s' origin/<baseBranch>..HEAD | grep -c '^verify: '
+git fetch origin
+git checkout <baseBranch> && git pull --ff-only origin <baseBranch>
 ```
 
-This counts `verify: <storyId> - passed verification` commits, which the harness writes when a story passes. Call this `passedCount`. If it's 0, there's nothing to PR — skip to Phase C.
+Then branch-lifecycle handling depends on `workflowConfig.kind`:
 
-### Evaluate the predicate
+- **`epic`** — leave the merged local branch in place (preserves history); stay on `<baseBranch>`. Phase C step 3.5 will create the next epic branch.
+- **`every`** — reuse the working branch: `git checkout <halt.branch>` (recreate from base if gone) then `git reset --hard origin/<baseBranch>` to drop pre-merge story commits in favor of the canonical squash/merge commit on base.
 
-**`kind: "every"`** — fire when `passedCount >= workflowConfig.stories`. (Default `stories: 1` if missing.)
+Clear the halt by omitting it when writing `current-task.json` in Phase C. Record the reconciliation in `reasoning` (e.g. *"resumed after PR #42 merged into main; reset marmite/work to origin/main"*).
 
-**`kind: "epic"`** — fire when the just-passed story is the **last** story of its epic. To decide:
+If no halt, continue to Phase B.
 
-1. From `.marmite/current-task.json`, read the just-passed `storyId` (call it `passedStoryId`).
-2. Read `.marmite/prd.json` and look up the story whose `id === passedStoryId`. Note its `epic` field (every story carries one — `marmite to-prd` enforces it).
-3. Look at all stories in `.marmite/prd.json` whose `epic` matches the passed story's epic (strict string equality).
-4. Among those stories, are there any with `passes: false` whose `id` is *not* the just-passed one? If yes, the epic is not yet complete — skip to Phase C. If no (every other story in the epic already has `passes: true`), the epic just finished — fire the checkpoint.
+## Phase B — Fire checkpoint if predicate matches
 
-If the predicate does not fire, skip to Phase C.
+Only fires when the previous story just passed (`verdict: "pass"` in `current-task.json`). Otherwise skip to Phase C.
+
+Count passing stories since last merge:
+
+```bash
+passedCount=$(git log --format='%s' origin/<baseBranch>..HEAD | grep -c '^verify: ')
+```
+
+If `passedCount == 0`, skip to Phase C.
+
+**Predicate:**
+
+- **`every`** — fire when `passedCount >= workflowConfig.stories` (default 1).
+- **`epic`** — fire when every story in the just-passed story's `epic` has `passes:true`. From `current-task.json` read `passedStoryId`; in `prd.json` find its `epic`; if all other stories with the same `epic` already have `passes:true`, the epic is complete.
+
+If the predicate doesn't fire, skip to Phase C.
 
 ### Open the PR
-
-Resolve the working branch and base branch up front. The working branch is **always** whatever is currently checked out (`marmite cook` does not switch branches); the base branch comes from `marmite.json`:
 
 ```bash
 marmiteBranch=$(git rev-parse --abbrev-ref HEAD)
 baseBranch=$(jq -r '.baseBranch // empty' marmite.json)
 ```
 
-If `baseBranch` is empty, surface the situation in `guidance` (the user must set `baseBranch` in `marmite.json` before checkpoints can fire) and halt. If `marmiteBranch` equals `baseBranch`, refuse to open a PR — the user is cooking directly on base; surface this in `guidance` (suggest `git checkout -b <branch>` and re-running) and halt.
+- If `baseBranch` empty → halt with `guidance` asking the user to set it.
+- If `marmiteBranch == baseBranch` → halt with `guidance` asking the user to `git checkout -b <branch>` and re-run.
+- Confirm commits exist: `git log --oneline origin/<baseBranch>..HEAD`. Empty → defensive skip.
+- Push: `git push -u origin <marmiteBranch>` (force-with-lease only if it existed remotely from a prior aborted run). **Always push, even when `GH_OK=0`** — required for the manual-PR fallback.
 
-1. Confirm there are commits ahead of base: `git log --oneline origin/<baseBranch>..HEAD`. If empty, skip — defensive guard.
-2. Push the working branch: `git push -u origin <marmiteBranch>` (force-with-lease only if the branch already existed remotely from a prior aborted run). **This push must happen even when gh is unavailable** — it's what makes the manual-PR fallback possible.
-3. **If gh is unavailable**, take the manual fallback now and skip the rest of this section:
-   - Write `.marmite/current-task.json` with:
-     ```json
-     {
-       "version": "1",
-       "storyId": "<latest passed storyId>",
-       "storyTitle": "<latest passed storyTitle>",
-       "guidance": "gh CLI not installed/authenticated — install it (`brew install gh` on macOS, see https://cli.github.com) and run `gh auth login` so future checkpoints open PRs automatically. In the meantime, open a PR by hand from `<marmiteBranch>` → `<baseBranch>` and merge it before re-running `marmite cook`.",
-       "ranSensors": [],
-       "reasoning": "Checkpoint fired (<predicate detail>); pushed <marmiteBranch> to origin but could not open PR because gh CLI is unavailable. Halting for manual PR review.",
-       "halt": {
-         "kind": "awaiting_pr_review",
-         "branch": "<marmiteBranch>",
-         "baseBranch": "<baseBranch>",
-         "reason": "gh CLI not installed or not authenticated"
-       }
-     }
-     ```
-   - Stop. The harness will see `halt` and exit 0. **Do NOT pick the next story.**
-4. Otherwise (gh is available), build a PR title and body. The shape depends on the predicate:
+**If `GH_OK=1`, open the PR.** Title/body depends on predicate:
 
-   For **`every` with `stories: 1`** (one story per PR):
+- `every` with `stories=1`: title `"feat: <Story Title> (<Story ID>)"`, body briefly references the story ID.
+- `every` with `stories>1` or `epic`: title `"feat: <epic name>"` (epic) or `"marmite checkpoint (<count> stories)"` (every); body lists the stories from `git log --format='%s' origin/<baseBranch>..HEAD | grep '^verify: ' | sed 's/^verify: //'`.
 
-   ```bash
-   gh pr create \
-     --base <baseBranch> \
-     --head <marmiteBranch> \
-     --title "feat: <Story Title> (<Story ID>)" \
-     --body "$(cat <<'EOF'
-   Implements <Story ID> — <Story Title>.
+```bash
+gh pr create --base <baseBranch> --head <marmiteBranch> \
+  --title "<title>" --body "<body>"
+```
 
-   Generated by marmite (workflow: pr-on-checkpoint, kind=every, stories=1).
-   Review and merge to continue the run.
-   EOF
-   )"
-   ```
+Capture the PR number from the printed URL.
 
-   For **`every` with `stories: N>1`** or **`epic`** (multi-story PRs):
+**Write the halt** to `.marmite/current-task.json`:
 
-   ```bash
-   STORIES=$(git log --format='%s' origin/<baseBranch>..HEAD | grep '^verify: ' | sed 's/^verify: //')
-   gh pr create \
-     --base <baseBranch> \
-     --head <marmiteBranch> \
-     --title "feat: <checkpoint label>" \
-     --body "$(cat <<EOF
-   This PR bundles a checkpoint of stories implemented by marmite.
+```json
+{
+  "version": "1",
+  "storyId": "<latest passed storyId>",
+  "storyTitle": "<latest passed storyTitle>",
+  "guidance": "",
+  "ranSensors": [],
+  "reasoning": "Checkpoint fired (<predicate detail>); opened PR #<N>; halting until merge.",
+  "halt": { "kind": "awaiting_pr_review", "prNum": <N>, "branch": "<marmiteBranch>", "baseBranch": "<baseBranch>" }
+}
+```
 
-   Workflow: pr-on-checkpoint, kind=<every|epic>, <stories=N|epic=<epic name>>.
+When `GH_OK=0`: omit `prNum`, set `guidance` to the gh-install reminder + *"open a PR by hand from `<marmiteBranch>` → `<baseBranch>` and merge before re-running"*, add `"reason": "gh CLI not installed or not authenticated"` to `halt`.
 
-   Stories:
-   ${STORIES}
+Stop. **Do NOT pick the next story.** The harness sees `halt` and exits 0.
 
-   Review and merge to continue the run with the next checkpoint.
-   EOF
-   )"
-   ```
+## Phase C — Standard orchestration
 
-   For `kind: "epic"`, the `<checkpoint label>` should be the epic name (e.g. `"epic: auth complete"`). For `kind: "every"`, use `"marmite checkpoint (<count> stories)"`.
-
-   Capture the PR number from the URL `gh pr create` prints.
-
-5. Write `.marmite/current-task.json` with:
-
-   ```json
-   {
-     "version": "1",
-     "storyId": "<latest passed storyId>",
-     "storyTitle": "<latest passed storyTitle>",
-     "guidance": "",
-     "ranSensors": [],
-     "reasoning": "Checkpoint fired (<predicate detail>); opened PR #<N>; halting until merge.",
-     "halt": { "kind": "awaiting_pr_review", "prNum": <N>, "branch": "<marmiteBranch>", "baseBranch": "<baseBranch>" }
-   }
-   ```
-
-6. Stop. Do NOT pick the next story this iteration. The harness sees `halt` and exits 0.
-
-## Phase C — Standard orchestration (no halt, checkpoint did not fire)
-
-If neither Phase A nor Phase B applied, perform standard orchestration: read state, optionally check feedback, pick the next story, optionally run sensors, write `.marmite/current-task.json`. The procedure below mirrors the default workflow.
+When no halt and no checkpoint fired.
 
 ### 1. Read project state
 
-Read these files using the full absolute path:
-- `.marmite/prd.json` — project requirements and story status (`passes: true/false`)
-- `marmite.json` — config; the `sensors` array lists available sensors (may be absent or empty)
-- `.marmite/current-task.json` — may contain a `verdict` field written by the verifier
-- `.marmite/progress.json` — JSON ledger of project history with shape `{ patterns: [...], timeline: [...] }`. `timeline` interleaves `StoryEntry` (`kind:"story"`) rows the builder appends after each story and `JanitorEntry` (`kind:"janitor"`) rows the orchestrator may append (see "Janitor cadence" below). The harness initializes the file as `{"patterns":[],"timeline":[]}` on first run.
-- `.marmite/feedback.md` — async user feedback (rare). May not exist.
+- `.marmite/prd.json` — stories with `passes:true/false`.
+- `marmite.json` — config; `sensors` may be absent/empty.
+- `.marmite/current-task.json` — may carry previous `verdict`.
+- `.marmite/progress.json` — `{ patterns: [], timeline: [] }`. `timeline` interleaves `StoryEntry` (`kind:"story"`) and `JanitorEntry` (`kind:"janitor"`).
+- `.marmite/feedback.md` — async user feedback. Usually absent.
 
-### 2. Check for async user feedback
+### 2. Async user feedback (if `.marmite/feedback.md` exists and is non-empty)
 
-If `.marmite/feedback.md` exists and is non-empty:
-- The feedback may name a specific story ID, point at recent work, or be a general directive — interpret reasonably.
-- If it names a story, select that story instead of priority order — but only if it exists in `.marmite/prd.json` and `passes: false`.
-- If it's a general note, keep priority-ordered selection but copy the feedback into `guidance`.
-- Always echo the directive into `guidance` and call out in `reasoning` that user feedback was applied this iteration.
-- **Do NOT edit `.marmite/prd.json`.** If feedback can only be honored by editing the PRD, write that into `guidance`.
-- Delete the feedback file: `rm .marmite/feedback.md`.
+- If it names a story ID and that story has `passes:false`, select it instead of priority.
+- If named story has `passes:true`, note in `guidance` that the user must edit `prd.json` themselves.
+- If a general directive, keep priority pick and copy the directive verbatim into `guidance`.
+- Echo into `guidance`; mention in `reasoning` that feedback was applied.
+- **Never edit `prd.json`.** `rm .marmite/feedback.md` before finishing.
 
 ### 3. Select the next story
 
-Pick the **highest-priority** story where `passes: false`. Lower priority number = higher priority. Break ties by story ID alphabetically. Async feedback wins over priority if it named a story.
+Highest-priority story with `passes:false`. Lower priority number = higher priority. Tie-break alphabetically by ID. Feedback selection wins.
 
-### 3.5. Ensure correct branch (epic checkpoint workflow only)
+### 3.5. Ensure correct branch (epic workflow only)
 
-This step runs only when `workflowConfig.kind === "epic"`. Skip it for `kind: "every"`.
+Skip when `workflowConfig.kind === "every"`.
 
-The goal: every PR for an epic ships from its own branch off `baseBranch`. When this iteration is the start of a new epic — either because we just reconciled a merged PR (Phase A → epic branch) or because this is the very first run — create a fresh branch off `origin/<baseBranch>` before assigning the story to the builder.
-
-Detect whether a new branch is needed:
+Goal: each epic ships from its own branch off `baseBranch`.
 
 ```bash
 baseBranch=$(jq -r '.baseBranch // empty' marmite.json)
@@ -237,93 +162,55 @@ git fetch origin >/dev/null 2>&1
 commitsAhead=$(git log --oneline origin/$baseBranch..HEAD 2>/dev/null | wc -l | tr -d ' ')
 ```
 
-A new branch is needed when **both** hold:
-- `currentBranch == baseBranch` (we're sitting on base, not already on an epic branch), AND
-- `commitsAhead == 0` (no in-progress epic work would be lost).
+Create a new branch only when **both** hold: `currentBranch == baseBranch` AND `commitsAhead == 0`. Otherwise reuse the current branch (an epic is mid-flight).
 
-If `currentBranch != baseBranch` AND `commitsAhead > 0`, an epic is already in progress on the current branch — do NOT create a new branch; reuse the current one (the builder will add the next story commit to it).
+When creating:
 
-When a new branch is needed:
+1. Slug = lowercased story.epic, non-alphanumerics → `-`, trimmed, capped at 40 chars.
+2. Name = `marmite/epic-<slug>`; on collision append `-<YYYYMMDD>`, then `-$(openssl rand -hex 3)`.
+3. `git checkout -b <name> origin/$baseBranch`.
+4. Mention the new branch in `reasoning`.
 
-1. Derive a slug from the selected story's `epic` field — lowercase, replace any run of non-alphanumeric characters with `-`, trim leading/trailing `-`, cap at 40 characters. Call this `epicSlug`.
-2. Pick a branch name `marmite/epic-<epicSlug>`. If a local branch by that name already exists, append `-<YYYYMMDD>` (today's date); if that also exists, append `-<short-random>` (e.g. `$(openssl rand -hex 3)`).
-3. Create and check out the branch off the freshly-pulled base:
-   ```bash
-   git checkout -b marmite/epic-<epicSlug> origin/$baseBranch
-   ```
-4. Mention the branch creation in `reasoning` (e.g. *"started new epic branch marmite/epic-auth off origin/main for epic 'auth'"*).
+If `baseBranch` is empty in `marmite.json`, halt with `guidance` asking the user to set it.
 
-Refuse to create a branch when `baseBranch` is empty in `marmite.json` — surface that in `guidance` and halt. The builder will commit on whichever branch is checked out when it runs, so this step must complete before step 9 writes `.marmite/current-task.json`.
+### 4. Run sensors
 
-### 4. Assess previous run quality
+For each entry in `marmite.json.sensors[]` whose `type` has a matching `janitor.thresholds[<type>]`, run it. No threshold = nothing acts on findings = don't run. No cadence heuristics.
 
-From `.marmite/current-task.json`'s previous `verdict` field (if any) and from `.marmite/progress.json`, identify recurring issues, accumulated debt, or patterns worth highlighting in `guidance`.
-
-### 5. Sensor catalog
-
-Marmite ships exactly two sensors and their configs live under `./.marmite/sensors/`. Both are scoped to files modified by this run — they never lint or analyze the brownfield project's untouched files.
-
-| Sensor | Type | Config |
-|--------|------|--------|
-| `eslint` | `debt` | `./.marmite/sensors/eslint.config.js` |
-| `dependency-cruiser` | `drift` | `./.marmite/sensors/.dependency-cruiser.cjs` |
-
-If a sensor entry is missing from `marmite.json` (disabled at init), skip it. If `sensors` is empty/absent, skip steps 6–8.
-
-### 6. Decide whether to run sensors
-
-Run when: previous story failed verification, every 3rd story for baseline, or progress.json shows accumulating issues. Skip when: no sensors configured, previous story passed cleanly, or this is the first story (nothing changed yet). Be targeted — pick the sensor matching the failure type.
-
-### 7. Run sensors
-
-Sensors are scoped to files changed vs. the base branch. **Compute the changed-file list first** — if empty, skip the sensor and note that in `sensorSummary`.
-
-```bash
-BASE=$(jq -r '.baseBranch // "main"' marmite.json)
-CHANGED=$(git diff --name-only "$BASE"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs')
-```
-
-Use the exact command in the sensor's `guidance` field. Defaults installed by `marmite init`:
-
-```bash
-# debt
-npx eslint --no-config-lookup -c .marmite/sensors/eslint.config.js $CHANGED
-# drift
-npx depcruise --config .marmite/sensors/.dependency-cruiser.cjs $CHANGED
-```
-
-If a tool doesn't resolve via `npx`, note the setup gap in `guidance`; do not install dependencies and do not edit configs under `.marmite/sensors/`.
-
-Wrap each sensor run with `marmite emit-event`:
+Invoke each sensor's `guidance` field verbatim (self-contained: scopes to changed files, short-circuits when empty). Wrap with `marmite emit-event`:
 
 <!-- marmite:contract start — the harness tails .marmite/events.jsonl during this phase; without these emits the live sensor feed in the CLI goes silent and `sensors_ran` is never recorded -->
 ```bash
 marmite emit-event sensor-start --sensor eslint --type debt
 START_MS=$(date +%s%3N)
-npx eslint --no-config-lookup -c .marmite/sensors/eslint.config.js $CHANGED; EXIT=$?
+eval "$(jq -r '.sensors[] | select(.name=="eslint") | .guidance' marmite.json)"; EXIT=$?
 marmite emit-event sensor-end --sensor eslint --type debt \
   --duration-ms "$(( $(date +%s%3N) - START_MS ))" --exit-code "$EXIT"
 ```
-
-Emit `sensor-start` before and `sensor-end` after, even on failure. `--type` is one of `drift|debt`.
 <!-- marmite:contract end -->
 
-### 8. Match failing sensors to skills
+If a binary doesn't resolve, surface the setup gap in `guidance` — never silently skip. Don't install deps or edit `.marmite/sensors/` configs.
 
-| Sensor type | Skill(s) |
-|-------------|----------|
+### 4a. Narrow findings to changed lines
+
+Sensors scan whole files. Keep only findings whose location matches lines this run added or modified vs. `marmite.json.baseBranch` (use `git diff "$BASE"...HEAD` to compute the changed-file set and per-file added line ranges; the exact mapping depends on the sensor's output format). Drop everything else. All counts in `sensorSummary` and janitor thresholds are **post-filter**.
+
+### 5. Match failing sensors to skills
+
+| Sensor type | Skill |
+|-------------|-------|
 | `drift` | `architect` |
 | `debt` | `clean-code` or `refactor` |
 
-Name the recommended skill explicitly in `guidance` so the builder knows the slash command to invoke.
+Name the skill explicitly in `guidance`.
 
-### 8.5. Janitor cadence — convert sensor debt into a refactor task
+### 6. Janitor cadence
 
-If `marmite.json` has a top-level `janitor` key, threshold detection is part of your sensor-running flow. After each sensor runs, count its findings (use the tool's exit code, count `error|warning` lines, or a structured flag like `eslint --format=json | jq 'map(.errorCount + .warningCount) | add'` per the sensor's `guidance`). Compare counts against `janitor.thresholds[<sensor-type>]` from `marmite.json`.
+Compare post-filter counts to `janitor.thresholds[<sensor-type>]`.
 
-**First** — read `.marmite/progress.json`. If `timeline` already contains an unfinished janitor entry (`kind:"janitor"` and `passes:false`), that entry must be addressed before any new threshold trip is recorded. Route this iteration to it: set `current-task.json.kind` to `"janitor"`, `storyId` to the entry's `id`, and skip writing a new entry.
+**First** — if `progress.json.timeline` has an unfinished janitor entry (`kind:"janitor"`, `passes:false`), route this iteration to it: set `kind:"janitor"` and `storyId` to the entry's `id`. No new entry.
 
-**Otherwise**, if any threshold trips, append a new `JanitorEntry` to `progress.json.timeline` and emit `janitor_triggered`:
+**Otherwise** — if any threshold trips, append a new entry to `timeline` (read, mutate, write back — never replace) and emit `janitor-triggered`:
 
 ```json
 {
@@ -332,9 +219,7 @@ If `marmite.json` has a top-level `janitor` key, threshold detection is part of 
   "ts": "2026-05-19T12:34:56Z",
   "passes": false,
   "title": "Address debt threshold: eslint 23 findings",
-  "triggeredBy": [
-    { "sensor": "eslint", "findingCount": 23, "threshold": 20 }
-  ]
+  "triggeredBy": [{ "sensor": "eslint", "findingCount": 23, "threshold": 20 }]
 }
 ```
 
@@ -342,11 +227,9 @@ If `marmite.json` has a top-level `janitor` key, threshold detection is part of 
 marmite emit-event janitor-triggered --janitor-id "JANITOR-2026-05-19-0001" --sensor eslint --finding-count 23 --threshold 20
 ```
 
-When you append, **read the existing file, mutate `timeline`, write back** — never replace it from scratch. ID format: `JANITOR-<YYYY-MM-DD>-<NNNN>` (next four-digit counter for the day).
+ID format `JANITOR-<YYYY-MM-DD>-<NNNN>`: `NNNN` is one more than the highest existing four-digit suffix for that date, or `0001`. A materialized janitor entry replaces the story for this iteration.
 
-If you materialize a janitor entry, you do NOT also pick a user story this iteration; the janitor task takes the slot. Write `current-task.json` with `kind: "janitor"`.
-
-### 9. Write `.marmite/current-task.json`
+### 7. Write `.marmite/current-task.json`
 
 <!-- marmite:contract start — the harness parses storyId/storyTitle/ranSensors from this file (src/core/protocol.ts); missing or wrong-typed fields make the orchestrator step crash with "current-task.json malformed" -->
 ```json
@@ -358,23 +241,20 @@ If you materialize a janitor entry, you do NOT also pick a user story this itera
   "description": "Full description from .marmite/prd.json",
   "acceptanceCriteria": ["criterion 1", "criterion 2"],
   "notes": "Notes from .marmite/prd.json if any",
-  "guidance": "Specific, actionable guidance.",
-  "sensorSummary": "eslint (debt): 12 violations. tsc (debt): 3 type errors.",
-  "ranSensors": ["eslint", "tsc"],
-  "reasoning": "Previous run failed with type errors. Ran tsc to give builder concrete error list."
+  "guidance": "Previous verification failed due to missing input validation — ensure all endpoints validate inputs.",
+  "sensorSummary": "eslint (debt): 12 violations.",
+  "ranSensors": ["eslint"],
+  "reasoning": "Previous run failed with type errors. Ran eslint to give builder concrete error list."
 }
 ```
 
-Field rules:
-- `guidance` — actionable instructions for the builder; `""` if nothing specific.
-- `sensorSummary` — one concise line per sensor; `""` if none ran.
-- `ranSensors` — names of sensors that ran; `[]` if none (the harness emits `sensors_ran` from this array).
-- `reasoning` — one sentence explaining your story selection and sensor decision.
-- `kind` — `"story"` (default) or `"janitor"`. Set to `"janitor"` only when this iteration is addressing a janitor entry from `progress.json` (see step 8.5). The harness uses this to route mark-passing to `progress.json` instead of `prd.json`.
-- Do NOT include a `halt` field in Phase C (this is normal forward progress).
+- `guidance`, `sensorSummary` → `""` when nothing to convey.
+- `ranSensors` → `[]` when none ran. The harness emits `sensors_ran` from this array.
+- `kind` defaults to `"story"`; set to `"janitor"` only when routing to a janitor entry (step 6).
+- Do NOT include `halt` in Phase C (normal forward progress).
 <!-- marmite:contract end -->
 
-**Janitor variant.** When routing to a janitor entry, `storyId` is the JanitorEntry id and `guidance` directs the builder to invoke the janitor skill. Example:
+**Janitor variant** — `storyId` becomes the JanitorEntry id:
 
 ```json
 {
@@ -389,15 +269,8 @@ Field rules:
 }
 ```
 
-If async feedback was applied, `guidance` MUST repeat the user's directive (paraphrased or verbatim).
+If feedback was applied, `guidance` MUST repeat the user's directive — the file the user wrote was already deleted.
 
-## Important Rules
+## Hard rules
 
-- Do NOT write code.
-- Do NOT edit `.marmite/prd.json` (no flipping `passes`, adding stories, changing priorities — even when async feedback asks for it).
-- Do NOT start any implementation work.
-- Write `.marmite/current-task.json` every iteration. Append to `.marmite/progress.json.timeline` only when materializing a new janitor entry (step 8.5). Archive `.marmite/feedback.md` when present.
-- Keep `guidance` actionable and specific.
-- Do NOT copy or move sensor config files — `configPath` references existing files in place.
-- Do NOT install or update dependencies.
-- The `halt` field is the only mechanism that stops the harness mid-run; use it only for awaiting-PR-merge.
+Never write code, never edit `.marmite/prd.json`, never install/update dependencies, never copy or move sensor configs. The `halt` field is the only mechanism that stops the harness mid-run; use it only for awaiting-PR-merge.
