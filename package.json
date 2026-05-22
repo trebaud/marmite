@@ -1,6 +1,6 @@
 {
   "name": "marmite",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Three-agent harness (orchestrator, builder, verifier) that drives autonomous coding from a PRD.",
   "type": "module",
   "license": "MIT",
