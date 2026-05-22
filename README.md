@@ -61,6 +61,7 @@ my-project/
 | `BUILD` | Builder | Implements, commits |
 | `VERIFY` | Verifier | Approves or rejects |
 | `FIX` | Builder | Resumes the same session to address feedback |
+| `JANITOR` | Builder | Maintenance pass that pays down debt and reverses architecture drift when sensor counts cross the configured threshold |
 
 `current-task.json` is the single handoff. If a run crashes, run `marmite cook` again: the orchestrator picks the next non-passing story, and any in-flight story without a `verify:` commit gets re-attempted.
 
@@ -82,10 +83,11 @@ The next iteration folds the note into story selection and `guidance`, then dele
 {
   "app": "./app",
   "prd": "./.marmite/prd.json",
+  "workflow": "one-shot",
 
   "sensors": [
-    { "name": "eslint",             "type": "debt",  "package": "eslint",             "configPath": "./.marmite/sensors/eslint.config.js",       "guidance": "CHANGED=$(git diff --name-only \"$baseBranch\"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs'); [ -n \"$CHANGED\" ] && npx eslint --no-config-lookup -c .marmite/sensors/eslint.config.js $CHANGED" },
-    { "name": "dependency-cruiser", "type": "drift", "package": "dependency-cruiser", "configPath": "./.marmite/sensors/.dependency-cruiser.cjs", "guidance": "CHANGED=$(git diff --name-only \"$baseBranch\"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs'); [ -n \"$CHANGED\" ] && npx depcruise --config .marmite/sensors/.dependency-cruiser.cjs $CHANGED" }
+    /* deterministic checks scoped to the current run's diff —
+       installed by `marmite init` based on the chosen workflow */
   ],
 
   "models": {
@@ -102,17 +104,6 @@ The next iteration folds the note into story selection and `guidance`, then dele
 }
 ```
 
-### Sensors
-
-Marmite ships exactly two deterministic checks. Their configs are installed under `./.marmite/sensors/` at `marmite init` time and tracked in git — edit them to encode the rules you want on new code. Both sensors are **scoped to files modified by the current run** (`git diff --name-only $baseBranch...HEAD`), so they never lint or analyze the brownfield project's untouched files.
-
-| Sensor | Type | Config | Catches | Skill on failure |
-|--------|------|--------|---------|------------------|
-| `eslint` | `debt` | `.marmite/sensors/eslint.config.js` | Style, complexity, unused code, escape hatches | `clean-code`, `refactor` |
-| `dependency-cruiser` | `drift` | `.marmite/sensors/.dependency-cruiser.cjs` | Import violations, cycles, layer misuse, orphan modules | `architect` |
-
-If the project already has its own eslint flat config, `marmite init` layers the marmite debt rules on top of it (see the `userConfig` import in `eslint.config.js`). Either sensor can be disabled at init time or by removing its entry from `marmite.json`.
-
 ### Workflows
 
 A workflow is a bundle of three agent prompts (orchestrator, builder, verifier) that determines how the loop behaves. `marmite init` asks you to pick one and copies the matching prompts into `.marmite/prompts/`. The selection is recorded in `marmite.json` as `"workflow": "<name>"`.
@@ -125,6 +116,67 @@ A workflow is a bundle of three agent prompts (orchestrator, builder, verifier) 
 
 The PR-gated workflow uses a small `halt` field in `.marmite/current-task.json` — when present, the harness emits a `run_halt` event and exits 0 cleanly. The next `marmite cook` invocation re-enters the orchestrator, which checks `gh pr view` and either resumes (on merge) or rewrites the same halt and exits again.
 
-### Custom prompts
+To override a workflow's defaults, drop `orchestrator-prompt.md`, `builder-prompt.md`, or `verifier-prompt.md` into `.marmite/prompts/` — they're checked in alongside the rest of the workflow.
 
-Drop `builder-prompt.md`, `verifier-prompt.md`, or `orchestrator-prompt.md` into `.marmite/prompts/` to override the defaults installed by your chosen workflow. Overrides are checked in.
+### Sensors
+
+Sensors are deterministic checks the orchestrator runs before handing off to the builder — they surface debt and drift in the diff so the brief can ask for the right fix. Each sensor entry in `marmite.json` declares a `name`, a `type` (`debt` or `drift`), and a `guidance` shell snippet the orchestrator executes. Sensors are **scoped to files modified by the current run** (`git diff --name-only $baseBranch...HEAD`), so they never report on untouched code in a brownfield repo.
+
+The set of sensors that get installed — and the rules they encode — is determined by the workflow you pick at `marmite init`. Configs land under `./.marmite/sensors/` and are tracked in git; edit them to tune what counts as a violation, or remove a sensor's entry from `marmite.json` to disable it.
+
+When sensor findings accumulate past the thresholds in `marmite.json`'s `janitor` block, the orchestrator schedules a `JANITOR` phase instead of the next story — a maintenance run that focuses solely on paying down debt and reversing architecture drift before regular story work resumes:
+
+```jsonc
+"janitor": {
+  "thresholds":        { "debt": 20, "drift": 5 },  // either trips a run
+  "maxFindingsPerRun": 5,                            // small batches per pass
+  "budgetUsd":         3
+}
+```
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `marmite` / `marmite cook` | Run the agent loop in the current project |
+| `marmite <n>` | Shorthand for `marmite cook -n <n>` (cap iterations) |
+| `marmite init` | Interactive wizard — scaffolds `marmite.json`, `.marmite/`, prompts, sensors |
+| `marmite to-prd <PRD.md>` | Convert a markdown PRD into `.marmite/prd.json` and validate it |
+| `marmite doctor` | Preflight check — config, prompts, contract fences, sensors, gitignore |
+| `marmite stats [path]` | Post-run summary of `.marmite/events.jsonl` (cost, durations, retries, cache hits) |
+| `marmite dashboard [path]` | Serve a live HTML dashboard backed by `events.jsonl` + `prd.json` + `progress.json` |
+
+### `cook`
+
+```
+-c, --config <path>           Config file path (default: ./marmite.json)
+-n, --max-iterations <n>      Cap the loop
+-p, --prd <path>              Override prd.json location
+    --model <id>              Default model (fallback for all roles)
+    --builder-model <id>      Override builder/fix model
+    --verifier-model <id>     Override verify model
+    --build-timeout <dur>     e.g. 20m, 600s, 1h
+    --verify-timeout <dur>
+    --fix-timeout <dur>
+    --cost-budget <usd>       Per-story budget (0 disables)
+    --cost-budget-total <usd> Whole-run budget
+    --max-fix-attempts <n>    Fix attempts per story
+    --retries <n>             Transient retries per session
+-v, --verbose                 Raw SDK messages and stats
+```
+
+### `stats`
+
+```
+--run <id>   Restrict to a specific runId
+--all        Fold all runs in the file together (default: latest)
+--json       Machine-readable output
+```
+
+### `dashboard`
+
+```
+--port <n>   Port to listen on (default: 4321)
+--host <h>   Host to bind (default: 127.0.0.1)
+--no-open    Don't open the browser
+```
