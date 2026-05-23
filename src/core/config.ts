@@ -33,6 +33,32 @@ export type SensorEntry = z.infer<typeof SensorEntrySchema>;
 
 const DurationSchema = z.union([z.string(), z.number()]);
 
+// MCP server configs the harness will forward to the Claude Agent SDK. Mirrors
+// the SDK's `McpServerConfigForProcessTransport` minus the `sdk` variant (which
+// requires a live in-process McpServer instance and can't come from JSON).
+const McpStdioServerSchema = z.object({
+  type: z.literal("stdio").optional(),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+});
+const McpSseServerSchema = z.object({
+  type: z.literal("sse"),
+  url: z.string().min(1),
+  headers: z.record(z.string(), z.string()).optional(),
+});
+const McpHttpServerSchema = z.object({
+  type: z.literal("http"),
+  url: z.string().min(1),
+  headers: z.record(z.string(), z.string()).optional(),
+});
+export const McpServerConfigSchema = z.union([
+  McpStdioServerSchema,
+  McpSseServerSchema,
+  McpHttpServerSchema,
+]);
+export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
+
 export const MarmiteConfigSchema = z.object({
   app: z.string().optional(),
   prd: z.string().optional(),
@@ -82,6 +108,11 @@ export const MarmiteConfigSchema = z.object({
   // these thresholds and materializes a janitor entry in `progress.json`
   // whenever any threshold is met. Omit to disable the feature entirely.
   janitor: JanitorConfigSchema.optional(),
+  // Opt-in MCP servers forwarded to every agent (orchestrator, builder,
+  // verifier). The harness keeps `strictMcpConfig: true`, so only the servers
+  // listed here load — user/global Claude Code MCP config is still ignored to
+  // avoid tool-list bloat on every agent spawn.
+  mcpServers: z.record(z.string().min(1), McpServerConfigSchema).optional(),
 });
 export type MarmiteConfig = z.infer<typeof MarmiteConfigSchema>;
 

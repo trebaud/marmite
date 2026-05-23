@@ -104,7 +104,37 @@ Ask **one question at a time**. Adapt based on previous answers. Always offer se
    - Default to `{ default: claude-sonnet-4-6, builder: claude-sonnet-4-6, verifier: claude-haiku-4-5, orchestrator: claude-sonnet-4-6 }` and just confirm.
    - Offer a "thorough" preset (Opus for builder) and a "fast" preset (Haiku everywhere) for users who want them.
 
-4. **Budgets** — per-story USD cap and total run cap. Default `{ perStory: 15, total: 100 }`. One question, two numbers; users almost always accept defaults.
+4. **MCP servers (optional)** — extra Model Context Protocol servers to expose to every agent (orchestrator, builder, verifier). Off by default; opt-in only.
+
+   Briefly explain in 2–3 lines before asking:
+
+   - MCP servers add tools the agents can call — e.g. **Playwright** (`@playwright/mcp`) lets the verifier drive a real browser when checking UI work, the **GitHub** MCP exposes issue/PR tooling, etc.
+   - The harness keeps `strictMcpConfig` on, so the user's global Claude Code MCP config is ignored — only servers listed in `marmite.json.mcpServers` load. This avoids tool-list bloat that would balloon every agent spawn's cache cost.
+   - More tools = bigger system prompt = higher per-call cost; only enable what the workflow actually needs.
+
+   Ask **one** question:
+
+   > Wire any MCP servers into the agent loop? Optional — skip unless you have a specific need.
+   > 1. skip — no MCP servers (default)
+   > 2. Playwright — `npx -y @playwright/mcp@latest` (lets agents drive a real browser)
+   > 3. add your own — I'll prompt for name + command
+
+   If the user picks Playwright, emit:
+
+   ```jsonc
+   "mcpServers": {
+     "playwright": { "command": "npx", "args": ["-y", "@playwright/mcp@latest"] }
+   }
+   ```
+
+   If they pick "add your own", ask for a short name (`[a-z0-9-]+`) and either a stdio command (e.g. `npx -y some-mcp@latest`) or a URL (`http://…` or `sse://…`). Build the matching shape:
+   - stdio: `{ "command": "<first token>", "args": ["<rest>"] }` (omit `type` — it defaults to stdio)
+   - http: `{ "type": "http", "url": "<url>" }`
+   - sse: `{ "type": "sse", "url": "<url>" }`
+
+   Multiple servers are fine — loop until the user is done. **Skip** is fine and is the right answer for most projects.
+
+5. **Budgets** — per-story USD cap and total run cap. Default `{ perStory: 15, total: 100 }`. One question, two numbers; users almost always accept defaults.
 
 ### Don't ask about
 
@@ -192,6 +222,13 @@ JSONC (comments allowed). Inline structure:
     "verifier": "claude-haiku-4-5",
     "orchestrator": "claude-sonnet-4-6"
   },
+  // OPTIONAL. Only emit when the user opted into MCP servers in step 2's
+  // "MCP servers" question. Omit the key entirely otherwise. Each value is a
+  // stdio (`{ command, args?, env? }`), http (`{ type: "http", url, headers? }`),
+  // or sse (`{ type: "sse", url, headers? }`) config.
+  // "mcpServers": {
+  //   "playwright": { "command": "npx", "args": ["-y", "@playwright/mcp@latest"] }
+  // },
   "timeouts": { "build": "20m", "verify": "10m", "fix": "15m", "orchestrate": "10m" },
   "budget": { "perStory": 15, "total": 100 },
   "retries": { "fix": 3, "transient": 2 },

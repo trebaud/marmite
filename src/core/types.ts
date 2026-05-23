@@ -1,4 +1,5 @@
 import type { VerificationVerdict } from "./protocol.ts";
+import type { McpServerConfig } from "./config.ts";
 
 export interface ModelPricing {
   inputPerMTok: number;
@@ -33,6 +34,8 @@ export interface HarnessConfig {
   costBudgetUsdTotal: number;
   // Fix loop retry cap
   maxFixAttempts: number;
+  // Opt-in MCP servers exposed to every agent. Empty/undefined means none.
+  mcpServers?: Record<string, McpServerConfig>;
 }
 
 export type SessionPhase = "orchestrate" | "build" | "verify" | "fix";

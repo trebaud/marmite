@@ -107,5 +107,6 @@ export function composeConfig(
     costBudgetUsdPerStory: cli.perStoryBudget ?? fromConfig(fileCfg.budget?.perStory, DEFAULTS.budget.perStory),
     costBudgetUsdTotal: cli.totalBudget ?? fromConfig(fileCfg.budget?.total, DEFAULTS.budget.total),
     maxFixAttempts: cli.maxFixAttempts ?? fromConfig(fileCfg.retries?.fix, DEFAULTS.retries.fix),
+    mcpServers: fileCfg.mcpServers,
   };
 }

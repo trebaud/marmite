@@ -77,7 +77,9 @@ The next iteration folds the note into story selection and `guidance`, then dele
 
 ## Configuration
 
-`marmite.json` (JSONC, all fields optional):
+`marmite.json` lives at the project root. JSONC syntax (line/block comments and trailing commas allowed). Every field is optional — anything you omit falls back to the harness defaults below, and most fields can be overridden per-run via `marmite cook` flags (`marmite cook --help`).
+
+A representative config:
 
 ```jsonc
 {
@@ -85,10 +87,9 @@ The next iteration folds the note into story selection and `guidance`, then dele
   "prd": "./.marmite/prd.json",
   "workflow": "one-shot",
 
-  "sensors": [
-    /* deterministic checks scoped to the current run's diff —
-       installed by `marmite init` based on the chosen workflow */
-  ],
+  "sensors":    [ /* see Sensors */ ],
+  "janitor":    { /* see Sensors */ },
+  "mcpServers": { /* see MCP servers */ },
 
   "models": {
     "default":      "claude-sonnet-4-6",
@@ -103,6 +104,27 @@ The next iteration folds the note into story selection and `guidance`, then dele
   "maxIterations": 1000
 }
 ```
+
+### Fields
+
+| Field | Default | What it does |
+|---|---|---|
+| `app` | `./app` | Project subdir the agents `cd` into. Relative to `marmite.json`. |
+| `prd` | `./.marmite/prd.json` | Path to the validated PRD that drives the loop. |
+| `baseBranch` | _(unset)_ | Base branch sensors diff against and PR-gated workflows target. |
+| `workflow` | `one-shot` | Which prompt bundle to load. See [Workflows](#workflows). |
+| `workflowConfig` | `{}` | Workflow-specific knobs (e.g. `pr-on-checkpoint` checkpoint kind). |
+| `sensors` | `[]` | Deterministic checks run between stories. See [Sensors](#sensors). |
+| `janitor` | _(unset)_ | Sensor-finding thresholds that trigger a maintenance pass. See [Sensors](#sensors). |
+| `mcpServers` | `{}` | Optional MCP servers exposed to every agent — stdio/http/sse entries following the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/mcp) shape. The harness keeps `strictMcpConfig` on, so user/global MCP config is ignored. |
+| `models.default` | `claude-sonnet-4-6` | Fallback model used by any role left unset. |
+| `models.builder` / `verifier` / `orchestrator` | inherit `default` | Per-role override. |
+| `timeouts.{build,verify,fix,orchestrate}` | `20m` / `10m` / `15m` / `10m` | Per-phase wall-clock cap. Accepts `20m`, `600s`, `1h`, or raw ms. |
+| `budget.perStory` | `15` (USD) | Hard cap per story; `0` disables. |
+| `budget.total` | `0` (disabled) | Whole-run cap that halts the loop between iterations. `marmite init` writes `100`. |
+| `retries.fix` | `3` | Fix attempts per failing story before giving up. |
+| `retries.transient` | `2` | Per-session retries on transient SDK errors. |
+| `maxIterations` | `1000` | Loop cap — `marmite cook` exits once reached. |
 
 ### Workflows
 
