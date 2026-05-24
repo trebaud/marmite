@@ -82,9 +82,22 @@ export async function writeAtomicJson(path: string, value: unknown): Promise<voi
   await writeAtomic(path, JSON.stringify(value, null, 2) + "\n");
 }
 
+// Categories for errors thrown out of the @anthropic-ai/claude-agent-sdk
+// iterator. Note: API-level errors (rate limit, quota, server errors mid-run)
+// are NOT thrown — the SDK emits them as SDKResultError messages and they're
+// classified in session.ts:classifyDrainError. This function only handles
+// errors that actually propagate as JS exceptions: setup failures, parent
+// abort, hard timeouts, low-level network/IO problems before/around the
+// streaming session.
 export type ErrorCategory = "transient" | "fatal" | "aborted" | "timeout";
 
-export function classifyError(err: unknown): { category: ErrorCategory; message: string; code?: string } {
+export interface ClassifiedError {
+  category: ErrorCategory;
+  message: string;
+  code?: string;
+}
+
+export function classifyError(err: unknown): ClassifiedError {
   if (err == null) return { category: "fatal", message: "unknown error" };
   const e = err as { name?: string; code?: string; status?: number; message?: string };
   const message = e.message ?? String(err);
@@ -99,6 +112,7 @@ export function classifyError(err: unknown): { category: ErrorCategory; message:
   if (
     e.status === 429 ||
     e.status === 408 ||
+    e.status === 529 ||
     (typeof e.status === "number" && e.status >= 500 && e.status < 600) ||
     code === "ECONNRESET" ||
     code === "ENOTFOUND" ||

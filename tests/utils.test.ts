@@ -74,6 +74,10 @@ describe("classifyError", () => {
     expect(r.message).toBe("oh no");
     expect(r.code).toBe("EFOO");
   });
+
+  test("HTTP 529 (overloaded) → transient", () => {
+    expect(classifyError({ status: 529, message: "Overloaded" }).category).toBe("transient");
+  });
 });
 
 describe("readJson", () => {

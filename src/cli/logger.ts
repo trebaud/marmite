@@ -125,6 +125,7 @@ function outcomeBadge(outcome: string): string {
     case "transient_error": return `${c.bgYellow}${c.bold} TRANSIENT ${c.reset}`;
     case "fatal_error": return `${c.bgRed}${c.bold} FATAL ${c.reset}`;
     case "aborted": return `${c.bgRed}${c.bold} ABORTED ${c.reset}`;
+    case "usage_limit": return `${c.bgYellow}${c.bold} USAGE LIMIT ${c.reset}`;
     default: return outcome;
   }
 }
@@ -233,6 +234,18 @@ function vTransientRetry(attempt: number, delayMs: number, kind: "transient_erro
   if (vLastRetryAttempt === attempt) return;
   vLastRetryAttempt = attempt;
   console.log(`  ${c.yellow}[retry]${c.reset} ${kind} on attempt ${attempt}, waiting ${fmtDuration(delayMs)}`);
+}
+
+let vLastUsageLimitLoggedAt = 0;
+function vUsageLimitWait(resumeAt: number | undefined, remainingMs: number, errorMessage?: string): void {
+  // Called once per second during the wait. Only log on the first call and
+  // then every ~30s so verbose mode doesn't spam the transcript.
+  const now = Date.now();
+  if (vLastUsageLimitLoggedAt && now - vLastUsageLimitLoggedAt < 30_000) return;
+  vLastUsageLimitLoggedAt = now;
+  const resumesAt = resumeAt ? new Date(resumeAt * 1000).toISOString() : "unknown";
+  const msg = errorMessage ? ` ${c.dim}— ${errorMessage.slice(0, 160)}${c.reset}` : "";
+  console.log(`  ${c.bgYellow}${c.bold} USAGE LIMIT ${c.reset} pausing ${fmtDuration(remainingMs)} (resumes ${resumesAt})${msg}`);
 }
 
 function vBudgetExceeded(storyId: string, spent: number, budget: number): void {
@@ -469,6 +482,7 @@ export const verboseReporter: Reporter = {
   sensorEnd: vSensorEnd,
   budgetExceeded: vBudgetExceeded,
   transientRetry: vTransientRetry,
+  usageLimitWait: vUsageLimitWait,
   error: vError,
   message: vMessage,
   sessionReport: vSessionReport,
@@ -496,7 +510,7 @@ let runCostUsd = 0;
 // When set in the future, the spinner appends a "retrying in Ns" hint so the
 // user can see the backoff countdown instead of a frozen-looking spinner.
 let spinnerRetryUntil = 0;
-let spinnerRetryKind: "transient_error" | "timeout" = "transient_error";
+let spinnerRetryKind: "transient_error" | "timeout" | "usage_limit" = "transient_error";
 
 function drawSpinner(): void {
   const elapsed = Date.now() - spinnerStartedAt;
@@ -505,9 +519,15 @@ function drawSpinner(): void {
   if (runCostUsd > 0) meta.push(`$${runCostUsd.toFixed(2)}`);
   const metaTxt = meta.length ? ` ${c.dim}${meta.join(" · ")}${c.reset}` : "";
   const remaining = spinnerRetryUntil - Date.now();
-  const retryTxt = remaining > 0
-    ? ` ${c.yellow}· retrying in ${Math.ceil(remaining / 1000)}s (${spinnerRetryKind === "timeout" ? "timeout" : "transient error"})${c.reset}`
-    : "";
+  let retryTxt = "";
+  if (remaining > 0) {
+    if (spinnerRetryKind === "usage_limit") {
+      retryTxt = ` ${c.yellow}· usage limit — resuming in ${fmtDuration(remaining)}${c.reset}`;
+    } else {
+      const kindTxt = spinnerRetryKind === "timeout" ? "timeout" : "transient error";
+      retryTxt = ` ${c.yellow}· retrying in ${Math.ceil(remaining / 1000)}s (${kindTxt})${c.reset}`;
+    }
+  }
   process.stdout.write(`\r\x1b[K  ${c.cyan}${SPINNER_FRAMES[spinnerFrame]}${c.reset} ${spinnerLabel}${metaTxt}${retryTxt}`);
 }
 
@@ -646,6 +666,21 @@ function tTransientRetry(_attempt: number, delayMs: number, kind: "transient_err
   if (spinnerTimer) drawSpinner();
 }
 
+let tUsageLimitAnnouncedAt = 0;
+function tUsageLimitWait(resumeAt: number | undefined, remainingMs: number, _errorMessage?: string): void {
+  spinnerRetryUntil = Date.now() + remainingMs;
+  spinnerRetryKind = "usage_limit";
+  // Print a one-time banner the first time we enter the wait so the user sees
+  // why the spinner is parked. Subsequent ticks just refresh the countdown.
+  const now = Date.now();
+  if (!tUsageLimitAnnouncedAt || now - tUsageLimitAnnouncedAt > 60_000) {
+    tUsageLimitAnnouncedAt = now;
+    const resumesAt = resumeAt ? new Date(resumeAt * 1000).toLocaleTimeString() : `~${fmtDuration(remainingMs)}`;
+    emitLine(`  ${c.bgYellow}${c.bold} USAGE LIMIT ${c.reset} ${c.yellow}Anthropic quota reached — pausing until ${resumesAt}${c.reset}`);
+  }
+  if (spinnerTimer) drawSpinner();
+}
+
 function tBudgetExceeded(storyId: string, spent: number, budget: number): void {
   emitLine(`  ${c.red}✗ budget${c.reset} ${c.dim}${storyId} spent=$${spent.toFixed(2)} / $${budget.toFixed(2)} — stopping fix loop${c.reset}`);
 }
@@ -719,6 +754,7 @@ export const terseReporter: Reporter = {
   sensorEnd: tSensorEnd,
   budgetExceeded: tBudgetExceeded,
   transientRetry: tTransientRetry,
+  usageLimitWait: tUsageLimitWait,
   error: tError,
   message: () => {},
   sessionReport: tSessionReport,

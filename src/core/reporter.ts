@@ -53,6 +53,10 @@ export interface Reporter {
   // active spinner so the user doesn't think the run is hung; verbose
   // renderers log a line.
   transientRetry(attempt: number, delayMs: number, errorKind: "transient_error" | "timeout"): void;
+  // Anthropic usage / quota limit pause. `resumeAt` is the Unix timestamp
+  // (seconds) when the limit is expected to reset, when known. Called once
+  // per second during the wait so terse renderers can update a countdown.
+  usageLimitWait(resumeAt: number | undefined, remainingMs: number, errorMessage?: string): void;
   error(context: string, err: unknown, category: string): void;
   message(msg: SDKMessage, agentLabel: string): void;
   sessionReport(stats: SessionStats): void;
@@ -78,6 +82,7 @@ export const silentReporter: Reporter = {
   sensorEnd: () => {},
   budgetExceeded: () => {},
   transientRetry: () => {},
+  usageLimitWait: () => {},
   error: () => {},
   message: () => {},
   sessionReport: () => {},

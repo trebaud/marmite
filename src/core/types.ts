@@ -45,7 +45,8 @@ export type SessionOutcome =
   | "timeout"
   | "transient_error"
   | "fatal_error"
-  | "aborted";
+  | "aborted"
+  | "usage_limit";
 
 export interface SessionStats {
   phase: SessionPhase;

@@ -28,6 +28,9 @@ export interface SessionResult {
   model: string;
   outcome: SessionOutcome;
   errorMessage?: string;
+  // Unix timestamp (seconds) when an Anthropic usage limit will reset. Only
+  // populated when `outcome === "usage_limit"` and the SDK surfaced a hint.
+  resumeAt?: number;
   stats: SessionStatsRaw;
 }
 
@@ -82,23 +85,87 @@ function calcCost(
   );
 }
 
+// Stream-derived error info captured by drain(). The Agent SDK does NOT throw
+// API errors out of the async iterator — it emits them as `SDKResultError`
+// (result/subtype != success) and `SDKAssistantMessage.error` codes, plus a
+// `SDKRateLimitEvent` whenever subscription rate-limit state changes. We
+// gather all of these so runQuery() can pick the most informative signal.
+interface DrainErrorInfo {
+  subtype: string;
+  // From SDKResultError.terminal_reason — e.g. 'blocking_limit',
+  // 'rapid_refill_breaker', 'max_turns', 'prompt_too_long'. The most reliable
+  // single signal for what stopped the run.
+  terminalReason?: string;
+  // SDKResultError.errors[] joined for human display.
+  errorsText?: string;
+  // Last SDKAssistantMessage.error before termination — e.g. 'rate_limit',
+  // 'billing_error', 'authentication_failed'.
+  assistantError?: string;
+  // Last SDKRateLimitEvent.rate_limit_info before termination (subscription
+  // billing only — undefined on direct API-key flows).
+  rateLimitInfo?: {
+    status?: string;
+    resetsAt?: number;
+    rateLimitType?: string;
+  };
+}
+
 async function drain(
   config: HarnessConfig,
   model: string,
   q: AsyncIterable<SDKMessage>,
   agentLabel: string,
   reporter: Reporter,
-): Promise<{ result: string; sessionId: string; stats: SessionStatsRaw }> {
+): Promise<{ result: string; sessionId: string; stats: SessionStatsRaw; errorInfo?: DrainErrorInfo }> {
   let result = "";
   let sessionId = "";
   let stats: SessionStatsRaw = { ...emptyStats };
+  let errorInfo: DrainErrorInfo | undefined;
+  let lastAssistantError: string | undefined;
+  let lastRateLimitInfo: DrainErrorInfo["rateLimitInfo"];
+
   for await (const message of q) {
     reporter.message(message, agentLabel);
+
+    // Track rolling assistant error code (most recent wins).
+    if (message.type === "assistant") {
+      const e = (message as any).error;
+      if (typeof e === "string") lastAssistantError = e;
+    }
+
+    // Track subscription rate-limit telemetry. Only "rejected" hard-blocks,
+    // but the resetsAt timestamp is the same field across statuses, so we
+    // capture whichever was emitted most recently.
+    if ((message as any).type === "rate_limit_event") {
+      const info = (message as any).rate_limit_info;
+      if (info) {
+        lastRateLimitInfo = {
+          status: info.status,
+          resetsAt: typeof info.resetsAt === "number" ? info.resetsAt : undefined,
+          rateLimitType: info.rateLimitType,
+        };
+      }
+    }
+
     if (message.type === "result") {
       const r = message as any;
       if (message.subtype === "success") {
         result = message.result;
         sessionId = r.session_id ?? "";
+      } else {
+        // Non-success result subtype: capture everything the SDK gave us so
+        // runQuery can map this to an outcome. errors[] is a string[] per
+        // SDKResultError; terminal_reason and the trailing rate_limit_info /
+        // assistant error are the most actionable signals.
+        sessionId = r.session_id ?? "";
+        const errsRaw = Array.isArray(r.errors) ? r.errors : [];
+        errorInfo = {
+          subtype: String(message.subtype),
+          terminalReason: typeof r.terminal_reason === "string" ? r.terminal_reason : undefined,
+          errorsText: errsRaw.length > 0 ? errsRaw.map(String).join("; ") : undefined,
+          assistantError: lastAssistantError,
+          rateLimitInfo: lastRateLimitInfo,
+        };
       }
       const inputTokens = r.usage?.input_tokens ?? 0;
       const outputTokens = r.usage?.output_tokens ?? 0;
@@ -117,7 +184,79 @@ async function drain(
       };
     }
   }
-  return { result, sessionId, stats };
+  return { result, sessionId, stats, errorInfo };
+}
+
+// Decide what to do with a non-success SDKResultError. The mapping favors the
+// most reliable signal: terminal_reason first (set by the SDK and stable),
+// then assistant_error code, then rate_limit_info, then the free-text errors
+// blob as a last-resort regex match.
+//
+// Reference: node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts
+//   SDKResultError, TerminalReason, SDKAssistantMessageError, SDKRateLimitInfo
+export function classifyDrainError(info: DrainErrorInfo): {
+  outcome: SessionOutcome;
+  message: string;
+  resumeAt?: number;
+} {
+  const message =
+    info.errorsText ??
+    (info.assistantError ? `assistant error: ${info.assistantError}` : null) ??
+    info.subtype;
+  const resumeAt = info.rateLimitInfo?.resetsAt;
+
+  // Subscription quota / rate-limit hard block. terminal_reason is the
+  // canonical signal here.
+  if (info.terminalReason === "blocking_limit" || info.terminalReason === "rapid_refill_breaker") {
+    return { outcome: "usage_limit", message, resumeAt };
+  }
+
+  // Assistant-level error codes from the API. 'billing_error' = quota /
+  // payment / credit issue; 'rate_limit' = HTTP 429.
+  if (info.assistantError === "billing_error" || info.assistantError === "rate_limit") {
+    return { outcome: "usage_limit", message, resumeAt };
+  }
+
+  // SDK-internal per-query budget cap (only fires if caller set maxBudgetUsd —
+  // marmite doesn't, but treat as fatal so we don't hammer it).
+  if (info.subtype === "error_max_budget_usd") {
+    return { outcome: "fatal_error", message };
+  }
+
+  // Conversation-loop ceilings — not transient, retrying won't help.
+  if (info.subtype === "error_max_turns" || info.terminalReason === "max_turns") {
+    return { outcome: "fatal_error", message };
+  }
+  if (info.terminalReason === "prompt_too_long") {
+    return { outcome: "fatal_error", message };
+  }
+
+  // error_during_execution is the generic catch-all the SDK emits when an
+  // API call fails after its internal retries. If the rate-limit event came
+  // through "rejected" we still trust it. Otherwise the SDK has already
+  // exhausted its retries; treat as transient one more time at our layer.
+  if (info.rateLimitInfo?.status === "rejected") {
+    return { outcome: "usage_limit", message, resumeAt };
+  }
+
+  // Free-text fallback — covers cases where the SDK hasn't tagged the error
+  // with a structured field. Be conservative: only match phrases that strongly
+  // imply a quota wait (not generic 429s).
+  if (info.errorsText) {
+    const lower = info.errorsText.toLowerCase();
+    if (
+      /usage\s+limit\s+(reached|exceeded)/.test(lower) ||
+      /quota\s+(exceeded|reached)/.test(lower) ||
+      /credit\s+balance\s+is\s+too\s+low/.test(lower)
+    ) {
+      return { outcome: "usage_limit", message, resumeAt };
+    }
+  }
+
+  if (info.subtype === "error_during_execution" || info.subtype === "error_max_structured_output_retries") {
+    return { outcome: "transient_error", message };
+  }
+  return { outcome: "fatal_error", message };
 }
 
 export async function runQuery(
@@ -153,6 +292,20 @@ export async function runQuery(
     };
     const q = query({ prompt, options });
     const drained = await drain(config, model, q, agentLabel, reporter);
+    // The SDK surfaces API errors as SDKResultError (result/subtype != success)
+    // rather than throwing. Map those into a SessionOutcome here.
+    if (drained.errorInfo) {
+      const classified = classifyDrainError(drained.errorInfo);
+      return {
+        result: "",
+        sessionId: drained.sessionId,
+        model,
+        outcome: classified.outcome,
+        errorMessage: classified.message,
+        resumeAt: classified.resumeAt,
+        stats: drained.stats,
+      };
+    }
     return {
       result: drained.result,
       sessionId: drained.sessionId,
@@ -161,6 +314,9 @@ export async function runQuery(
       stats: drained.stats,
     };
   } catch (err) {
+    // Only setup / connection / abort-style errors land here. Real API errors
+    // (rate_limit, billing, blocking_limit, etc.) surface via SDKResultError
+    // and are mapped inside the try block by classifyDrainError.
     const classified = classifyError(err);
     let outcome: SessionOutcome = "fatal_error";
     if (timedOut || classified.category === "timeout") outcome = "timeout";
@@ -180,6 +336,14 @@ export async function runQuery(
   }
 }
 
+// Cap usage_limit waits at 12h so a parser miss can't park the run forever.
+// Default cooldown when the SDK gave no resumeAt: long enough that we don't
+// hammer the API, short enough that an in-progress quota reset gets picked up
+// reasonably soon.
+const USAGE_LIMIT_MAX_WAIT_MS = 12 * 60 * 60 * 1000;
+const USAGE_LIMIT_DEFAULT_WAIT_MS = 5 * 60 * 1000;
+const USAGE_LIMIT_BUFFER_MS = 5_000;
+
 export async function runQueryWithRetry(
   config: HarnessConfig,
   prompt: string,
@@ -191,9 +355,43 @@ export async function runQueryWithRetry(
   agentLabel: string = "harness",
 ): Promise<SessionResult> {
   let lastResult: SessionResult | null = null;
-  for (let attempt = 1; attempt <= config.maxTransientRetries + 1; attempt++) {
+  let attempt = 1;
+  while (attempt <= config.maxTransientRetries + 1) {
     const result = await runQuery(config, prompt, timeoutMs, reporter, resumeId, parentSignal, model, agentLabel);
     lastResult = result;
+
+    // Usage / quota limits: pause until the Anthropic-provided reset time
+    // (or a default cooldown if none). Does NOT consume the transient retry
+    // budget and does NOT advance the iteration — the same call is retried
+    // once the limit clears, so the harness picks up exactly where it left off.
+    if (result.outcome === "usage_limit") {
+      if (parentSignal.aborted) return result;
+      const nowMs = Date.now();
+      let waitMs: number;
+      if (result.resumeAt && result.resumeAt * 1000 > nowMs) {
+        waitMs = result.resumeAt * 1000 - nowMs + USAGE_LIMIT_BUFFER_MS;
+      } else {
+        waitMs = USAGE_LIMIT_DEFAULT_WAIT_MS;
+      }
+      waitMs = Math.min(waitMs, USAGE_LIMIT_MAX_WAIT_MS);
+      reporter.error(
+        `Anthropic usage limit reached on ${agentLabel} — pausing for ${Math.round(waitMs / 1000)}s`,
+        result.errorMessage,
+        "usage_limit",
+      );
+      reporter.usageLimitWait(result.resumeAt, waitMs, result.errorMessage);
+      const deadline = Date.now() + waitMs;
+      while (!parentSignal.aborted) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await sleep(Math.min(1_000, remaining));
+        if (remaining > 1_000) reporter.usageLimitWait(result.resumeAt, deadline - Date.now(), result.errorMessage);
+      }
+      if (parentSignal.aborted) return result;
+      // Retry without incrementing attempt — this isn't a flake.
+      continue;
+    }
+
     if (result.outcome !== "transient_error" && result.outcome !== "timeout") return result;
     if (parentSignal.aborted) return result;
     if (attempt > config.maxTransientRetries) return result;
@@ -213,6 +411,7 @@ export async function runQueryWithRetry(
       await sleep(Math.min(1_000, remaining));
       if (remaining > 1_000) reporter.transientRetry(attempt, deadline - Date.now(), result.outcome);
     }
+    attempt++;
   }
   return lastResult!;
 }
