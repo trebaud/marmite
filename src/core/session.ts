@@ -110,81 +110,127 @@ interface DrainErrorInfo {
   };
 }
 
+interface DrainOutput {
+  result: string;
+  sessionId: string;
+  stats: SessionStatsRaw;
+  errorInfo?: DrainErrorInfo;
+  // Last SDKRateLimitEvent.rate_limit_info we observed. Stays populated even
+  // when the SDK ends in a thrown error and never emitted a SDKResultError —
+  // common path for the subscription "You've hit your limit" flow, where the
+  // iterator yields a success-shaped result containing the limit text and
+  // then throws `Claude Code returned an error result: …` on subprocess exit.
+  rateLimitInfo?: DrainErrorInfo["rateLimitInfo"];
+  // Set when the SDK threw out of the async iterator (e.g. subprocess exit
+  // with stored lastErrorResultText). Captured here so the caller can still
+  // see the stream state we collected before the throw.
+  thrownError?: unknown;
+}
+
 async function drain(
   config: HarnessConfig,
   model: string,
   q: AsyncIterable<SDKMessage>,
   agentLabel: string,
   reporter: Reporter,
-): Promise<{ result: string; sessionId: string; stats: SessionStatsRaw; errorInfo?: DrainErrorInfo }> {
+): Promise<DrainOutput> {
   let result = "";
   let sessionId = "";
   let stats: SessionStatsRaw = { ...emptyStats };
   let errorInfo: DrainErrorInfo | undefined;
   let lastAssistantError: string | undefined;
   let lastRateLimitInfo: DrainErrorInfo["rateLimitInfo"];
+  let thrownError: unknown;
 
-  for await (const message of q) {
-    reporter.message(message, agentLabel);
+  try {
+    for await (const message of q) {
+      reporter.message(message, agentLabel);
 
-    // Track rolling assistant error code (most recent wins).
-    if (message.type === "assistant") {
-      const e = (message as any).error;
-      if (typeof e === "string") lastAssistantError = e;
-    }
+      // Track rolling assistant error code (most recent wins).
+      if (message.type === "assistant") {
+        const e = (message as any).error;
+        if (typeof e === "string") lastAssistantError = e;
+      }
 
-    // Track subscription rate-limit telemetry. Only "rejected" hard-blocks,
-    // but the resetsAt timestamp is the same field across statuses, so we
-    // capture whichever was emitted most recently.
-    if ((message as any).type === "rate_limit_event") {
-      const info = (message as any).rate_limit_info;
-      if (info) {
-        lastRateLimitInfo = {
-          status: info.status,
-          resetsAt: typeof info.resetsAt === "number" ? info.resetsAt : undefined,
-          rateLimitType: info.rateLimitType,
+      // Track subscription rate-limit telemetry. Only "rejected" hard-blocks,
+      // but the resetsAt timestamp is the same field across statuses, so we
+      // capture whichever was emitted most recently.
+      if ((message as any).type === "rate_limit_event") {
+        const info = (message as any).rate_limit_info;
+        if (info) {
+          lastRateLimitInfo = {
+            status: info.status,
+            resetsAt: typeof info.resetsAt === "number" ? info.resetsAt : undefined,
+            rateLimitType: info.rateLimitType,
+          };
+        }
+      }
+
+      if (message.type === "result") {
+        const r = message as any;
+        if (message.subtype === "success") {
+          result = message.result;
+          sessionId = r.session_id ?? "";
+        } else {
+          // Non-success result subtype: capture everything the SDK gave us so
+          // runQuery can map this to an outcome. errors[] is a string[] per
+          // SDKResultError; terminal_reason and the trailing rate_limit_info /
+          // assistant error are the most actionable signals.
+          sessionId = r.session_id ?? "";
+          const errsRaw = Array.isArray(r.errors) ? r.errors : [];
+          errorInfo = {
+            subtype: String(message.subtype),
+            terminalReason: typeof r.terminal_reason === "string" ? r.terminal_reason : undefined,
+            errorsText: errsRaw.length > 0 ? errsRaw.map(String).join("; ") : undefined,
+            assistantError: lastAssistantError,
+            rateLimitInfo: lastRateLimitInfo,
+          };
+        }
+        const inputTokens = r.usage?.input_tokens ?? 0;
+        const outputTokens = r.usage?.output_tokens ?? 0;
+        const cacheReadTokens = r.usage?.cache_read_input_tokens ?? 0;
+        // Prefer the SDK's reported cost when available; otherwise compute from our pricing table.
+        const sdkCost = typeof r.total_cost_usd === "number" ? r.total_cost_usd : null;
+        stats = {
+          costUsd: sdkCost ?? calcCost(pricingFor(config, model), inputTokens, outputTokens, cacheReadTokens),
+          durationMs: r.duration_ms ?? 0,
+          durationApiMs: r.duration_api_ms ?? 0,
+          numTurns: r.num_turns ?? 0,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheCreateTokens: r.usage?.cache_creation_input_tokens ?? 0,
         };
       }
     }
-
-    if (message.type === "result") {
-      const r = message as any;
-      if (message.subtype === "success") {
-        result = message.result;
-        sessionId = r.session_id ?? "";
-      } else {
-        // Non-success result subtype: capture everything the SDK gave us so
-        // runQuery can map this to an outcome. errors[] is a string[] per
-        // SDKResultError; terminal_reason and the trailing rate_limit_info /
-        // assistant error are the most actionable signals.
-        sessionId = r.session_id ?? "";
-        const errsRaw = Array.isArray(r.errors) ? r.errors : [];
-        errorInfo = {
-          subtype: String(message.subtype),
-          terminalReason: typeof r.terminal_reason === "string" ? r.terminal_reason : undefined,
-          errorsText: errsRaw.length > 0 ? errsRaw.map(String).join("; ") : undefined,
-          assistantError: lastAssistantError,
-          rateLimitInfo: lastRateLimitInfo,
-        };
-      }
-      const inputTokens = r.usage?.input_tokens ?? 0;
-      const outputTokens = r.usage?.output_tokens ?? 0;
-      const cacheReadTokens = r.usage?.cache_read_input_tokens ?? 0;
-      // Prefer the SDK's reported cost when available; otherwise compute from our pricing table.
-      const sdkCost = typeof r.total_cost_usd === "number" ? r.total_cost_usd : null;
-      stats = {
-        costUsd: sdkCost ?? calcCost(pricingFor(config, model), inputTokens, outputTokens, cacheReadTokens),
-        durationMs: r.duration_ms ?? 0,
-        durationApiMs: r.duration_api_ms ?? 0,
-        numTurns: r.num_turns ?? 0,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        cacheCreateTokens: r.usage?.cache_creation_input_tokens ?? 0,
-      };
-    }
+  } catch (err) {
+    // The Agent SDK throws out of the iterator on subprocess exit when it has
+    // a stored error result (e.g. subscription rate-limit hit, where it emits
+    // a success-shaped result with the limit text and then throws on cleanup).
+    // We swallow the throw here so the caller can combine it with the
+    // rate_limit_info we observed mid-stream and make a sensible decision.
+    thrownError = err;
   }
-  return { result, sessionId, stats, errorInfo };
+  return { result, sessionId, stats, errorInfo, rateLimitInfo: lastRateLimitInfo, thrownError };
+}
+
+// Subscription limit messages the SDK surfaces either as the .result of a
+// success-shaped SDKResultMessage or as the body of the thrown exit error.
+// Matching is conservative: phrases that map unambiguously to "wait, the
+// limit will lift" rather than transient API errors.
+export function textIsUsageLimit(text: string | undefined): boolean {
+  if (!text) return false;
+  const s = text.toLowerCase();
+  return (
+    /you'?ve hit your\b.*\blimit/.test(s) ||
+    /usage\s+limit\s+(reached|exceeded)/.test(s) ||
+    /quota\s+(exceeded|reached)/.test(s) ||
+    /credit\s+balance\s+is\s+too\s+low/.test(s) ||
+    // Sentinel thrown by the SDK's QX.readMessages cleanup path —
+    // node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs:
+    //   `Claude Code returned an error result: ${lastErrorResultText}`.
+    /claude code returned an error result/.test(s)
+  );
 }
 
 // Decide what to do with a non-success SDKResultError. The mapping favors the
@@ -292,8 +338,17 @@ export async function runQuery(
     };
     const q = query({ prompt, options });
     const drained = await drain(config, model, q, agentLabel, reporter);
-    // The SDK surfaces API errors as SDKResultError (result/subtype != success)
-    // rather than throwing. Map those into a SessionOutcome here.
+
+    // Signal priority for picking an outcome:
+    //   1. SDKResultError with structured fields → classifyDrainError
+    //   2. SDKRateLimitEvent status="rejected" before the iterator ended
+    //   3. Result text or thrown-exit message matching a usage-limit phrase
+    //   4. Plain thrown error (treat as transient/aborted/timeout/fatal)
+    //   5. Success
+    const rateLimitInfo = drained.rateLimitInfo;
+    const rateLimitRejected = rateLimitInfo?.status === "rejected";
+    const resumeAtFromRate = rateLimitInfo?.resetsAt;
+
     if (drained.errorInfo) {
       const classified = classifyDrainError(drained.errorInfo);
       return {
@@ -306,6 +361,51 @@ export async function runQuery(
         stats: drained.stats,
       };
     }
+
+    // SDK subscription-limit pattern: success-shaped result containing the
+    // "You've hit your limit · resets …" text, optionally followed by a
+    // thrown exit error. Prefer the structured rate_limit_event timestamp
+    // over anything we'd parse from the text.
+    const thrownMessage = drained.thrownError instanceof Error
+      ? drained.thrownError.message
+      : typeof drained.thrownError === "string"
+        ? drained.thrownError
+        : undefined;
+    const resultLooksLikeLimit = textIsUsageLimit(drained.result);
+    const thrownLooksLikeLimit = textIsUsageLimit(thrownMessage);
+
+    if (rateLimitRejected || resultLooksLikeLimit || thrownLooksLikeLimit) {
+      const errorMessage = thrownMessage ?? drained.result ?? "usage limit reached";
+      return {
+        result: "",
+        sessionId: drained.sessionId,
+        model,
+        outcome: "usage_limit",
+        errorMessage,
+        resumeAt: resumeAtFromRate,
+        stats: drained.stats,
+      };
+    }
+
+    // Thrown exit error that doesn't match a usage-limit pattern. Fall back
+    // to classifyError so timeouts / aborts / transient network blips still
+    // route correctly.
+    if (drained.thrownError !== undefined) {
+      const classified = classifyError(drained.thrownError);
+      let outcome: SessionOutcome = "fatal_error";
+      if (timedOut || classified.category === "timeout") outcome = "timeout";
+      else if (classified.category === "aborted") outcome = "aborted";
+      else if (classified.category === "transient") outcome = "transient_error";
+      return {
+        result: "",
+        sessionId: drained.sessionId,
+        model,
+        outcome,
+        errorMessage: classified.message,
+        stats: drained.stats,
+      };
+    }
+
     return {
       result: drained.result,
       sessionId: drained.sessionId,
@@ -314,9 +414,8 @@ export async function runQuery(
       stats: drained.stats,
     };
   } catch (err) {
-    // Only setup / connection / abort-style errors land here. Real API errors
-    // (rate_limit, billing, blocking_limit, etc.) surface via SDKResultError
-    // and are mapped inside the try block by classifyDrainError.
+    // Setup / connection errors that escape drain (e.g. query() throwing
+    // synchronously before the iterator even starts).
     const classified = classifyError(err);
     let outcome: SessionOutcome = "fatal_error";
     if (timedOut || classified.category === "timeout") outcome = "timeout";

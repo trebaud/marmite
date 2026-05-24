@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { classifyDrainError } from "../src/core/session.ts";
+import { classifyDrainError, textIsUsageLimit } from "../src/core/session.ts";
 
 // classifyDrainError maps the Agent SDK's SDKResultError + surrounding stream
 // signals into a SessionOutcome. See node_modules/@anthropic-ai/claude-agent-
@@ -122,5 +122,40 @@ describe("classifyDrainError", () => {
       assistantError: "billing_error",
     });
     expect(r.message).toContain("billing_error");
+  });
+});
+
+describe("textIsUsageLimit", () => {
+  test("matches the real subscription-limit response text", () => {
+    // The actual SDK output we saw in the wild:
+    //   "You've hit your limit · resets 11:50pm (America/Toronto)"
+    expect(textIsUsageLimit("You've hit your limit · resets 11:50pm (America/Toronto)")).toBe(true);
+  });
+
+  test("matches the SDK's thrown exit error wrapping the limit text", () => {
+    expect(
+      textIsUsageLimit(
+        "Claude Code returned an error result: You've hit your limit · resets 11:50pm",
+      ),
+    ).toBe(true);
+  });
+
+  test("matches Opus-specific subscription limit", () => {
+    expect(textIsUsageLimit("You've hit your Opus limit · resets Mon 9:00am")).toBe(true);
+  });
+
+  test("matches credit-balance API-key flow", () => {
+    expect(textIsUsageLimit("Your credit balance is too low to access the Anthropic API")).toBe(true);
+  });
+
+  test("does not match unrelated SDK errors", () => {
+    expect(textIsUsageLimit("Claude Code process exited with code 1")).toBe(false);
+    expect(textIsUsageLimit("connection reset by peer")).toBe(false);
+    expect(textIsUsageLimit(undefined)).toBe(false);
+    expect(textIsUsageLimit("")).toBe(false);
+  });
+
+  test("matches 'usage limit reached' phrasing in arbitrary text", () => {
+    expect(textIsUsageLimit("API request failed: usage limit reached for project")).toBe(true);
   });
 });
