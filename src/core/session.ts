@@ -448,26 +448,7 @@ const USAGE_LIMIT_DEFAULT_WAIT_MS = 5 * 60 * 1000;
 // total pause.
 const USAGE_LIMIT_BUFFER_MS = 30_000;
 
-// Internals broken out so tests can drive the retry loop without spawning a
-// real Agent SDK subprocess. Production callers use runQueryWithRetry which
-// wires in real runQuery + sleep.
-export interface RetryDeps {
-  runQuery: (
-    config: HarnessConfig,
-    prompt: string,
-    timeoutMs: number,
-    reporter: Reporter,
-    resumeId: string | undefined,
-    parentSignal: AbortSignal,
-    model: string,
-    agentLabel: string,
-  ) => Promise<SessionResult>;
-  sleep: (ms: number) => Promise<void>;
-  now: () => number;
-}
-
-export async function runQueryWithRetryUsing(
-  deps: RetryDeps,
+export async function runQueryWithRetry(
   config: HarnessConfig,
   prompt: string,
   timeoutMs: number,
@@ -481,16 +462,7 @@ export async function runQueryWithRetryUsing(
   let attempt = 1;
   let usageLimitWaits = 0;
   while (attempt <= config.maxTransientRetries + 1) {
-    const result = await deps.runQuery(
-      config,
-      prompt,
-      timeoutMs,
-      reporter,
-      resumeId,
-      parentSignal,
-      model,
-      agentLabel,
-    );
+    const result = await runQuery(config, prompt, timeoutMs, reporter, resumeId, parentSignal, model, agentLabel);
     lastResult = result;
 
     // Usage / quota limits: pause until the Anthropic-provided reset time
@@ -500,7 +472,7 @@ export async function runQueryWithRetryUsing(
     if (result.outcome === "usage_limit") {
       if (parentSignal.aborted) return result;
       usageLimitWaits++;
-      const nowMs = deps.now();
+      const nowMs = Date.now();
       let waitMs: number;
       if (result.resumeAt && result.resumeAt * 1000 > nowMs) {
         waitMs = result.resumeAt * 1000 - nowMs + USAGE_LIMIT_BUFFER_MS;
@@ -515,16 +487,15 @@ export async function runQueryWithRetryUsing(
         "usage_limit",
       );
       reporter.usageLimitWait(result.resumeAt, waitMs, result.errorMessage);
-      const deadline = deps.now() + waitMs;
+      const deadline = Date.now() + waitMs;
       while (!parentSignal.aborted) {
-        const remaining = deadline - deps.now();
+        const remaining = deadline - Date.now();
         if (remaining <= 0) break;
-        await deps.sleep(Math.min(1_000, remaining));
-        if (remaining > 1_000) reporter.usageLimitWait(result.resumeAt, deadline - deps.now(), result.errorMessage);
+        await sleep(Math.min(1_000, remaining));
+        if (remaining > 1_000) reporter.usageLimitWait(result.resumeAt, deadline - Date.now(), result.errorMessage);
       }
       if (parentSignal.aborted) return result;
       reporter.info(`  Usage limit window cleared — retrying ${agentLabel}`);
-      // Retry without incrementing attempt — this isn't a flake.
       continue;
     }
 
@@ -540,45 +511,16 @@ export async function runQueryWithRetryUsing(
     reporter.transientRetry(attempt, delay, result.outcome);
     // Sleep in ~1s slices so the reporter can refresh a countdown. The early
     // exit on parentSignal lets Ctrl+C interrupt the wait promptly.
-    const deadline = deps.now() + delay;
+    const deadline = Date.now() + delay;
     while (!parentSignal.aborted) {
-      const remaining = deadline - deps.now();
+      const remaining = deadline - Date.now();
       if (remaining <= 0) break;
-      await deps.sleep(Math.min(1_000, remaining));
-      if (remaining > 1_000) reporter.transientRetry(attempt, deadline - deps.now(), result.outcome);
+      await sleep(Math.min(1_000, remaining));
+      if (remaining > 1_000) reporter.transientRetry(attempt, deadline - Date.now(), result.outcome);
     }
     attempt++;
   }
   return lastResult!;
-}
-
-const DEFAULT_RETRY_DEPS: RetryDeps = {
-  runQuery,
-  sleep,
-  now: () => Date.now(),
-};
-
-export function runQueryWithRetry(
-  config: HarnessConfig,
-  prompt: string,
-  timeoutMs: number,
-  resumeId: string | undefined,
-  parentSignal: AbortSignal,
-  reporter: Reporter,
-  model: string = config.model,
-  agentLabel: string = "harness",
-): Promise<SessionResult> {
-  return runQueryWithRetryUsing(
-    DEFAULT_RETRY_DEPS,
-    config,
-    prompt,
-    timeoutMs,
-    resumeId,
-    parentSignal,
-    reporter,
-    model,
-    agentLabel,
-  );
 }
 
 export async function readPromptFile(path: string): Promise<string> {
