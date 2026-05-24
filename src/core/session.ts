@@ -441,9 +441,33 @@ export async function runQuery(
 // reasonably soon.
 const USAGE_LIMIT_MAX_WAIT_MS = 12 * 60 * 60 * 1000;
 const USAGE_LIMIT_DEFAULT_WAIT_MS = 5 * 60 * 1000;
-const USAGE_LIMIT_BUFFER_MS = 5_000;
+// 30s buffer past the announced reset — Anthropic's "resets 11:50pm" is
+// minute-precise (resetsAt: 2026-05-25T03:50:00.000Z), so a 5s buffer was
+// inside the rounding error and could land us back inside the limit window
+// on retry. 30s gives reliable clearance without noticeably extending the
+// total pause.
+const USAGE_LIMIT_BUFFER_MS = 30_000;
 
-export async function runQueryWithRetry(
+// Internals broken out so tests can drive the retry loop without spawning a
+// real Agent SDK subprocess. Production callers use runQueryWithRetry which
+// wires in real runQuery + sleep.
+export interface RetryDeps {
+  runQuery: (
+    config: HarnessConfig,
+    prompt: string,
+    timeoutMs: number,
+    reporter: Reporter,
+    resumeId: string | undefined,
+    parentSignal: AbortSignal,
+    model: string,
+    agentLabel: string,
+  ) => Promise<SessionResult>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+}
+
+export async function runQueryWithRetryUsing(
+  deps: RetryDeps,
   config: HarnessConfig,
   prompt: string,
   timeoutMs: number,
@@ -455,8 +479,18 @@ export async function runQueryWithRetry(
 ): Promise<SessionResult> {
   let lastResult: SessionResult | null = null;
   let attempt = 1;
+  let usageLimitWaits = 0;
   while (attempt <= config.maxTransientRetries + 1) {
-    const result = await runQuery(config, prompt, timeoutMs, reporter, resumeId, parentSignal, model, agentLabel);
+    const result = await deps.runQuery(
+      config,
+      prompt,
+      timeoutMs,
+      reporter,
+      resumeId,
+      parentSignal,
+      model,
+      agentLabel,
+    );
     lastResult = result;
 
     // Usage / quota limits: pause until the Anthropic-provided reset time
@@ -465,7 +499,8 @@ export async function runQueryWithRetry(
     // once the limit clears, so the harness picks up exactly where it left off.
     if (result.outcome === "usage_limit") {
       if (parentSignal.aborted) return result;
-      const nowMs = Date.now();
+      usageLimitWaits++;
+      const nowMs = deps.now();
       let waitMs: number;
       if (result.resumeAt && result.resumeAt * 1000 > nowMs) {
         waitMs = result.resumeAt * 1000 - nowMs + USAGE_LIMIT_BUFFER_MS;
@@ -474,19 +509,21 @@ export async function runQueryWithRetry(
       }
       waitMs = Math.min(waitMs, USAGE_LIMIT_MAX_WAIT_MS);
       reporter.error(
-        `Anthropic usage limit reached on ${agentLabel} — pausing for ${Math.round(waitMs / 1000)}s`,
+        `Anthropic usage limit reached on ${agentLabel} — pausing for ${Math.round(waitMs / 1000)}s` +
+          (usageLimitWaits > 1 ? ` (consecutive pause #${usageLimitWaits})` : ""),
         result.errorMessage,
         "usage_limit",
       );
       reporter.usageLimitWait(result.resumeAt, waitMs, result.errorMessage);
-      const deadline = Date.now() + waitMs;
+      const deadline = deps.now() + waitMs;
       while (!parentSignal.aborted) {
-        const remaining = deadline - Date.now();
+        const remaining = deadline - deps.now();
         if (remaining <= 0) break;
-        await sleep(Math.min(1_000, remaining));
-        if (remaining > 1_000) reporter.usageLimitWait(result.resumeAt, deadline - Date.now(), result.errorMessage);
+        await deps.sleep(Math.min(1_000, remaining));
+        if (remaining > 1_000) reporter.usageLimitWait(result.resumeAt, deadline - deps.now(), result.errorMessage);
       }
       if (parentSignal.aborted) return result;
+      reporter.info(`  Usage limit window cleared — retrying ${agentLabel}`);
       // Retry without incrementing attempt — this isn't a flake.
       continue;
     }
@@ -503,16 +540,45 @@ export async function runQueryWithRetry(
     reporter.transientRetry(attempt, delay, result.outcome);
     // Sleep in ~1s slices so the reporter can refresh a countdown. The early
     // exit on parentSignal lets Ctrl+C interrupt the wait promptly.
-    const deadline = Date.now() + delay;
+    const deadline = deps.now() + delay;
     while (!parentSignal.aborted) {
-      const remaining = deadline - Date.now();
+      const remaining = deadline - deps.now();
       if (remaining <= 0) break;
-      await sleep(Math.min(1_000, remaining));
-      if (remaining > 1_000) reporter.transientRetry(attempt, deadline - Date.now(), result.outcome);
+      await deps.sleep(Math.min(1_000, remaining));
+      if (remaining > 1_000) reporter.transientRetry(attempt, deadline - deps.now(), result.outcome);
     }
     attempt++;
   }
   return lastResult!;
+}
+
+const DEFAULT_RETRY_DEPS: RetryDeps = {
+  runQuery,
+  sleep,
+  now: () => Date.now(),
+};
+
+export function runQueryWithRetry(
+  config: HarnessConfig,
+  prompt: string,
+  timeoutMs: number,
+  resumeId: string | undefined,
+  parentSignal: AbortSignal,
+  reporter: Reporter,
+  model: string = config.model,
+  agentLabel: string = "harness",
+): Promise<SessionResult> {
+  return runQueryWithRetryUsing(
+    DEFAULT_RETRY_DEPS,
+    config,
+    prompt,
+    timeoutMs,
+    resumeId,
+    parentSignal,
+    reporter,
+    model,
+    agentLabel,
+  );
 }
 
 export async function readPromptFile(path: string): Promise<string> {
