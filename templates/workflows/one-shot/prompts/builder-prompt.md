@@ -25,13 +25,75 @@ If the file is absent or empty, proceed normally — this is the common case.
 
 ### Janitor flow (`kind: "janitor"`)
 
-When `current-task.json.kind === "janitor"`, do NOT implement a user story. Instead:
+Sensor-driven refactor pass. Run sensors, triage with the `janitor` skill, fix a small batch, record the result. The skill is an analysis reference only — you own the workflow.
 
-6. Invoke the `janitor` skill. The skill reads `current-task.json.triggeredBy` (or the `janitor.sensors` allowlist in `marmite.json`), re-runs those sensors to enumerate fresh findings, picks the top N (where N = `janitor.maxFindingsPerRun` from `marmite.json`), and applies them incrementally — running the test suite between each fix and reverting any change that breaks tests.
-7. After the skill finishes, locate the matching JanitorEntry in `.marmite/progress.json.timeline` (the one with `id === current-task.json.storyId`). **Mutate it in place** — add `appliedFixes` (one short string per fix landed), `deferredFindings` (one string per finding the skill chose to skip, each with a short reason), and `commitShas` (one entry per `refactor(janitor): ...` commit). Do NOT append a new timeline entry — the orchestrator already appended this one.
-8. Stage and commit the progress.json update as the **last** commit of the iteration with message: `refactor(janitor): [JANITOR-ID] - <summary>`. The earlier per-fix commits already landed; this final commit just records the bookkeeping update.
+#### J1. JanitorEntry lookup
 
-The `guidance` field in `.marmite/current-task.json` contains specific instructions from the orchestrator — always read and act on it.
+Find the entry in `.marmite/progress.json.timeline` where `id === current-task.json.storyId`:
+- **Found** (cook flow — orchestrator created it): its `triggeredBy[]` is the verifier's baseline; **do not modify it**.
+- **Missing** (refactor flow): you'll append it in J2.
+
+#### J2. Run sensors — scoped to this branch's changes
+
+Compute the changed-file set and per-file added-line ranges vs `marmite.json.baseBranch`:
+
+```bash
+BASE=$(jq -r .baseBranch marmite.json)
+git diff --name-only "$BASE...HEAD"          # changed files
+git diff "$BASE...HEAD" -- <file>            # per-file added-line ranges
+```
+
+For each sensor in `marmite.json.sensors[]` (narrowed by `janitor.sensors` if that allowlist is set), execute its `guidance` field as a shell command — that's the canonical invocation the user configured. Parse output into `{file, line?, severity, kind, message}`. Drop everything that isn't in this branch's changes: keep only findings on changed files, on lines this branch added or modified, with severity ≥ warning, and whose source line is not tagged `// JANITOR-DEFER:`. That's the **post-filter** set.
+
+After parsing, emit one `sensor-result` per sensor with the post-filter count — that's what populates the dashboard's Sensor Health panel:
+
+```bash
+marmite emit-event sensor-result --sensor eslint --type debt --finding-count 23 \
+  --threshold "$(jq -r '.janitor.thresholds.debt // empty' marmite.json)"
+```
+
+Emit even when `--finding-count 0` (the empty result is meaningful — it shows the sparkline dipped).
+
+**If J1 was missing**, append a JanitorEntry to `progress.json.timeline` now (read → mutate → write back; never replace the file):
+
+```json
+{
+  "kind": "janitor",
+  "id": "<storyId>",
+  "ts": "<ISO>",
+  "passes": false,
+  "title": "<storyTitle>",
+  "triggeredBy": [ { "sensor": "eslint", "findingCount": 23, "threshold": 20 } ]
+}
+```
+
+One `triggeredBy` row per sensor with ≥1 post-filter finding. `threshold` = `marmite.json.janitor.thresholds[<type>]` or `0` if not configured. If every sensor returned zero post-filter, write `triggeredBy: []` and skip to J5.
+
+Emit one `janitor-triggered` per row:
+
+```bash
+marmite emit-event janitor-triggered --janitor-id "$ID" --sensor eslint --finding-count 23 --threshold 20
+```
+
+#### J3. Triage
+
+Hand the parsed findings to the `janitor` skill. It returns ranked picks (cap = `janitor.maxFindingsPerRun`, default 5) plus pre-flagged deferrals.
+
+#### J4. Execute — one fix per commit, tests between each
+
+For each pick:
+1. Apply the smallest change that resolves the finding.
+2. Run the project's tests.
+3. **Pass** → stage only the touched files; commit `refactor(janitor): <ID> - <desc>`. Append to `appliedFixes`. Emit `marmite emit-event janitor-fix-applied --janitor-id "$ID" --finding "<kind>" --commit-sha "$SHA"`.
+4. **Fail** → revert (`git restore --source=HEAD <paths>`); tag the source line with `// JANITOR-DEFER: <reason>`; commit the marker on its own. Append to `deferredFindings`. Emit `marmite emit-event janitor-fix-deferred --janitor-id "$ID" --finding "<kind>" --reason "<short>"`.
+
+Also copy the skill's pre-flagged deferrals into `deferredFindings`. Stop when every remaining pick has been deferred.
+
+#### J5. Finalize
+
+Mutate the JanitorEntry in `progress.json`: set `appliedFixes`, `deferredFindings`, `commitShas`. **Do not flip `passes`** — the harness does that after verify signs off. Stage and commit `progress.json` with `refactor(janitor): <ID> - <summary>`. Emit `marmite emit-event janitor-done --janitor-id "$ID" --applied <N> --deferred <M>` and stop.
+
+The `guidance` field in `current-task.json` may add task-specific instructions on top of this — read and act on it.
 
 ## Progress Report Format
 

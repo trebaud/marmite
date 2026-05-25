@@ -1,102 +1,120 @@
 ---
 name: janitor
-description: "Sensor-driven refactor pass. Use when `.marmite/current-task.json.kind === \"janitor\"` — re-run the triggering sensors, pick the top-N highest-impact findings, and apply each fix incrementally with test gates between steps."
-allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Agent
+description: "Analysis reference for sensor-driven refactoring. Use when you have a list of sensor findings (eslint, tsc, depcruise, …) and need to decide which to fix, in what order, with what kind of change. Pure domain knowledge — no commits, no event emits, no file mutations. The calling agent owns the workflow."
+allowed-tools: Read, Grep, Glob
 ---
 
 # Janitor
 
-You run when marmite has materialized a janitor task — a sensor-debt-driven refactor pass. The orchestrator has already detected that one or more sensors crossed their threshold and recorded a `JanitorEntry` in `.marmite/progress.json.timeline`. Your job is to reduce that debt **safely** and in small batches. The verifier passes the entry only if a triggering sensor shows strictly fewer findings AND the test suite is still green.
+This skill is a **reference document** for analyzing sensor findings. It does not run sensors, write to `.marmite/`, emit events, or make commits — the agent invoking it owns all of that. Your job here is purely to help the caller answer three questions:
 
-## Inputs (read these first)
+1. Which of these findings are real and worth addressing?
+2. Among the real ones, which N should be fixed in this batch?
+3. For each picked finding, what kind of change is appropriate?
 
-1. `.marmite/current-task.json` — the current task. Specifically:
-   - `storyId` — the JanitorEntry id (e.g. `JANITOR-2026-05-19-0001`).
-   - `kind` — must be `"janitor"`. If it isn't, you're being invoked in the wrong context — stop.
-   - `guidance` — the orchestrator's instructions, including the cap on fixes per run.
-   - `sensorSummary` / `ranSensors` — what already ran in the orchestrate phase.
-2. `.marmite/progress.json` — find the `JanitorEntry` with `id === current-task.json.storyId`. Read `triggeredBy[]` — that's your baseline (each `findingCount` is what the verifier compares against).
-3. `marmite.json` — read `janitor.maxFindingsPerRun` (default 5 if unset), `janitor.sensors` (optional allowlist), and the sensor definitions themselves (`name`, `package`, `configPath`, `guidance`).
+## 1. Parsing sensor output
 
-## Workflow
+Prefer structured output where the tool offers one — easier to parse, fewer surprises:
 
-### 1. Audit — enumerate fresh findings
+| Sensor | Structured invocation |
+|---|---|
+| `eslint` | `eslint --format=json` |
+| `tsc` | `tsc --noEmit` (errors on stderr, file:line:col format) |
+| `dependency-cruiser` | `dependency-cruiser --output-type json` |
+| `madge` | `madge --json` |
 
-For each sensor in `triggeredBy` (or `janitor.sensors` if specified):
+Normalize every finding into:
 
-- Use the sensor's `guidance` from `marmite.json` to determine the run command — same one the orchestrator used. Prefer a structured output flag where the tool offers one (`eslint --format=json`, `tsc --noEmit | tee`, `dependency-cruiser --output-type json`). Structured output makes finding extraction reliable; raw text is fine when no structured option exists.
-- Parse the output into a flat list of `{ file, line?, severity, kind, message }` findings. Filter to `severity ∈ {error, warning}` — info-level noise is not your target.
-- Drop any finding whose source line contains `// JANITOR-DEFER:` — those have already been triaged and rejected by a previous run.
-
-### 2. Triage — rank by impact
-
-Cluster findings by file and module. Rank highest-impact first:
-
-- Errors before warnings.
-- Findings in heavily-imported modules before leaf files (use `grep -l` to estimate fan-in if it's not obvious).
-- Findings that cluster in the same file before scattered one-offs (one focused fix can clear multiple).
-
-Pick the top **N** findings, where N = `janitor.maxFindingsPerRun` (default 5). **Small batches are the safety mechanism** — do not try to fix everything; the verifier only needs strictly-fewer to pass.
-
-### 3. Execute — one fix at a time, tests between each
-
-For each picked finding:
-
-1. Apply the smallest change that resolves it. Match the sensor's guidance for that finding type:
-   - `drift` (architectural) — move code to the correct layer, extract an interface, redirect an import.
-   - `debt` (code quality) — decompose a long function, replace a custom routine with a library call, eliminate duplication, fix a type error.
-2. Run the project's test suite (`bun test` / `npm test` as inferred from `package.json`). If tests pass:
-   - Commit the change with message: `refactor(janitor): <JANITOR-ID> - <short description>` and `git add` only the files touched by this fix.
-   - Record an `appliedFixes` entry: a short string like `"eslint no-unused-vars: dropped 3 unused imports in src/foo/bar.ts"`.
-   - Emit `marmite emit-event janitor-fix-applied --janitor-id <ID> --finding "<kind>" --commit-sha <SHA>`.
-3. If tests break:
-   - Revert that change (`git restore --source=HEAD <paths>` or `git reset --hard HEAD`).
-   - Tag the finding's source line with `// JANITOR-DEFER: <reason>` so future janitor runs skip it. Commit that as part of the next fix or as its own `refactor(janitor): defer ...` commit.
-   - Record a `deferredFindings` entry: `"<kind> at <file>:<line> — broke <test name>; reverted and tagged JANITOR-DEFER"`.
-   - Emit `marmite emit-event janitor-fix-deferred --janitor-id <ID> --finding "<kind>" --reason "<short>"`.
-
-Stop early if: (a) you've applied or deferred all top-N findings, (b) the cost budget in `janitor.budgetUsd` is exhausted (you don't track this directly — the harness gates you), or (c) every remaining candidate has been deferred this run.
-
-### 4. Record — mutate the JanitorEntry in place
-
-Read `.marmite/progress.json`, find the matching `JanitorEntry`, **mutate it in place**:
-
-```json
-{
-  "kind": "janitor",
-  "id": "JANITOR-2026-05-19-0001",
-  "passes": false,
-  "title": "...",
-  "triggeredBy": [...],
-  "appliedFixes": [
-    "eslint no-unused-vars: dropped 3 unused imports in src/foo/bar.ts",
-    "tsc 2322: tightened return type on src/api/user.ts:42"
-  ],
-  "deferredFindings": [
-    "drift cyclic-dep at src/services/auth.ts — moving extracted helper broke contract test; reverted and tagged JANITOR-DEFER"
-  ],
-  "commitShas": ["a1b2c3d", "e4f5g6h"]
-}
+```
+{ file: string, line?: number, severity: "error" | "warning" | "info", kind: string, message: string }
 ```
 
-Do **not** append a new timeline entry — mutate the one the orchestrator already added. Do **not** flip `passes` yourself — that's the harness's job after the verifier signs off.
+Where the tool emits raw text and no structured form is offered, parse with a regex matched to the format the tool documents. Don't guess.
 
-Emit `marmite emit-event janitor-done --janitor-id <ID> --applied <N> --deferred <M>`.
+## 2. Filtering — what counts as a real finding
 
-## Hard rules
+Drop findings that:
 
-- **One finding per commit.** Easier to revert, easier for the verifier to read.
-- **Tests must pass after every applied commit.** If they don't, you reverted incorrectly — go back and fix the revert before continuing.
+- Have `severity: "info"` — not your target. Address only `error` and `warning`.
+- Have a source line containing the comment `// JANITOR-DEFER:` (any language's equivalent: `# JANITOR-DEFER:`, `/* JANITOR-DEFER: */`). These were tried in a previous run and broke tests; respect the marker.
+- Refer to generated files, vendored code, or paths the project's lint config already excludes. If you're unsure, check whether the sensor's own config would have skipped the file (e.g. `.eslintignore`).
+
+What's left is the **candidate pool**.
+
+## 3. Ranking — which N to pick
+
+Cap the batch at `janitor.maxFindingsPerRun` from `marmite.json` (default 5). **Small batches are the safety mechanism** — broad sweeps hide regressions. Future runs pick up the rest.
+
+Within the candidate pool, rank highest-impact first using these tiebreakers, in order:
+
+1. **Severity** — `error` before `warning`.
+2. **Module fan-in** — findings in heavily-imported files before findings in leaves. Estimate fan-in with `grep -l "from ['\"].*<basename>['\"]" -r src/` or the equivalent for the project's import syntax. A finding in a file imported by 30 others is worth more than one in a dead-end utility.
+3. **Clustering** — findings that share a file or module before scattered one-offs. One focused fix often clears multiple findings.
+4. **Drift before debt** — when both types are present and the cap forces a choice, prefer `drift` findings (architectural) since they compound faster than `debt` findings (code quality).
+
+Tie-break by `file` lexicographically so two runs with the same inputs produce the same picks.
+
+## 4. Fix patterns
+
+The right kind of change depends on the sensor type and the specific `kind` of finding.
+
+### Drift findings (architectural)
+
+| Finding kind | Typical fix |
+|---|---|
+| Cyclic dependency | Extract an interface or shared type into a new module both sides import; redirect the offending direction. |
+| Wrong-layer import (e.g. domain → infrastructure) | Move the imported symbol to the correct layer, or invert the dependency via an interface. |
+| Cross-feature import | Promote the shared code to a common module; do not couple sibling features. |
+| God module / oversized file | Split by concern, not by line count. Look for natural seams (separate types, separate stateful vs pure functions). |
+
+### Debt findings (code quality)
+
+| Finding kind | Typical fix |
+|---|---|
+| `no-unused-vars`, dead code | Delete it. If it's a parameter required by an interface, prefix `_` only when the tool genuinely requires it. |
+| `no-explicit-any`, weak typing | Tighten the type. If the value is genuinely unknown, use `unknown` and narrow at the use site rather than `any`. |
+| Long function / high complexity | Extract a named helper for each distinct concern. Naming is the fix — if you can name the extraction clearly, the split is right. |
+| Duplication | Extract a function or constant. Only when the duplication is *behaviorally* identical — coincidental syntactic match is not duplication. |
+| `tsc` type error | Fix at the source of the wrong assumption, not the symptom. Adding a cast usually hides the bug, not fixes it. |
+
+### When the right fix would change a public API
+
+Don't, unless that's literally the only way to address the finding. Public-API churn during a janitor run looks like scope creep to the next reviewer and breaks downstream consumers. Defer with `JANITOR-DEFER: would require API change` instead.
+
+## 5. When to defer
+
+Returning "defer this one" is a legitimate output. Defer when:
+
+- The candidate fix would change a public API (see above).
+- The candidate fix would require modifying or deleting an existing test to silence the sensor. **Never gain a sensor pass by weakening test coverage** — that's gaming, not maintenance.
+- The fix touches code under active development on another branch and would cause non-trivial conflicts.
+- You cannot reason about whether a change is safe (e.g. dynamic typing hides the call graph). A confident defer is better than a guess.
+
+The caller's workflow handles the actual `JANITOR-DEFER:` tagging and commit — your job is just to flag that this finding should be deferred and say why.
+
+## 6. Output shape
+
+When invoked, return a structured triage:
+
+```
+Picks (N = <cap>):
+1. <file>:<line> — <kind> · <one-line rationale> · suggested fix: <one line>
+2. …
+
+Deferrals:
+- <file>:<line> — <kind> · reason: <one line>
+- …
+
+Notes:
+- <any cross-cutting observations the caller should know, e.g. "all picks cluster in src/api/handlers; expect to commit them as 2 fixes not 5">
+```
+
+The caller then iterates: apply fix 1, run tests, commit or revert, move on.
+
+## 7. Hard rules
+
 - **Never delete or weaken existing tests** to silence a sensor. That's gaming the verifier.
-- **Never bypass deferred findings.** A `// JANITOR-DEFER:` marker means it was tried and broke things. Respect it; only remove it if you have a concrete plan that addresses why it broke before.
-- **Do not change public APIs** unless that's literally the only way to fix a drift violation. Public-API churn during a janitor run looks like scope creep to the next reviewer.
-- **Do not invent new conventions.** Keep the project's existing folder names and module layout. Janitor is for fixing what's there, not redesigning it.
-- **Stay within the batch cap** (`janitor.maxFindingsPerRun`). The cap exists because broad sweeps hide regressions; future runs will pick up the rest.
-
-## When to bail early
-
-Stop and end your response without recording fixes if any of these hold:
-
-- `current-task.json.kind` is not `"janitor"` — you were invoked in the wrong context.
-- The matching `JanitorEntry` is not present in `progress.json` — the orchestrator did not materialize it; surface that as a setup gap.
-- The very first sensor re-run shows zero findings — the debt evaporated between orchestrate and now (someone else's commit, perhaps); record an empty `appliedFixes` and a note in `deferredFindings` so the verifier sees the state.
+- **Never bypass `JANITOR-DEFER:` markers.** If a previous run tagged it, there was a reason. Only remove a marker if you have a concrete plan that addresses why it broke before.
+- **Don't invent new conventions.** Match the project's existing folder names, module boundaries, and naming style.
+- **One finding per fix.** Smaller diffs revert cleanly and read clearly.
+- **Trust the cap.** If the project has 200 findings and your cap is 5, returning 5 is correct. The next run will pick up the next 5.

@@ -596,6 +596,10 @@ interface Dashboard {
   progressSource: string | null;
   project: string | null;
   runId: string | null;
+  // The latest run's `mode` from its `run_start`. Older event logs predate
+  // the field; treated as "cook" downstream. "maintenance" reflects a one-shot
+  // `marmite refactor` pass and is surfaced as a badge in the header.
+  runMode: "cook" | "maintenance" | null;
   startedAt: string | null;
   endedAt: string | null;
   status: "in_progress" | "completed" | "failed" | "halted" | "unknown";
@@ -695,6 +699,8 @@ function buildDashboard(
   // status of the run currently in flight.
   const currentRunEvents = runId ? events.filter((e) => e.runId === runId) : events;
   const runStart = currentRunEvents.find((e) => e.kind === "run_start");
+  const runMode: "cook" | "maintenance" | null =
+    runStart && (runStart as any).mode === "maintenance" ? "maintenance" : runStart ? "cook" : null;
   const runEnd = [...currentRunEvents].reverse().find((e) => e.kind === "run_end");
   // `run_halt` is emitted by the orchestrator before `process.exit(0)`, so
   // there's no `run_end` after it. Surface this state distinctly.
@@ -1057,6 +1063,7 @@ function buildDashboard(
     progressSource,
     project: prd?.project ?? null,
     runId,
+    runMode,
     startedAt,
     endedAt,
     status,
@@ -1842,6 +1849,14 @@ const INDEX_HTML = `<!DOCTYPE html>
             background: var(--text-primary); color: var(--bg-surface);
             font-size: 12px; font-weight: 700;
             padding: 3px 10px; border-radius: 12px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .mode-badge.maintenance {
+            display: inline-block;
+            background: var(--janitor-soft); color: var(--janitor);
+            border: 1px solid var(--janitor);
+            font-size: 11px; font-weight: 700;
+            padding: 2px 8px; border-radius: 10px;
             text-transform: uppercase; letter-spacing: 0.5px;
         }
 
@@ -3202,9 +3217,15 @@ const INDEX_HTML = `<!DOCTYPE html>
         const workflowBit = d.config && d.config.workflow
           ? ' · Workflow: <code>' + escape(d.config.workflow) + '</code>'
           : '';
+        // marmite refactor runs surface a distinct chip so the user can tell
+        // a one-shot maintenance pass apart from a normal cook run at a glance.
+        const modeBit = d.runMode === 'maintenance'
+          ? ' · <span class="mode-badge maintenance" title="One-shot maintenance pass (marmite refactor)">🧹 Maintenance</span>'
+          : '';
         document.getElementById('meta').innerHTML = live
           + 'Run ID: <code>' + escape(d.runId || 'n/a') + '</code>'
-          + workflowBit;
+          + workflowBit
+          + modeBit;
 
         renderInto('haltBanner',  d.halt, renderHaltBanner.bind(null, d));
         renderInto('usageLimitBanner', d.usageLimit, () => renderUsageLimitBanner(d));

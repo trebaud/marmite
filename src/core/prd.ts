@@ -96,6 +96,38 @@ export async function readProgress(): Promise<ProgressState> {
   return { kind: "ok", patterns: parsed.data.patterns, timeline: parsed.data.timeline };
 }
 
+// Next sequence number for a janitor ID on `date`. Janitor IDs are
+// `JANITOR-<YYYY-MM-DD>-<NNNN>`; the NNNN suffix is one more than the highest
+// existing suffix for that date in the timeline, or `0001`. Same format the
+// orchestrator prompt produces, lifted into typed code so the harness can
+// generate IDs deterministically (e.g. `marmite refactor`).
+export function nextJanitorId(timeline: TimelineEntry[], date: string): string {
+  const prefix = `JANITOR-${date}-`;
+  let maxSeq = 0;
+  for (const entry of timeline) {
+    if (entry.kind !== "janitor") continue;
+    if (!entry.id.startsWith(prefix)) continue;
+    const suffix = entry.id.slice(prefix.length);
+    const n = parseInt(suffix, 10);
+    if (Number.isFinite(n) && n > maxSeq) maxSeq = n;
+  }
+  return `${prefix}${String(maxSeq + 1).padStart(4, "0")}`;
+}
+
+// Append a new janitor entry to `.marmite/progress.json.timeline` without
+// touching the rest of the file. The harness uses this in maintenance mode
+// (where it materializes the entry directly instead of asking the orchestrator
+// agent to do it).
+export async function appendJanitorEntry(entry: JanitorEntry): Promise<void> {
+  const read = await readJson<Record<string, unknown>>(PATHS.progress);
+  const file = read.kind === "present" && read.value ? read.value : { patterns: [], timeline: [] };
+  const timeline = Array.isArray(file.timeline) ? file.timeline : [];
+  timeline.push(entry);
+  file.timeline = timeline;
+  if (!Array.isArray(file.patterns)) file.patterns = [];
+  await writeAtomicJson(PATHS.progress, file);
+}
+
 export function findUnfinishedJanitorEntry(timeline: TimelineEntry[]): JanitorEntry | null {
   for (let i = timeline.length - 1; i >= 0; i--) {
     const entry = timeline[i]!;

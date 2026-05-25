@@ -87,7 +87,7 @@ The TDD discipline check is skipped. Verdict depends on whether the refactor red
 
 - **`pass`** — both:
   - The test suite is still green.
-  - At least one of the sensors listed in `triggeredBy` shows **strictly fewer findings** than the count recorded there (re-run to confirm).
+  - At least one of the sensors listed in `triggeredBy` shows **strictly fewer findings** than the count recorded there. Re-run the sensor using its `guidance` from `marmite.json` and scope findings the same way the builder did — to lines added/modified vs `marmite.json.baseBranch`, severity ≥ warning, source line not tagged `// JANITOR-DEFER:`. The `JanitorEntry.triggeredBy[].findingCount` is the baseline you're comparing against. For each sensor you re-run, emit a `sensor-result` with the post-fix count so the dashboard sparkline shows the reduction: `marmite emit-event sensor-result --sensor <name> --type <drift|debt> --finding-count <n> [--threshold <baseline>]`.
 - **`fail_retry`** — tests pass but no triggering sensor improved. Put the still-flagged findings in `summary`.
 - **`fail_abort`** — tests broke and the builder can't recover, or the same fixes have been tried before.
 

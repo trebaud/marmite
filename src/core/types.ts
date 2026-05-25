@@ -90,6 +90,11 @@ export type HarnessEvent =
   | {
       kind: "run_start";
       runId: string;
+      // Distinguishes a normal `marmite cook` run (iterates the PRD) from a
+      // `marmite refactor` one-shot maintenance pass (forces janitor mode,
+      // single iteration, no fix loop). Older event logs predate this field
+      // and read as `cook` by default downstream.
+      mode?: "cook" | "maintenance";
       maxIterations: number;
       model: string;
       builderModel: string;
@@ -102,6 +107,8 @@ export type HarnessEvent =
   | { kind: "run_abort"; reason: "signal" }
   | { kind: "run_done"; reason: "total_budget_exceeded"; spent: number; budget: number }
   | { kind: "run_done"; reason: "all_stories_passing"; iteration?: number }
+  | { kind: "run_done"; reason: "maintenance_complete"; iteration?: number }
+  | { kind: "run_done"; reason: "maintenance_failed"; iteration?: number; failReason?: string }
   | { kind: "run_end"; reason: "signal" | "max_iterations" }
   | {
       kind: "run_halt";
@@ -205,30 +212,34 @@ export type HarnessEvent =
   // Emitted by the orchestrator agent when a sensor-threshold trip materializes
   // a new janitor entry in progress.json. The harness does not emit these
   // directly — agents call `marmite emit-event` like they do for sensor_*.
+  // Janitor lifecycle events are emitted from subprocess agents via
+  // `marmite emit-event`. The harness injects `iteration` automatically from
+  // the MARMITE_ITERATION env var when present (see events.ts), so callers
+  // don't need to thread it through — it's typed optional here.
   | {
       kind: "janitor_triggered";
-      iteration: number;
+      iteration?: number;
       janitorId: string;
       triggers: Array<{ sensor: string; findingCount: number; threshold: number }>;
     }
-  | { kind: "janitor_started"; iteration: number; janitorId: string }
+  | { kind: "janitor_started"; iteration?: number; janitorId: string }
   | {
       kind: "janitor_fix_applied";
-      iteration: number;
+      iteration?: number;
       janitorId: string;
       finding: string;
       commitSha?: string;
     }
   | {
       kind: "janitor_fix_deferred";
-      iteration: number;
+      iteration?: number;
       janitorId: string;
       finding: string;
       reason: string;
     }
   | {
       kind: "janitor_done";
-      iteration: number;
+      iteration?: number;
       janitorId: string;
       applied: number;
       deferred: number;

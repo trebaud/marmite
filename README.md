@@ -162,6 +162,7 @@ When sensor findings accumulate past the thresholds in `marmite.json`'s `janitor
 |---|---|
 | `marmite` / `marmite cook` | Run the agent loop in the current project |
 | `marmite <n>` | Shorthand for `marmite cook -n <n>` (cap iterations) |
+| `marmite refactor` | One-shot maintenance pass — runs sensors, materializes a janitor entry, applies fixes, verifies. Single orchestrate→build→verify cycle, no fix loop, ignores thresholds |
 | `marmite init` | Interactive wizard — scaffolds `marmite.json`, `.marmite/`, prompts, sensors |
 | `marmite to-prd <PRD.md>` | Convert a markdown PRD into `.marmite/prd.json` and validate it |
 | `marmite doctor` | Preflight check — config, prompts, contract fences, sensors, gitignore |
@@ -186,6 +187,24 @@ When sensor findings accumulate past the thresholds in `marmite.json`'s `janitor
     --retries <n>             Transient retries per session
 -v, --verbose                 Raw SDK messages and stats
 ```
+
+### `refactor`
+
+`marmite refactor` runs a single isolated maintenance cycle. Unlike `cook`, it:
+
+- Skips the orchestrate phase entirely — the harness picks a janitor ID, writes `current-task.json`, and dispatches builder → verifier. `progress.json` stays untouched by the harness; the builder appends the JanitorEntry itself after running sensors.
+- Runs every configured sensor regardless of `janitor.thresholds`. Findings are scoped to lines this branch added or modified vs `baseBranch`, so a refactor pass focuses on debt introduced by recent work rather than the whole repo.
+- The builder consults the `janitor` skill for triage and applies the top-N picks (default 5) in a single build pass, one fix per commit, tests between each.
+- Skips the fix loop — if verify fails, the run exits non-zero so you can inspect, tweak, and re-invoke.
+- Accepts the same flags as `cook` (model, timeouts, budgets) and uses the same `marmite.json` config.
+
+```
+marmite refactor                # one-shot maintenance pass
+marmite refactor --verbose      # full SDK message firehose
+marmite refactor --builder-model claude-opus-4-7
+```
+
+The dashboard tags the run with a 🧹 **Maintenance** badge in the header.
 
 ### `stats`
 

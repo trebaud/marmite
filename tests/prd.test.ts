@@ -1,8 +1,18 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { pickNextStory, readPrd, allStoriesPassingOrError, markStoryPassing } from "../src/core/prd.ts";
+import {
+  appendJanitorEntry,
+  nextJanitorId,
+  pickNextStory,
+  readPrd,
+  allStoriesPassingOrError,
+  markStoryPassing,
+  type JanitorEntry,
+  type TimelineEntry,
+} from "../src/core/prd.ts";
+import { setUserRoot, PATHS } from "../src/core/paths.ts";
 import type { Reporter } from "../src/core/reporter.ts";
 import { silentReporter } from "../src/core/reporter.ts";
 
@@ -163,5 +173,85 @@ describe("markStoryPassing", () => {
   test("returns false when PRD missing", async () => {
     const ok = await markStoryPassing({ prdPath: join(tmp, "no.json") } as any, "x", reporter);
     expect(ok).toBe(false);
+  });
+});
+
+describe("nextJanitorId", () => {
+  test("0001 when timeline has no janitor entries for the date", () => {
+    expect(nextJanitorId([], "2026-05-25")).toBe("JANITOR-2026-05-25-0001");
+  });
+
+  test("ignores story entries and entries for other dates", () => {
+    const timeline: TimelineEntry[] = [
+      { kind: "story", storyId: "US-1", ts: "...", summary: "", commitShas: [] },
+      { kind: "janitor", id: "JANITOR-2026-05-24-0009", ts: "...", passes: true, title: "", triggeredBy: [] },
+    ];
+    expect(nextJanitorId(timeline, "2026-05-25")).toBe("JANITOR-2026-05-25-0001");
+  });
+
+  test("increments past the highest existing suffix for the date", () => {
+    const timeline: TimelineEntry[] = [
+      { kind: "janitor", id: "JANITOR-2026-05-25-0001", ts: "...", passes: true, title: "", triggeredBy: [] },
+      { kind: "janitor", id: "JANITOR-2026-05-25-0003", ts: "...", passes: false, title: "", triggeredBy: [] },
+      { kind: "janitor", id: "JANITOR-2026-05-25-0002", ts: "...", passes: true, title: "", triggeredBy: [] },
+    ];
+    expect(nextJanitorId(timeline, "2026-05-25")).toBe("JANITOR-2026-05-25-0004");
+  });
+
+  test("zero-pads the suffix to four digits", () => {
+    const timeline: TimelineEntry[] = [
+      { kind: "janitor", id: "JANITOR-2026-05-25-0099", ts: "...", passes: true, title: "", triggeredBy: [] },
+    ];
+    expect(nextJanitorId(timeline, "2026-05-25")).toBe("JANITOR-2026-05-25-0100");
+  });
+});
+
+describe("appendJanitorEntry", () => {
+  // appendJanitorEntry writes to PATHS.progress (anchored to userRoot). Point
+  // userRoot at the tmpdir per-test so writes stay isolated.
+  beforeEach(() => {
+    mkdirSync(join(tmp, ".marmite"), { recursive: true });
+    setUserRoot(tmp);
+  });
+
+  test("creates progress.json with the entry when the file doesn't exist", async () => {
+    const entry: JanitorEntry = {
+      kind: "janitor",
+      id: "JANITOR-2026-05-25-0001",
+      ts: "2026-05-25T12:00:00Z",
+      passes: false,
+      title: "Maintenance pass",
+      triggeredBy: [],
+    };
+    await appendJanitorEntry(entry);
+    const written = JSON.parse(readFileSync(PATHS.progress, "utf-8"));
+    expect(written.patterns).toEqual([]);
+    expect(written.timeline).toHaveLength(1);
+    expect(written.timeline[0].id).toBe("JANITOR-2026-05-25-0001");
+  });
+
+  test("appends without disturbing existing patterns or timeline rows", async () => {
+    writeFileSync(
+      PATHS.progress,
+      JSON.stringify({
+        patterns: [{ name: "p1", description: "", addedInStory: "US-1" }],
+        timeline: [
+          { kind: "story", storyId: "US-1", ts: "...", summary: "first", commitShas: [] },
+        ],
+      }),
+    );
+    await appendJanitorEntry({
+      kind: "janitor",
+      id: "JANITOR-2026-05-25-0001",
+      ts: "...",
+      passes: false,
+      title: "x",
+      triggeredBy: [],
+    });
+    const written = JSON.parse(readFileSync(PATHS.progress, "utf-8"));
+    expect(written.patterns).toHaveLength(1);
+    expect(written.timeline).toHaveLength(2);
+    expect(written.timeline[0].kind).toBe("story");
+    expect(written.timeline[1].kind).toBe("janitor");
   });
 });

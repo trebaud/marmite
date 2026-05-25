@@ -1,6 +1,6 @@
 import { resolve, dirname } from "path";
 import { mkdirSync, existsSync } from "fs";
-import { run } from "../core/orchestrator.ts";
+import { run, runMaintenance } from "../core/orchestrator.ts";
 import { setUserRoot } from "../core/paths.ts";
 import { parseArgs, printVersion, usage } from "./args.ts";
 import { loadConfigFile, composeConfig } from "./config.ts";
@@ -44,6 +44,7 @@ if (subcommand === "dashboard") {
 }
 if (subcommand === "-h" || subcommand === "--help") usage();
 
+const isRefactor = subcommand === "refactor";
 const { cli, configPath } = parseArgs(process.argv);
 
 const resolvedConfigPath = resolve(
@@ -59,4 +60,8 @@ mkdirSync(resolve(configDir, ".marmite"), { recursive: true });
 
 const config = composeConfig(cli, fileCfg, configDir);
 
-await run(config, pickReporter(cli.verbose === true));
+if (isRefactor) {
+  await runMaintenance(config, pickReporter(cli.verbose === true));
+} else {
+  await run(config, pickReporter(cli.verbose === true));
+}

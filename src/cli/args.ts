@@ -29,6 +29,9 @@ Usage:
   marmite                            Run the agent loop in the current project (alias: marmite cook)
   marmite <n>                        Shorthand for 'marmite cook -n <n>' (e.g. marmite 5)
   marmite cook [options]             Run the agent loop
+  marmite refactor [options]         One-shot maintenance pass: builder runs sensors + fixes
+                                     debt/drift, verifier checks reduction. Single build→verify
+                                     cycle, no fix loop, ignores thresholds.
   marmite init                       Set up marmite in the current project (interactive wizard)
   marmite to-prd <PRD.md>            Convert a markdown PRD into .marmite/prd.json
   marmite doctor                     Preflight check — config, prompts, contract fences, sensors
@@ -37,7 +40,7 @@ Usage:
   marmite emit-event <kind> [...]    Append a structured event to .marmite/events.jsonl
                                      (used by the orchestrator agent around sensor runs)
 
-Options for cook:
+Options for cook / refactor:
   -c, --config <path>         Path to JSON config file (default: ./marmite.json)
   -n, --max-iterations <n>    Maximum iterations
   -p, --prd <path>            Path to prd.json
@@ -91,8 +94,10 @@ export function parseDuration(name: string, v: string | number | undefined): num
 
 export function parseArgs(argv: string[]): { cli: CliOverrides; configPath: string | undefined } {
   const args = argv.slice(2);
-  // Strip a leading `cook` subcommand if present — it's the default and harmless to omit.
-  if (args[0] === "cook") args.shift();
+  // Strip a leading subcommand if present — `cook` is the default, and
+  // `refactor` is dispatched separately by main.ts but shares the same flag
+  // surface (config, model, timeouts).
+  if (args[0] === "cook" || args[0] === "refactor") args.shift();
 
   const cli: CliOverrides = {};
   let configPath: string | undefined;
