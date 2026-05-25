@@ -8,8 +8,9 @@ import { die } from "../args.ts";
 // keeps malformed agent output from breaking downstream consumers (logger tail,
 // post-run analyzers).
 //
-//   marmite emit-event sensor-start --sensor eslint [--type debt]
-//   marmite emit-event sensor-end   --sensor eslint --duration-ms 4321 --exit-code 0 [--type debt]
+//   marmite emit-event sensor-start  --sensor eslint [--type debt]
+//   marmite emit-event sensor-end    --sensor eslint --duration-ms 4321 --exit-code 0 [--type debt]
+//   marmite emit-event sensor-result --sensor eslint --finding-count 12 [--type debt] [--threshold 20] [--duration-ms 4321] [--exit-code 0]
 
 const SensorStart = z.object({
   kind: z.literal("sensor_start"),
@@ -23,6 +24,16 @@ const SensorEnd = z.object({
   sensorType: z.string().min(1).optional(),
   durationMs: z.number().int().min(0),
   exitCode: z.number().int(),
+});
+
+const SensorResult = z.object({
+  kind: z.literal("sensor_result"),
+  sensor: z.string().min(1),
+  sensorType: z.string().min(1).optional(),
+  findingCount: z.number().int().min(0),
+  threshold: z.number().int().min(0).optional(),
+  durationMs: z.number().int().min(0).optional(),
+  exitCode: z.number().int().optional(),
 });
 
 function parseFlags(args: string[]): Record<string, string> {
@@ -78,9 +89,30 @@ export async function runEmitEvent(argv: string[]): Promise<void> {
     return;
   }
 
+  if (kind === "sensor-result") {
+    const findingCount = flags["finding-count"] != null ? Number(flags["finding-count"]) : NaN;
+    const threshold = flags["threshold"] != null ? Number(flags["threshold"]) : undefined;
+    const durationMs = flags["duration-ms"] != null ? Number(flags["duration-ms"]) : undefined;
+    const exitCode = flags["exit-code"] != null ? Number(flags["exit-code"]) : undefined;
+    const parsed = SensorResult.safeParse({
+      kind: "sensor_result",
+      sensor: flags["sensor"],
+      sensorType: flags["type"],
+      findingCount,
+      threshold,
+      durationMs,
+      exitCode,
+    });
+    if (!parsed.success) die(`emit-event sensor-result: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
+    const { kind: _k, ...payload } = parsed.data;
+    await emitEvent("sensor_result", payload);
+    return;
+  }
+
   die(
-    `emit-event: unknown kind '${kind ?? ""}'. Supported: sensor-start, sensor-end.\n` +
+    `emit-event: unknown kind '${kind ?? ""}'. Supported: sensor-start, sensor-end, sensor-result.\n` +
       `  marmite emit-event sensor-start --sensor <name> [--type <drift|debt>]\n` +
-      `  marmite emit-event sensor-end --sensor <name> --duration-ms <n> --exit-code <n> [--type <...>]`,
+      `  marmite emit-event sensor-end --sensor <name> --duration-ms <n> --exit-code <n> [--type <...>]\n` +
+      `  marmite emit-event sensor-result --sensor <name> --finding-count <n> [--type <...>] [--threshold <n>] [--duration-ms <n>] [--exit-code <n>]`,
   );
 }

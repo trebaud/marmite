@@ -51,6 +51,17 @@ If a binary doesn't resolve, surface the setup gap in `guidance` — never silen
 
 Sensors scan whole files. Keep only findings whose location matches lines this run added or modified vs. `marmite.json.baseBranch` (use `git diff "$BASE"...HEAD` to compute the changed-file set and per-file added line ranges; the exact mapping depends on the sensor's output format). Drop everything else. All counts in `sensorSummary` and janitor thresholds are **post-filter**.
 
+Once you have the post-filter count per sensor, emit a `sensor-result` so the dashboard can render the current debt/drift level vs. its trip point:
+
+<!-- marmite:contract start — the Sensor Health panel in `marmite dashboard` is driven entirely by these events; skipping them leaves the panel empty even when sensors ran -->
+```bash
+marmite emit-event sensor-result --sensor eslint --type debt \
+  --finding-count 12 --threshold "$(jq -r '.janitor.thresholds.debt // empty' marmite.json)"
+```
+<!-- marmite:contract end -->
+
+Emit one `sensor-result` per sensor that ran, even when `findingCount` is `0` and even when no threshold is configured (omit `--threshold` in that case).
+
 ## 5. Match failing sensors to skills
 
 | Sensor type | Skill to recommend in `guidance` |

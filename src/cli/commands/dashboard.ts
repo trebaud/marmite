@@ -614,6 +614,7 @@ interface Dashboard {
   githubSlug: string | null;
   halt: HaltStatus | null;
   usageLimit: UsageLimitStatus;
+  sensorHealth: SensorHealth;
 }
 
 interface UsageLimitActive {
@@ -637,6 +638,30 @@ interface UsageLimitStatus {
   totalWaitedMs: number;
   // Set when the current run is mid-pause (start without matching resume).
   active: UsageLimitActive | null;
+}
+
+interface SensorHealthEntry {
+  sensor: string;
+  sensorType: string | null;
+  latestFindingCount: number | null;
+  latestThreshold: number | null;
+  latestIteration: number | null;
+  latestTs: string | null;
+  // Per-iteration findingCount points (oldest → newest, capped) for the sparkline.
+  history: { iteration: number; findingCount: number }[];
+  // Janitor trips this sensor has caused — drawn from janitor_triggered events.
+  janitorTrips: number;
+  // True when the sensor appears in marmite.json (even if no result events yet).
+  configured: boolean;
+}
+
+interface SensorHealth {
+  entries: SensorHealthEntry[];
+  janitor: {
+    triggered: number;
+    applied: number;
+    deferred: number;
+  };
 }
 
 function pickLatestRun(events: Event[]): string | null {
@@ -1072,7 +1097,114 @@ function buildDashboard(
     githubSlug,
     halt,
     usageLimit: computeUsageLimitStatus(events, runId),
+    sensorHealth: computeSensorHealth(events, config),
   };
+}
+
+// Walks the events log to build a per-sensor health snapshot. `sensor_result`
+// events carry the post-filter finding count + threshold the orchestrator
+// observed; `janitor_triggered` events surface threshold trips for the cadence
+// summary. Configured sensors with no result events yet are included so the
+// panel shows the full surface area, not just sensors that have already run.
+function computeSensorHealth(
+  events: Event[],
+  config: MarmiteConfigInfo | null,
+): SensorHealth {
+  // Cap the per-sensor history to keep the payload small — the sparkline only
+  // needs the recent trend, not full history.
+  const HISTORY_CAP = 30;
+
+  const bySensor = new Map<string, SensorHealthEntry>();
+  const ensure = (name: string, sensorType: string | null): SensorHealthEntry => {
+    let entry = bySensor.get(name);
+    if (!entry) {
+      entry = {
+        sensor: name,
+        sensorType,
+        latestFindingCount: null,
+        latestThreshold: null,
+        latestIteration: null,
+        latestTs: null,
+        history: [],
+        janitorTrips: 0,
+        configured: false,
+      };
+      bySensor.set(name, entry);
+    } else if (sensorType && !entry.sensorType) {
+      entry.sensorType = sensorType;
+    }
+    return entry;
+  };
+
+  if (config?.sensors) {
+    for (const s of config.sensors) {
+      ensure(s.name, s.type).configured = true;
+    }
+  }
+
+  let triggered = 0;
+  let applied = 0;
+  let deferred = 0;
+
+  for (const e of events) {
+    if (e.kind === "sensor_result") {
+      const name = typeof e.sensor === "string" ? e.sensor : null;
+      if (!name) continue;
+      const type = typeof e.sensorType === "string" ? e.sensorType : null;
+      const findingCount = typeof e.findingCount === "number" ? e.findingCount : null;
+      if (findingCount == null) continue;
+      const entry = ensure(name, type);
+      entry.latestFindingCount = findingCount;
+      if (typeof e.threshold === "number") entry.latestThreshold = e.threshold;
+      else if (entry.latestThreshold == null) entry.latestThreshold = null;
+      if (typeof e.iteration === "number") entry.latestIteration = e.iteration;
+      if (typeof e.ts === "string") entry.latestTs = e.ts;
+      const point = {
+        iteration: typeof e.iteration === "number" ? e.iteration : entry.history.length + 1,
+        findingCount,
+      };
+      // Replace any prior point for the same iteration so the trend stays one-
+      // per-iteration even if the agent emits multiple times.
+      const dupIdx = entry.history.findIndex((p) => p.iteration === point.iteration);
+      if (dupIdx >= 0) entry.history[dupIdx] = point;
+      else entry.history.push(point);
+      if (entry.history.length > HISTORY_CAP) entry.history.shift();
+    } else if (e.kind === "janitor_triggered") {
+      triggered++;
+      const triggers = Array.isArray(e.triggers) ? (e.triggers as { sensor?: string }[]) : [];
+      for (const t of triggers) {
+        if (typeof t?.sensor === "string") ensure(t.sensor, null).janitorTrips++;
+      }
+    } else if (e.kind === "janitor_fix_applied") {
+      applied++;
+    } else if (e.kind === "janitor_fix_deferred") {
+      deferred++;
+    }
+  }
+
+  // Fall back to config thresholds when the agent didn't supply one with the
+  // sensor_result. Keeps the gauge usable even before prompts catch up.
+  if (config?.janitor?.thresholds) {
+    for (const entry of bySensor.values()) {
+      if (entry.latestThreshold != null) continue;
+      if (entry.sensorType === "debt" && config.janitor.thresholds.debt != null) {
+        entry.latestThreshold = config.janitor.thresholds.debt;
+      } else if (entry.sensorType === "drift" && config.janitor.thresholds.drift != null) {
+        entry.latestThreshold = config.janitor.thresholds.drift;
+      }
+    }
+  }
+
+  const entries = [...bySensor.values()].sort((a, b) => {
+    // Configured + with-data first; alphabetical within groups.
+    const aActive = a.latestFindingCount != null;
+    const bActive = b.latestFindingCount != null;
+    if (aActive !== bActive) return aActive ? -1 : 1;
+    if (a.configured !== b.configured) return a.configured ? -1 : 1;
+    return a.sensor.localeCompare(b.sensor);
+  });
+
+  return { entries, janitor: { triggered, applied, deferred } };
 }
 
 // Walks the events log to count usage-limit pauses, sum elapsed wait time, and
@@ -1619,6 +1751,92 @@ const INDEX_HTML = `<!DOCTYPE html>
             font-size: 11px; font-weight: 600;
             padding: 2px 8px; border-radius: 10px; margin-right: 4px;
         }
+        .sensor-health {
+            background: var(--bg-surface-2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 16px;
+            margin-top: 14px;
+            color: var(--text-primary);
+        }
+        .sensor-health-header {
+            font-size: 11px; font-weight: 700; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.7px;
+            margin-bottom: 10px;
+            display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+        }
+        .sensor-health-janitor-summary {
+            font-size: 11px; font-weight: 500;
+            color: var(--text-secondary); text-transform: none; letter-spacing: 0;
+        }
+        .sensor-health-empty {
+            font-size: 12px; color: var(--text-muted); font-style: italic;
+            padding: 4px 0;
+        }
+        .sensor-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 10px;
+        }
+        .sensor-card {
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 12px;
+            display: flex; flex-direction: column; gap: 6px;
+        }
+        .sensor-card.warn { border-color: #f59e0b; }
+        .sensor-card.danger { border-color: #dc2626; }
+        .sensor-card-top {
+            display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+        }
+        .sensor-card-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+        .sensor-card-type {
+            font-size: 10px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            padding: 1px 6px; border-radius: 8px;
+            background: var(--accent-soft); color: var(--accent);
+        }
+        .sensor-card-type.debt { background: rgba(245, 158, 11, 0.15); color: #b45309; }
+        .sensor-card-type.drift { background: rgba(124, 58, 237, 0.15); color: #6d28d9; }
+        [data-theme="dark"] .sensor-card-type.debt { color: #fbbf24; }
+        [data-theme="dark"] .sensor-card-type.drift { color: #c4b5fd; }
+        @media (prefers-color-scheme: dark) {
+            [data-theme="auto"] .sensor-card-type.debt { color: #fbbf24; }
+            [data-theme="auto"] .sensor-card-type.drift { color: #c4b5fd; }
+        }
+        .sensor-card-count {
+            font-size: 20px; font-weight: 700; color: var(--text-primary);
+            font-variant-numeric: tabular-nums;
+        }
+        .sensor-card.warn .sensor-card-count { color: #b45309; }
+        .sensor-card.danger .sensor-card-count { color: #dc2626; }
+        [data-theme="dark"] .sensor-card.warn .sensor-card-count { color: #fbbf24; }
+        [data-theme="dark"] .sensor-card.danger .sensor-card-count { color: #f87171; }
+        .sensor-card-threshold {
+            font-size: 11px; color: var(--text-muted);
+            font-variant-numeric: tabular-nums;
+        }
+        .sensor-card-bar {
+            position: relative;
+            background: var(--bg-muted);
+            border-radius: 999px;
+            height: 4px; overflow: hidden;
+        }
+        .sensor-card-bar-fill {
+            position: absolute; left: 0; top: 0; bottom: 0;
+            background: var(--accent);
+            border-radius: 999px;
+        }
+        .sensor-card.warn .sensor-card-bar-fill { background: #f59e0b; }
+        .sensor-card.danger .sensor-card-bar-fill { background: #dc2626; }
+        .sensor-card-spark { display: block; width: 100%; height: 22px; }
+        .sensor-card-foot {
+            display: flex; justify-content: space-between; gap: 6px;
+            font-size: 10px; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.4px;
+        }
+        .sensor-card-foot .trips { color: var(--text-secondary); font-weight: 600; }
+        .sensor-card.empty .sensor-card-count { color: var(--text-muted); font-size: 13px; font-weight: 500; }
         .config-workflow-badge {
             display: inline-block;
             background: var(--text-primary); color: var(--bg-surface);
@@ -2072,6 +2290,7 @@ const INDEX_HTML = `<!DOCTYPE html>
                 <div class="summary-grid" id="summary"></div>
                 <div id="sparkline"></div>
                 <div id="configPanel"></div>
+                <div id="sensorHealth"></div>
             </header>
             <div id="content"></div>
             <div id="patternsWrap"></div>
@@ -2682,6 +2901,90 @@ const INDEX_HTML = `<!DOCTYPE html>
           + '</div>';
       };
 
+      // ── Sensor health panel ─────────────────────────────────
+      // Renders one card per sensor (configured + any that have emitted
+      // results). Empty state hides the panel entirely so projects without
+      // sensors don't see a stray header.
+      const renderSensorSparkline = (history) => {
+        if (!Array.isArray(history) || history.length < 2) return '';
+        const w = 100, h = 22, pad = 2;
+        const counts = history.map((p) => p.findingCount);
+        const max = Math.max(1, ...counts);
+        const min = Math.min(0, ...counts);
+        const range = Math.max(1, max - min);
+        const step = (w - pad * 2) / (history.length - 1);
+        const pts = history.map((p, i) => {
+          const x = pad + i * step;
+          const y = pad + (h - pad * 2) * (1 - (p.findingCount - min) / range);
+          return x.toFixed(1) + ',' + y.toFixed(1);
+        }).join(' ');
+        return '<svg class="sensor-card-spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">'
+          + '<polyline fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" points="' + pts + '"/>'
+          + '</svg>';
+      };
+
+      const renderSensorCard = (entry) => {
+        const hasData = entry.latestFindingCount != null;
+        const threshold = typeof entry.latestThreshold === 'number' ? entry.latestThreshold : null;
+        const count = hasData ? entry.latestFindingCount : null;
+        let cls = '';
+        let pct = 0;
+        if (hasData && threshold != null && threshold > 0) {
+          pct = Math.min(100, (count / threshold) * 100);
+          if (count >= threshold) cls = 'danger';
+          else if (count >= threshold * 0.8) cls = 'warn';
+        }
+        if (!hasData) cls += ' empty';
+        const typeLabel = entry.sensorType ? entry.sensorType : '';
+        const typeCls = typeLabel === 'debt' || typeLabel === 'drift' ? typeLabel : '';
+        const typeChip = typeLabel
+          ? '<span class="sensor-card-type ' + typeCls + '">' + escape(typeLabel) + '</span>'
+          : '';
+        const countText = hasData ? String(count) : 'no data';
+        const thresholdText = threshold != null
+          ? '/ ' + threshold + (typeLabel ? ' (' + escape(typeLabel) + ' trip)' : '')
+          : 'no threshold set';
+        const bar = hasData && threshold != null && threshold > 0
+          ? '<div class="sensor-card-bar"><div class="sensor-card-bar-fill" style="width:' + pct.toFixed(1) + '%"></div></div>'
+          : '';
+        const spark = renderSensorSparkline(entry.history);
+        const iter = entry.latestIteration != null
+          ? 'iter ' + entry.latestIteration
+          : (entry.configured ? 'awaiting run' : '');
+        const trips = entry.janitorTrips > 0
+          ? '<span class="trips">' + entry.janitorTrips + ' trip' + (entry.janitorTrips === 1 ? '' : 's') + '</span>'
+          : '';
+        return '<div class="sensor-card ' + cls.trim() + '">'
+          + '<div class="sensor-card-top">'
+          + '<span class="sensor-card-name">' + escape(entry.sensor) + '</span>'
+          + typeChip
+          + '</div>'
+          + '<div class="sensor-card-count">' + escape(countText)
+          + ' <span class="sensor-card-threshold">' + escape(thresholdText) + '</span></div>'
+          + bar
+          + spark
+          + '<div class="sensor-card-foot"><span>' + escape(iter) + '</span>' + trips + '</div>'
+          + '</div>';
+      };
+
+      const renderSensorHealth = (d) => {
+        const h = d && d.sensorHealth;
+        if (!h || !Array.isArray(h.entries) || h.entries.length === 0) return '';
+        const cards = h.entries.map(renderSensorCard).join('');
+        const j = h.janitor || { triggered: 0, applied: 0, deferred: 0 };
+        const summaryBits = [];
+        if (j.triggered) summaryBits.push(j.triggered + ' triggered');
+        if (j.applied) summaryBits.push(j.applied + ' fix' + (j.applied === 1 ? '' : 'es') + ' applied');
+        if (j.deferred) summaryBits.push(j.deferred + ' deferred');
+        const summary = summaryBits.length
+          ? '<span class="sensor-health-janitor-summary">Janitor: ' + summaryBits.join(' · ') + '</span>'
+          : '';
+        return '<div class="sensor-health">'
+          + '<div class="sensor-health-header"><span>Sensor Health</span>' + summary + '</div>'
+          + '<div class="sensor-grid">' + cards + '</div>'
+          + '</div>';
+      };
+
       // ── Summary cards ───────────────────────────────────────
       const renderBudgetCard = (totalCostUsd, budget) => {
         const totalBudget = budget && typeof budget.total === 'number' ? budget.total : null;
@@ -2909,6 +3212,7 @@ const INDEX_HTML = `<!DOCTYPE html>
         renderInto('summary',     { d: { status, total: d.totalCostUsd, passed: d.storiesPassed, of: d.storiesTotal, dur: d.durationMs, started: d.startedAt, budget: d.config && d.config.budget } }, () => renderSummary(d));
         renderInto('sparkline',   d.stories ? d.stories.map((s) => [s.storyId, s.totalCostUsd, s.passed]) : null, () => renderSparkline(d));
         renderInto('configPanel', { config: d.config, github: d.githubSlug, src: d.configSource }, () => renderConfigPanel(d));
+        renderInto('sensorHealth', d.sensorHealth, () => renderSensorHealth(d));
         renderInto('content',     d.epics, () => renderEpicMain(d));
         renderInto('patternsWrap', d.patterns, () => renderPatterns(d.patterns));
         renderInto('pipeline',     { epics: d.epics, collapsed: [...ls.getSet('collapsed-epics')] }, () => renderPipeline(d));

@@ -137,6 +137,19 @@ export type HarnessEvent =
       durationMs: number;
       exitCode: number;
     }
+  // Per-sensor health snapshot emitted by the orchestrator agent after each
+  // sensor run (via `marmite emit-event sensor-result`). `findingCount` is the
+  // count the agent observed; `threshold` is copied from marmite.json so the
+  // dashboard can render "current vs trip point" without re-reading config.
+  | {
+      kind: "sensor_result";
+      sensor: string;
+      sensorType?: string;
+      findingCount: number;
+      threshold?: number;
+      durationMs?: number;
+      exitCode?: number;
+    }
   | {
       kind: "verification_verdict";
       iteration: number;
