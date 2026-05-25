@@ -4,6 +4,7 @@ import type { HarnessConfig, ModelPricing, SessionOutcome, SessionPhase } from "
 import type { Reporter } from "./reporter.ts";
 import { classifyError, sleep } from "./utils.ts";
 import { PATHS } from "./paths.ts";
+import { emitEvent } from "./events.ts";
 
 const FALLBACK_PRICING: ModelPricing = { inputPerMTok: 15, outputPerMTok: 75, cacheReadPerMTok: 1.5 };
 
@@ -518,13 +519,28 @@ export async function runQueryWithRetry(
         "usage_limit",
       );
       reporter.usageLimitWait(result.resumeAt, waitMs, result.errorMessage);
-      const deadline = Date.now() + waitMs;
+      await emitEvent("usage_limit_pause", {
+        phase,
+        agentLabel,
+        resumeAt: result.resumeAt,
+        waitMs,
+        consecutive: usageLimitWaits,
+        errorMessage: result.errorMessage,
+      });
+      const pauseStart = Date.now();
+      const deadline = pauseStart + waitMs;
       while (!parentSignal.aborted) {
         const remaining = deadline - Date.now();
         if (remaining <= 0) break;
         await sleep(Math.min(1_000, remaining));
         if (remaining > 1_000) reporter.usageLimitWait(result.resumeAt, deadline - Date.now(), result.errorMessage);
       }
+      await emitEvent("usage_limit_resume", {
+        phase,
+        agentLabel,
+        waitedMs: Date.now() - pauseStart,
+        aborted: parentSignal.aborted,
+      });
       if (parentSignal.aborted) return result;
       reporter.info(`  Usage limit window cleared — retrying ${agentLabel}`);
       continue;

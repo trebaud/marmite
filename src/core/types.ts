@@ -219,6 +219,29 @@ export type HarnessEvent =
       janitorId: string;
       applied: number;
       deferred: number;
+    }
+  // Anthropic usage / quota limit pause. Emitted by runQueryWithRetry before
+  // the harness sleeps until the limit resets. `resumeAt` is the Unix timestamp
+  // (seconds) Anthropic gave us; absent when the SDK didn't surface one and the
+  // harness falls back to a default cooldown.
+  | {
+      kind: "usage_limit_pause";
+      phase: SessionPhase;
+      agentLabel: string;
+      resumeAt?: number;
+      waitMs: number;
+      consecutive: number;
+      errorMessage?: string;
+    }
+  // Paired with usage_limit_pause: emitted once the wait clears (or the run was
+  // aborted mid-wait). `waitedMs` is the actual elapsed time, which can be less
+  // than `waitMs` when aborted.
+  | {
+      kind: "usage_limit_resume";
+      phase: SessionPhase;
+      agentLabel: string;
+      waitedMs: number;
+      aborted: boolean;
     };
 
 export type HarnessEventKind = HarnessEvent["kind"];

@@ -613,6 +613,30 @@ interface Dashboard {
   configSource: string | null;
   githubSlug: string | null;
   halt: HaltStatus | null;
+  usageLimit: UsageLimitStatus;
+}
+
+interface UsageLimitActive {
+  // ISO timestamp when the harness logged the pause start.
+  startedAt: string | null;
+  // Wait window in ms the harness committed to before resuming.
+  waitMs: number;
+  // ISO timestamp the harness expects to resume at (startedAt + waitMs).
+  expectedEndsAt: string | null;
+  // Anthropic-provided reset (unix seconds), when known.
+  resumeAt: number | null;
+  phase: string;
+  agentLabel: string;
+  consecutive: number;
+}
+
+interface UsageLimitStatus {
+  // Total number of pauses across every run in the events file.
+  count: number;
+  // Cumulative wait time across every completed pause (ms).
+  totalWaitedMs: number;
+  // Set when the current run is mid-pause (start without matching resume).
+  active: UsageLimitActive | null;
 }
 
 function pickLatestRun(events: Event[]): string | null {
@@ -1047,7 +1071,51 @@ function buildDashboard(
     configSource,
     githubSlug,
     halt,
+    usageLimit: computeUsageLimitStatus(events, runId),
   };
+}
+
+// Walks the events log to count usage-limit pauses, sum elapsed wait time, and
+// detect whether the *current* run is mid-pause (a start without a matching
+// resume). Pairing is per-run so a stale start from an aborted earlier run
+// can't be misread as the live one.
+function computeUsageLimitStatus(events: Event[], currentRunId: string | null): UsageLimitStatus {
+  let count = 0;
+  let totalWaitedMs = 0;
+  // runId -> last unmatched pause_start payload (we only need the most recent).
+  const pending = new Map<string, Event>();
+  for (const e of events) {
+    if (e.kind === "usage_limit_pause") {
+      count++;
+      const rid = typeof e.runId === "string" ? e.runId : "";
+      pending.set(rid, e);
+    } else if (e.kind === "usage_limit_resume") {
+      const rid = typeof e.runId === "string" ? e.runId : "";
+      pending.delete(rid);
+      if (typeof e.waitedMs === "number") totalWaitedMs += e.waitedMs;
+    }
+  }
+  let active: UsageLimitActive | null = null;
+  if (currentRunId) {
+    const start = pending.get(currentRunId);
+    if (start) {
+      const waitMs = typeof start.waitMs === "number" ? start.waitMs : 0;
+      const startedAt = typeof start.ts === "string" ? start.ts : null;
+      const startedMs = startedAt ? Date.parse(startedAt) : NaN;
+      const expectedEndsAt =
+        !isNaN(startedMs) && waitMs > 0 ? new Date(startedMs + waitMs).toISOString() : null;
+      active = {
+        startedAt,
+        waitMs,
+        expectedEndsAt,
+        resumeAt: typeof start.resumeAt === "number" ? start.resumeAt : null,
+        phase: typeof start.phase === "string" ? start.phase : "unknown",
+        agentLabel: typeof start.agentLabel === "string" ? start.agentLabel : "",
+        consecutive: typeof start.consecutive === "number" ? start.consecutive : 1,
+      };
+    }
+  }
+  return { count, totalWaitedMs, active };
 }
 
 const INDEX_HTML = `<!DOCTYPE html>
@@ -1386,6 +1454,37 @@ const INDEX_HTML = `<!DOCTYPE html>
         .sparkline rect.pass { fill: var(--success); }
         .sparkline rect.fail { fill: var(--danger); }
         .sparkline rect.pending { fill: var(--warning); }
+
+        /* ── Usage limit banner ─────────────────────────────────── */
+        .usage-banner {
+            background: var(--warning-soft);
+            border: 1px solid var(--warning);
+            border-radius: 12px;
+            padding: 12px 16px;
+            margin-bottom: 16px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            box-shadow: var(--shadow);
+        }
+        .usage-banner-icon {
+            width: 20px; height: 20px;
+            color: var(--warning);
+            flex-shrink: 0;
+        }
+        .usage-banner-icon svg { width: 100%; height: 100%; display: block; }
+        .usage-banner-body { flex: 1; min-width: 0; }
+        .usage-banner-label {
+            font-size: 11px; font-weight: 700; color: var(--warning-strong);
+            text-transform: uppercase; letter-spacing: 0.8px;
+        }
+        .usage-banner-title {
+            font-size: 14px; color: var(--text-primary); margin-top: 2px;
+        }
+        .usage-banner-title strong { font-weight: 700; }
+        .usage-banner-meta {
+            font-size: 12px; color: var(--text-muted); margin-top: 4px;
+        }
 
         /* ── Halt banner ────────────────────────────────────────── */
         .halt-banner {
@@ -1968,6 +2067,7 @@ const INDEX_HTML = `<!DOCTYPE html>
                 </div>
                 <div class="meta" id="meta"><span class="live-dot"></span>Loading…</div>
                 <div id="haltBanner"></div>
+                <div id="usageLimitBanner"></div>
                 <div id="currentTask"></div>
                 <div class="summary-grid" id="summary"></div>
                 <div id="sparkline"></div>
@@ -2498,6 +2598,40 @@ const INDEX_HTML = `<!DOCTYPE html>
           + '</div></div>';
       };
 
+      // ── Usage limit banner ──────────────────────────────────
+      const renderUsageLimitBanner = (d) => {
+        if (!d || !d.usageLimit || !d.usageLimit.active) return '';
+        const a = d.usageLimit.active;
+        // Countdown: prefer expectedEndsAt (startedAt + waitMs). Falls back to
+        // resumeAt (Anthropic-provided unix-seconds) when the harness didn't
+        // record a planned end. The live ticker rewrites the inner text every
+        // second using data-live-deadline.
+        const deadlineMs = a.expectedEndsAt
+          ? Date.parse(a.expectedEndsAt)
+          : (a.resumeAt ? a.resumeAt * 1000 : null);
+        const initial = deadlineMs && !isNaN(deadlineMs)
+          ? Math.max(0, deadlineMs - Date.now())
+          : (a.waitMs || 0);
+        const countdownSpan = deadlineMs && !isNaN(deadlineMs)
+          ? '<span class="js-live-duration" data-live-mode="countdown" data-live-deadline="' + deadlineMs + '">'
+            + fmtDur(initial) + '</span>'
+          : fmtDur(initial);
+        const consecutiveBit = a.consecutive > 1
+          ? ' · consecutive pause #' + a.consecutive
+          : '';
+        const phaseBit = a.agentLabel ? escape(a.agentLabel) : escape(a.phase || 'session');
+        const totalBit = (d.usageLimit.count > 1 || d.usageLimit.totalWaitedMs > 0)
+          ? d.usageLimit.count + ' pauses · ' + fmtDur(d.usageLimit.totalWaitedMs) + ' waited this project'
+          : '';
+        return '<div class="usage-banner">'
+          + '<div class="usage-banner-icon">' + PAUSE_SVG + '</div>'
+          + '<div class="usage-banner-body">'
+          +   '<div class="usage-banner-label">Anthropic usage limit</div>'
+          +   '<div class="usage-banner-title">Paused on <strong>' + phaseBit + '</strong> · resuming in <strong>' + countdownSpan + '</strong>' + consecutiveBit + '</div>'
+          +   (totalBit ? '<div class="usage-banner-meta">' + totalBit + '</div>' : '')
+          + '</div></div>';
+      };
+
       // ── Config panel ────────────────────────────────────────
       const renderConfigPanel = (d) => {
         if (!d || !d.config) return '';
@@ -2583,6 +2717,16 @@ const INDEX_HTML = `<!DOCTYPE html>
           '<div class="summary-card"><h3>Run Duration</h3><div class="value">' + durLive + '</div></div>',
           '<div class="summary-card ' + (STATUS_CLASS[status] || '') + '"><h3>Status</h3><div class="value">' + (STATUS_LABEL[status] || status) + '</div></div>',
         ];
+        // Only show the usage-limit card once the project has actually hit a
+        // pause. The active-pause banner above already covers in-flight pauses.
+        if (d.usageLimit && d.usageLimit.count > 0) {
+          const cls = d.usageLimit.active ? 'warning' : '';
+          cards.push(
+            '<div class="summary-card ' + cls + '"><h3>Usage Limit Pauses</h3>'
+            + '<div class="value">' + d.usageLimit.count + '× · ' + fmtDur(d.usageLimit.totalWaitedMs) + '</div>'
+            + '</div>',
+          );
+        }
         return cards.join('');
       };
 
@@ -2760,6 +2904,7 @@ const INDEX_HTML = `<!DOCTYPE html>
           + workflowBit;
 
         renderInto('haltBanner',  d.halt, renderHaltBanner.bind(null, d));
+        renderInto('usageLimitBanner', d.usageLimit, () => renderUsageLimitBanner(d));
         renderInto('currentTask', d.currentTask, renderCurrentTask);
         renderInto('summary',     { d: { status, total: d.totalCostUsd, passed: d.storiesPassed, of: d.storiesTotal, dur: d.durationMs, started: d.startedAt, budget: d.config && d.config.budget } }, () => renderSummary(d));
         renderInto('sparkline',   d.stories ? d.stories.map((s) => [s.storyId, s.totalCostUsd, s.passed]) : null, () => renderSparkline(d));
@@ -2893,6 +3038,8 @@ const INDEX_HTML = `<!DOCTYPE html>
       //   - anchored:   base + (now - data-live-anchor) — for cumulative
       //                 durations where base is the server-computed total at
       //                 a known anchor timestamp.
+      //   - countdown:  max(0, data-live-deadline - now) — for usage-limit
+      //                 pause banners ticking down to resume.
       setInterval(() => {
         document.querySelectorAll('.js-live-duration').forEach((el) => {
           const mode = el.getAttribute('data-live-mode');
@@ -2905,6 +3052,10 @@ const INDEX_HTML = `<!DOCTYPE html>
             const anchor = parseInt(el.getAttribute('data-live-anchor') || '0', 10);
             if (!anchor) return;
             el.textContent = fmtDur(base + (Date.now() - anchor));
+          } else if (mode === 'countdown') {
+            const deadline = parseInt(el.getAttribute('data-live-deadline') || '0', 10);
+            if (!deadline) return;
+            el.textContent = fmtDur(Math.max(0, deadline - Date.now()));
           }
         });
       }, 1000);
