@@ -1,6 +1,6 @@
 # Marmite Harness
 
-The marmite package itself — a CLI that drives autonomous agents (orchestrator → builder → verifier) inside a *user's* project. There is no application code in this repo; marmite drives code generation in someone else's working directory.
+The marmite package itself — a CLI that drives autonomous agents (orchestrator → builder *or* maintainer → verifier) inside a *user's* project. There is no application code in this repo; marmite drives code generation in someone else's working directory.
 
 ## Hard Rules
 

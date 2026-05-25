@@ -18,7 +18,7 @@ interface Finding {
   detail?: string;
 }
 
-const ROLES: PromptName[] = ["orchestrator", "builder", "verifier"];
+const ROLES: PromptName[] = ["orchestrator", "builder", "maintainer", "verifier"];
 
 export async function runDoctor(argv: string[]): Promise<void> {
   const args = argv.slice(3);

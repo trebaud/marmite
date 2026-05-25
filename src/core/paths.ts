@@ -44,7 +44,7 @@ export const PATHS = {
   get feedback()    { return userPath(".marmite/feedback.md"); },
 };
 
-export type PromptName = "builder" | "verifier" | "orchestrator";
+export type PromptName = "builder" | "maintainer" | "verifier" | "orchestrator";
 
 // Agent prompts always live at `.marmite/prompts/<name>-prompt.md` in the user's project.
 // `marmite init` copies the packaged templates there; callers must handle missing files

@@ -1,6 +1,6 @@
 # Marmite
 
-A low footprint harness CLI that runs three agents in a loop to implement a project from a PRD: an orchestrator picks the next story, a builder writes the code, and a verifier reviews it. Every handoff goes through a zod-validated JSON file you can read, diff, and replay.
+A low footprint harness CLI that runs a small cast of agents in a loop to implement a project from a PRD: an orchestrator picks the next story, a builder writes the code (or a maintainer runs a sensor-driven refactor pass when the orchestrator picks one), and a verifier reviews the result. Every handoff goes through a zod-validated JSON file you can read, diff, and replay.
 
 Works on greenfield projects and existing codebases.
 
@@ -61,7 +61,7 @@ my-project/
 | `BUILD` | Builder | Implements, commits |
 | `VERIFY` | Verifier | Approves or rejects |
 | `FIX` | Builder | Resumes the same session to address feedback |
-| `JANITOR (optional)` | Builder | Maintenance pass that pays down debt and reverses architecture drift when sensor counts cross the configured threshold |
+| `JANITOR (optional)` | Maintainer | Maintenance pass that pays down debt and reverses architecture drift when sensor counts cross the configured threshold |
 
 `current-task.json` is the single handoff. If a run crashes, run `marmite cook` again: the orchestrator picks the next non-passing story, and any in-flight story without a `verify:` commit gets re-attempted.
 
@@ -128,7 +128,7 @@ A representative config:
 
 ### Workflows
 
-A workflow is a bundle of three agent prompts (orchestrator, builder, verifier) that determines how the loop behaves. `marmite init` asks you to pick one and copies the matching prompts into `.marmite/prompts/`. The selection is recorded in `marmite.json` as `"workflow": "<name>"`.
+A workflow is a bundle of agent prompts (orchestrator, builder, maintainer, verifier) that determines how the loop behaves. `marmite init` asks you to pick one and copies the matching prompts into `.marmite/prompts/`. The selection is recorded in `marmite.json` as `"workflow": "<name>"`.
 
 | Workflow | What it does |
 |---|---|
@@ -138,7 +138,7 @@ A workflow is a bundle of three agent prompts (orchestrator, builder, verifier) 
 
 The PR-gated workflow uses a small `halt` field in `.marmite/current-task.json` — when present, the harness emits a `run_halt` event and exits 0 cleanly. The next `marmite cook` invocation re-enters the orchestrator, which checks `gh pr view` and either resumes (on merge) or rewrites the same halt and exits again.
 
-To override a workflow's defaults, drop `orchestrator-prompt.md`, `builder-prompt.md`, or `verifier-prompt.md` into `.marmite/prompts/` — they're checked in alongside the rest of the workflow.
+To override a workflow's defaults, drop `orchestrator-prompt.md`, `builder-prompt.md`, `maintainer-prompt.md`, or `verifier-prompt.md` into `.marmite/prompts/` — they're checked in alongside the rest of the workflow.
 
 ### Sensors
 
@@ -192,9 +192,9 @@ When sensor findings accumulate past the thresholds in `marmite.json`'s `janitor
 
 `marmite refactor` runs a single isolated maintenance cycle. Unlike `cook`, it:
 
-- Skips the orchestrate phase entirely — the harness picks a janitor ID, writes `current-task.json`, and dispatches builder → verifier. `progress.json` stays untouched by the harness; the builder appends the JanitorEntry itself after running sensors.
+- Skips the orchestrate phase entirely — the harness picks a janitor ID, writes `current-task.json`, and dispatches maintainer → verifier. `progress.json` stays untouched by the harness; the maintainer appends the JanitorEntry itself after running sensors.
 - Runs every configured sensor regardless of `janitor.thresholds`. Findings are scoped to lines this branch added or modified vs `baseBranch`, so a refactor pass focuses on debt introduced by recent work rather than the whole repo.
-- The builder consults the `janitor` skill for triage and applies the top-N picks (default 5) in a single build pass, one fix per commit, tests between each.
+- The maintainer consults the `janitor` skill for triage and applies the top-N picks (default 5) in a single build pass, one fix per commit, tests between each.
 - Skips the fix loop — if verify fails, the run exits non-zero so you can inspect, tweak, and re-invoke.
 - Accepts the same flags as `cook` (model, timeouts, budgets) and uses the same `marmite.json` config.
 

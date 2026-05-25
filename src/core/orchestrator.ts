@@ -289,12 +289,26 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     await emitEvent("phase_start", { phase: "build", iteration: i, storyId: currentTaskId });
     reporter.phaseStart("build", { iteration: i, storyId: currentTaskId });
 
-    const builderPrompt = await readPromptFile(resolvePrompt("builder"));
+    // Janitor tasks go to the maintainer prompt; story / pr-review tasks go to
+    // the builder. Both run in the "build" phase (same model + timeout budget).
+    const buildAgent = currentTaskKind === "janitor" ? "maintainer" : "builder";
+    const buildPromptPath = resolvePrompt(buildAgent);
+    if (!(await fileExists(buildPromptPath))) {
+      reporter.error(
+        `${buildAgent}-prompt.md missing — run \`marmite init\` to install agent prompts`,
+        buildPromptPath,
+        "fatal",
+      );
+      finalizeStoryOutcome(runStats, currentTaskId, i, false, `build_fatal:missing_prompt:${buildAgent}`);
+      runStats.iterationsCompleted = i;
+      break;
+    }
+    const builderPrompt = await readPromptFile(buildPromptPath);
     const build = await runQueryWithRetry(builderPrompt, config, {
       phase: "build",
       reporter,
       parentSignal: runAbort.signal,
-      agentLabel: `builder n=${i}`,
+      agentLabel: `${buildAgent} n=${i}`,
     });
     recordSession(runStats, build, "build", i, currentTaskId, reporter);
     await emitEvent("phase_end", { phase: "build", iteration: i, outcome: build.outcome });
@@ -485,9 +499,10 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
 // One-shot maintenance pass driven by `marmite refactor`. Skips the
 // orchestrate phase entirely — the harness writes the janitor entry +
-// current-task.json directly, then dispatches build → verify. The builder
-// runs the `janitor` skill, which enumerates sensors, fills in `triggeredBy`,
-// and applies fixes. The verifier compares post-fix counts to that baseline.
+// current-task.json directly, then dispatches build → verify. The maintainer
+// agent runs the `janitor` skill, which enumerates sensors, fills in
+// `triggeredBy`, and applies fixes. The verifier compares post-fix counts to
+// that baseline.
 //
 // No fix loop in maintenance mode: if verify fails, exit non-zero so the user
 // can inspect and re-invoke. PRD stories are not advanced; only the new
@@ -519,9 +534,9 @@ export async function runMaintenance(
     await writeAtomicJson(PATHS.progress, { patterns: [], timeline: [] });
   }
 
-  // We don't run the orchestrator agent in maintenance mode, but builder and
-  // verifier are still LLM-driven and need their prompts installed.
-  for (const p of [resolvePrompt("builder"), resolvePrompt("verifier")]) {
+  // We don't run the orchestrator agent in maintenance mode, but maintainer
+  // and verifier are still LLM-driven and need their prompts installed.
+  for (const p of [resolvePrompt("maintainer"), resolvePrompt("verifier")]) {
     if (!(await fileExists(p))) {
       reporter.error(`prompt file missing — run \`marmite init\` to install agent prompts`, p, "fatal");
       process.exit(2);
@@ -568,7 +583,7 @@ export async function runMaintenance(
 
   // ── Pick a janitor ID and hand off via current-task.json ──
   // The harness owns the handoff file. It does NOT write progress.json — the
-  // builder's janitor branch (J2 in builder-prompt.md) appends the JanitorEntry
+  // maintainer (step J2 in maintainer-prompt.md) appends the JanitorEntry
   // itself after it has run sensors and knows the real triggeredBy[] baseline.
   // This keeps progress.json an agent-owned, append-only timeline of work
   // actually done.
@@ -595,7 +610,7 @@ export async function runMaintenance(
       "triggeredBy: [] on the new entry, skip the fix loop, and stop.",
     sensorSummary: "",
     ranSensors: [],
-    reasoning: `marmite refactor — single maintenance pass. Janitor ID ${janitorId} reserved by the harness; the builder will materialize the timeline entry.`,
+    reasoning: `marmite refactor — single maintenance pass. Janitor ID ${janitorId} reserved by the harness; the maintainer will materialize the timeline entry.`,
   });
 
   await emitEvent("story_selected", { iteration, storyId: janitorId, title: janitorTitle, source: "orchestrator" });
@@ -614,12 +629,12 @@ export async function runMaintenance(
   await emitEvent("phase_start", { phase: "build", iteration, storyId: janitorId });
   reporter.phaseStart("build", { iteration, storyId: janitorId });
 
-  const builderPrompt = await readPromptFile(resolvePrompt("builder"));
-  const build = await runQueryWithRetry(builderPrompt, config, {
+  const maintainerPrompt = await readPromptFile(resolvePrompt("maintainer"));
+  const build = await runQueryWithRetry(maintainerPrompt, config, {
     phase: "build",
     reporter,
     parentSignal: runAbort.signal,
-    agentLabel: `builder (maintenance)`,
+    agentLabel: `maintainer`,
   });
   recordSession(runStats, build, "build", iteration, janitorId, reporter);
   await emitEvent("phase_end", { phase: "build", iteration, outcome: build.outcome });

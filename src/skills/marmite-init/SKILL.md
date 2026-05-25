@@ -6,7 +6,7 @@ user-invocable: true
 
 # Marmite Setup Wizard
 
-You are guiding a user through setting up [marmite](https://github.com/) in their project. Marmite is a harness that drives three Claude agents in a loop (orchestrator → builder → verifier) to implement features described in a `.marmite/prd.json`. Your job is to interview the user and produce the configuration files marmite needs to run.
+You are guiding a user through setting up [marmite](https://github.com/) in their project. Marmite is a harness that drives Claude agents in a loop (orchestrator → builder *or* maintainer → verifier) to implement features described in a `.marmite/prd.json` — the orchestrator picks a story (routed to the builder) or a sensor-driven maintenance pass (routed to the maintainer). Your job is to interview the user and produce the configuration files marmite needs to run.
 
 The user just ran `marmite init` (or `bunx marmite init`). They are sitting in their project's working directory. Take it from here.
 
@@ -104,7 +104,7 @@ Ask **one question at a time**. Adapt based on previous answers. Always offer se
    - Default to `{ default: claude-sonnet-4-6, builder: claude-sonnet-4-6, verifier: claude-haiku-4-5, orchestrator: claude-sonnet-4-6 }` and just confirm.
    - Offer a "thorough" preset (Opus for builder) and a "fast" preset (Haiku everywhere) for users who want them.
 
-4. **MCP servers (optional)** — extra Model Context Protocol servers to expose to every agent (orchestrator, builder, verifier). Off by default; opt-in only.
+4. **MCP servers (optional)** — extra Model Context Protocol servers to expose to every agent (orchestrator, builder, maintainer, verifier). Off by default; opt-in only.
 
    Briefly explain in 2–3 lines before asking:
 
@@ -153,7 +153,7 @@ I'll write:
   marmite.json         (app=<chosen path>, workflow=<chosen>, sensors=<list of enabled sensor names, or "none">, balanced models)
                        (plus any workflow-specific keys the extended wizard collected — list them by name)
                        (if sensors enabled: janitor.thresholds defaulted to debt:20 / drift:1, maxFindingsPerRun:5 — tune later)
-  .marmite/prompts/    (install agent prompts from workflows/<chosen>/: builder, verifier, orchestrator)
+  .marmite/prompts/    (install agent prompts from workflows/<chosen>/: builder, maintainer, verifier, orchestrator)
   .marmite/sensors/    (only if sensors enabled — list the files from $MARMITE_TEMPLATES/sensors/ being copied)
   .claude/skills/      (install helper skills: list whatever folders are under $MARMITE_TEMPLATES/skills/)
 ```
@@ -250,6 +250,7 @@ $MARMITE_TEMPLATES/
 │   │   ├── wizard.md       (OPTIONAL — extra wizard steps for this workflow; read by init, not copied anywhere)
 │   │   └── prompts/        → ./.marmite/prompts/       (only the chosen workflow)
 │   │       ├── builder-prompt.md
+│   │       ├── maintainer-prompt.md
 │   │       ├── verifier-prompt.md
 │   │       └── orchestrator-prompt.md
 │   ├── pr-on-checkpoint/{ workflow.json, wizard.md, prompts/ }
@@ -299,7 +300,7 @@ Done. Next steps:
 
 Customizing:
   - Edit marmite.json to tune models, sensors, budgets.
-  - Edit .marmite/prompts/{builder,verifier,orchestrator}-prompt.md to
+  - Edit .marmite/prompts/{builder,maintainer,verifier,orchestrator}-prompt.md to
     customize agent behavior.
 
 Steering a long run:
