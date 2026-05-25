@@ -305,16 +305,24 @@ export function classifyDrainError(info: DrainErrorInfo): {
   return { outcome: "fatal_error", message };
 }
 
+export interface RunQueryOptions {
+  reporter: Reporter;
+  timeoutMs?: number;
+  resumeId?: string;
+  parentSignal?: AbortSignal;
+  model?: string;
+  agentLabel?: string;
+}
+
 export async function runQuery(
-  config: HarnessConfig,
   prompt: string,
-  timeoutMs: number,
-  reporter: Reporter,
-  resumeId?: string,
-  parentSignal?: AbortSignal,
-  model: string = config.model,
-  agentLabel: string = "harness",
+  config: HarnessConfig,
+  opts: RunQueryOptions,
 ): Promise<SessionResult> {
+  const { reporter, timeoutMs = 0, resumeId, parentSignal } = opts;
+  const model = opts.model ?? config.model;
+  const agentLabel = opts.agentLabel ?? "harness";
+
   const abort = new AbortController();
   const onParentAbort = () => abort.abort();
   if (parentSignal) {
@@ -332,11 +340,11 @@ export async function runQuery(
   }
 
   try {
-    const options = {
+    const sdkOptions = {
       ...baseOptions(config, model, abort, reporter),
       ...(resumeId ? { resume: resumeId } : {}),
     };
-    const q = query({ prompt, options });
+    const q = query({ prompt, options: sdkOptions });
     const drained = await drain(config, model, q, agentLabel, reporter);
 
     // Signal priority for picking an outcome:
@@ -448,21 +456,27 @@ const USAGE_LIMIT_DEFAULT_WAIT_MS = 5 * 60 * 1000;
 // total pause.
 const USAGE_LIMIT_BUFFER_MS = 30_000;
 
+export interface RunQueryWithRetryOptions {
+  reporter: Reporter;
+  parentSignal: AbortSignal;
+  timeoutMs?: number;
+  resumeId?: string;
+  model?: string;
+  agentLabel?: string;
+}
+
 export async function runQueryWithRetry(
-  config: HarnessConfig,
   prompt: string,
-  timeoutMs: number,
-  resumeId: string | undefined,
-  parentSignal: AbortSignal,
-  reporter: Reporter,
-  model: string = config.model,
-  agentLabel: string = "harness",
+  config: HarnessConfig,
+  opts: RunQueryWithRetryOptions,
 ): Promise<SessionResult> {
+  const { reporter, parentSignal } = opts;
+  const agentLabel = opts.agentLabel ?? "harness";
   let lastResult: SessionResult | null = null;
   let attempt = 1;
   let usageLimitWaits = 0;
   while (attempt <= config.maxTransientRetries + 1) {
-    const result = await runQuery(config, prompt, timeoutMs, reporter, resumeId, parentSignal, model, agentLabel);
+    const result = await runQuery(prompt, config, opts);
     lastResult = result;
 
     // Usage / quota limits: pause until the Anthropic-provided reset time

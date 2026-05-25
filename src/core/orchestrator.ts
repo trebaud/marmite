@@ -166,16 +166,13 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     }, tailAbort.signal);
 
     const orchestratorPrompt = await readPromptFile(resolvePrompt("orchestrator"));
-    const orchestrate = await runQueryWithRetry(
-      config,
-      orchestratorPrompt,
-      config.orchestrateTimeoutMs,
-      undefined,
-      runAbort.signal,
+    const orchestrate = await runQueryWithRetry(orchestratorPrompt, config, {
       reporter,
-      config.orchestratorModel,
-      `orchestrator n=${i}`,
-    );
+      parentSignal: runAbort.signal,
+      timeoutMs: config.orchestrateTimeoutMs,
+      model: config.orchestratorModel,
+      agentLabel: `orchestrator n=${i}`,
+    });
     tailAbort.abort();
     recordSession(runStats, orchestrate, "orchestrate", i, initialTask.id, reporter);
     await emitEvent("phase_end", { phase: "orchestrate", iteration: i, outcome: orchestrate.outcome });
@@ -292,16 +289,13 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     reporter.phaseStart("build", { iteration: i, storyId: currentTaskId });
 
     const builderPrompt = await readPromptFile(resolvePrompt("builder"));
-    const build = await runQueryWithRetry(
-      config,
-      builderPrompt,
-      config.buildTimeoutMs,
-      undefined,
-      runAbort.signal,
+    const build = await runQueryWithRetry(builderPrompt, config, {
       reporter,
-      config.builderModel,
-      `builder n=${i}`,
-    );
+      parentSignal: runAbort.signal,
+      timeoutMs: config.buildTimeoutMs,
+      model: config.builderModel,
+      agentLabel: `builder n=${i}`,
+    });
     recordSession(runStats, build, "build", i, currentTaskId, reporter);
     await emitEvent("phase_end", { phase: "build", iteration: i, outcome: build.outcome });
 
@@ -336,16 +330,13 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       reporter.phaseStart("verify", { iteration: i, storyId: currentTaskId, attempt: fix + 1 });
 
       const verifierPrompt = await readPromptFile(resolvePrompt("verifier"));
-      const verify = await runQueryWithRetry(
-        config,
-        verifierPrompt,
-        config.verifyTimeoutMs,
-        undefined,
-        runAbort.signal,
+      const verify = await runQueryWithRetry(verifierPrompt, config, {
         reporter,
-        config.verifierModel,
-        `verifier n=${i}.${fix + 1}`,
-      );
+        parentSignal: runAbort.signal,
+        timeoutMs: config.verifyTimeoutMs,
+        model: config.verifierModel,
+        agentLabel: `verifier n=${i}.${fix + 1}`,
+      });
       recordSession(runStats, verify, "verify", i, currentTaskId, reporter, fix + 1);
       await emitEvent("phase_end", { phase: "verify", iteration: i, attempt: fix + 1, outcome: verify.outcome });
 
@@ -415,16 +406,14 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       });
 
       const fixPrompt = buildFixPrompt(v.summary);
-      const fixResult = await runQueryWithRetry(
-        config,
-        fixPrompt,
-        config.fixTimeoutMs,
-        lastBuildSessionId,
-        runAbort.signal,
+      const fixResult = await runQueryWithRetry(fixPrompt, config, {
         reporter,
-        config.builderModel,
-        `fixer n=${i}.${fixAttempts}`,
-      );
+        parentSignal: runAbort.signal,
+        timeoutMs: config.fixTimeoutMs,
+        resumeId: lastBuildSessionId,
+        model: config.builderModel,
+        agentLabel: `fixer n=${i}.${fixAttempts}`,
+      });
       recordSession(runStats, fixResult, "fix", i, currentTaskId, reporter, fix + 1);
       await emitEvent("phase_end", { phase: "fix", iteration: i, attempt: fixAttempts, outcome: fixResult.outcome });
 
