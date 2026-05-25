@@ -167,10 +167,9 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
     const orchestratorPrompt = await readPromptFile(resolvePrompt("orchestrator"));
     const orchestrate = await runQueryWithRetry(orchestratorPrompt, config, {
+      phase: "orchestrate",
       reporter,
       parentSignal: runAbort.signal,
-      timeoutMs: config.orchestrateTimeoutMs,
-      model: config.orchestratorModel,
       agentLabel: `orchestrator n=${i}`,
     });
     tailAbort.abort();
@@ -290,10 +289,9 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
     const builderPrompt = await readPromptFile(resolvePrompt("builder"));
     const build = await runQueryWithRetry(builderPrompt, config, {
+      phase: "build",
       reporter,
       parentSignal: runAbort.signal,
-      timeoutMs: config.buildTimeoutMs,
-      model: config.builderModel,
       agentLabel: `builder n=${i}`,
     });
     recordSession(runStats, build, "build", i, currentTaskId, reporter);
@@ -331,10 +329,9 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
       const verifierPrompt = await readPromptFile(resolvePrompt("verifier"));
       const verify = await runQueryWithRetry(verifierPrompt, config, {
+        phase: "verify",
         reporter,
         parentSignal: runAbort.signal,
-        timeoutMs: config.verifyTimeoutMs,
-        model: config.verifierModel,
         agentLabel: `verifier n=${i}.${fix + 1}`,
       });
       recordSession(runStats, verify, "verify", i, currentTaskId, reporter, fix + 1);
@@ -407,11 +404,10 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
       const fixPrompt = buildFixPrompt(v.summary);
       const fixResult = await runQueryWithRetry(fixPrompt, config, {
+        phase: "fix",
         reporter,
         parentSignal: runAbort.signal,
-        timeoutMs: config.fixTimeoutMs,
         resumeId: lastBuildSessionId,
-        model: config.builderModel,
         agentLabel: `fixer n=${i}.${fixAttempts}`,
       });
       recordSession(runStats, fixResult, "fix", i, currentTaskId, reporter, fix + 1);

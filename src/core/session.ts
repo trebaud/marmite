@@ -1,6 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { HarnessConfig, ModelPricing, SessionOutcome } from "./types.ts";
+import type { HarnessConfig, ModelPricing, SessionOutcome, SessionPhase } from "./types.ts";
 import type { Reporter } from "./reporter.ts";
 import { classifyError, sleep } from "./utils.ts";
 import { PATHS } from "./paths.ts";
@@ -306,12 +306,29 @@ export function classifyDrainError(info: DrainErrorInfo): {
 }
 
 export interface RunQueryOptions {
+  phase: SessionPhase;
   reporter: Reporter;
-  timeoutMs?: number;
   resumeId?: string;
   parentSignal?: AbortSignal;
-  model?: string;
   agentLabel?: string;
+}
+
+function modelForPhase(config: HarnessConfig, phase: SessionPhase): string {
+  switch (phase) {
+    case "orchestrate": return config.orchestratorModel;
+    case "build":       return config.builderModel;
+    case "fix":         return config.builderModel;
+    case "verify":      return config.verifierModel;
+  }
+}
+
+function timeoutForPhase(config: HarnessConfig, phase: SessionPhase): number {
+  switch (phase) {
+    case "orchestrate": return config.orchestrateTimeoutMs;
+    case "build":       return config.buildTimeoutMs;
+    case "fix":         return config.fixTimeoutMs;
+    case "verify":      return config.verifyTimeoutMs;
+  }
 }
 
 export async function runQuery(
@@ -319,9 +336,10 @@ export async function runQuery(
   config: HarnessConfig,
   opts: RunQueryOptions,
 ): Promise<SessionResult> {
-  const { reporter, timeoutMs = 0, resumeId, parentSignal } = opts;
-  const model = opts.model ?? config.model;
-  const agentLabel = opts.agentLabel ?? "harness";
+  const { phase, reporter, resumeId, parentSignal } = opts;
+  const model = modelForPhase(config, phase);
+  const timeoutMs = timeoutForPhase(config, phase);
+  const agentLabel = opts.agentLabel ?? phase;
 
   const abort = new AbortController();
   const onParentAbort = () => abort.abort();
@@ -457,11 +475,10 @@ const USAGE_LIMIT_DEFAULT_WAIT_MS = 5 * 60 * 1000;
 const USAGE_LIMIT_BUFFER_MS = 30_000;
 
 export interface RunQueryWithRetryOptions {
+  phase: SessionPhase;
   reporter: Reporter;
   parentSignal: AbortSignal;
-  timeoutMs?: number;
   resumeId?: string;
-  model?: string;
   agentLabel?: string;
 }
 
@@ -470,8 +487,8 @@ export async function runQueryWithRetry(
   config: HarnessConfig,
   opts: RunQueryWithRetryOptions,
 ): Promise<SessionResult> {
-  const { reporter, parentSignal } = opts;
-  const agentLabel = opts.agentLabel ?? "harness";
+  const { phase, reporter, parentSignal } = opts;
+  const agentLabel = opts.agentLabel ?? phase;
   let lastResult: SessionResult | null = null;
   let attempt = 1;
   let usageLimitWaits = 0;
