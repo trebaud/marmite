@@ -1859,6 +1859,14 @@ const INDEX_HTML = `<!DOCTYPE html>
             padding: 2px 8px; border-radius: 10px;
             text-transform: uppercase; letter-spacing: 0.5px;
         }
+        .mode-badge.pr-review {
+            display: inline-block;
+            background: var(--accent-soft); color: var(--accent);
+            border: 1px solid var(--accent);
+            font-size: 11px; font-weight: 700;
+            padding: 2px 8px; border-radius: 10px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
 
         /* ── Stories ───────────────────────────────────────────── */
         .stories-grid {
@@ -3217,11 +3225,15 @@ const INDEX_HTML = `<!DOCTYPE html>
         const workflowBit = d.config && d.config.workflow
           ? ' · Workflow: <code>' + escape(d.config.workflow) + '</code>'
           : '';
-        // marmite refactor runs surface a distinct chip so the user can tell
-        // a one-shot maintenance pass apart from a normal cook run at a glance.
-        const modeBit = d.runMode === 'maintenance'
-          ? ' · <span class="mode-badge maintenance" title="One-shot maintenance pass (marmite refactor)">🧹 Maintenance</span>'
-          : '';
+        // An in-flight pr-review task takes precedence over the maintenance
+        // mode chip: a cook run addressing PR review comments otherwise looks
+        // identical to a normal iteration in the header.
+        const isPrReview = d.currentTask && d.currentTask.kind === 'pr-review';
+        const modeBit = isPrReview
+          ? ' · <span class="mode-badge pr-review" title="Addressing PR review comments">💬 PR Review</span>'
+          : d.runMode === 'maintenance'
+            ? ' · <span class="mode-badge maintenance" title="One-shot maintenance pass (marmite refactor)">🧹 Maintenance</span>'
+            : '';
         document.getElementById('meta').innerHTML = live
           + 'Run ID: <code>' + escape(d.runId || 'n/a') + '</code>'
           + workflowBit
