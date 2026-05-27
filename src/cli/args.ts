@@ -14,6 +14,7 @@ export interface CliOverrides {
   totalBudget?: number;
   maxFixAttempts?: number;
   transientRetries?: number;
+  approve?: boolean;
   verbose?: boolean;
 }
 
@@ -29,18 +30,12 @@ Usage:
   marmite                            Run the agent loop in the current project (alias: marmite cook)
   marmite <n>                        Shorthand for 'marmite cook -n <n>' (e.g. marmite 5)
   marmite cook [options]             Run the agent loop
-  marmite refactor [options]         One-shot maintenance pass: builder runs sensors + fixes
-                                     debt/drift, verifier checks reduction. Single build→verify
-                                     cycle, no fix loop, ignores thresholds.
   marmite init                       Set up marmite in the current project (interactive wizard)
   marmite to-prd <PRD.md>            Convert a markdown PRD into .marmite/prd.json
-  marmite doctor                     Preflight check — config, prompts, contract fences, sensors
-  marmite stats [path]               Summarize a .marmite/events.jsonl run log
+  marmite doctor                     Preflight check — config, prompts, contract fences
   marmite dashboard [path]           Serve a live HTML dashboard for events.jsonl
-  marmite emit-event <kind> [...]    Append a structured event to .marmite/events.jsonl
-                                     (used by the orchestrator agent around sensor runs)
 
-Options for cook / refactor:
+Options for cook:
   -c, --config <path>         Path to JSON config file (default: ./marmite.json)
   -n, --max-iterations <n>    Maximum iterations
   -p, --prd <path>            Path to prd.json
@@ -54,6 +49,7 @@ Options for cook / refactor:
       --cost-budget-total <usd>  Total run cost budget, 0 disables
       --max-fix-attempts <n>  Fix attempts per story
       --retries <n>           Transient retries per session
+      --approve               Approve the pending epic checkpoint and resume (epic-checkpoint workflow)
   -v, --verbose               Verbose log output (raw SDK messages and stats)
   -V, --version               Print marmite version and exit
   -h, --help                  Show this help
@@ -94,10 +90,8 @@ export function parseDuration(name: string, v: string | number | undefined): num
 
 export function parseArgs(argv: string[]): { cli: CliOverrides; configPath: string | undefined } {
   const args = argv.slice(2);
-  // Strip a leading subcommand if present — `cook` is the default, and
-  // `refactor` is dispatched separately by main.ts but shares the same flag
-  // surface (config, model, timeouts).
-  if (args[0] === "cook" || args[0] === "refactor") args.shift();
+  // Strip a leading `cook` subcommand if present — it's the default.
+  if (args[0] === "cook") args.shift();
 
   const cli: CliOverrides = {};
   let configPath: string | undefined;
@@ -128,6 +122,7 @@ export function parseArgs(argv: string[]): { cli: CliOverrides; configPath: stri
       case "--cost-budget-total": cli.totalBudget = parseFloatOrExit("--cost-budget-total", next()); break;
       case "--max-fix-attempts":  cli.maxFixAttempts = parseIntOrExit("--max-fix-attempts", next(), 0); break;
       case "--retries":           cli.transientRetries = parseIntOrExit("--retries", next(), 0); break;
+      case "--approve":           cli.approve = true; break;
       case "-v": case "--verbose": cli.verbose = true; break;
       default: {
         const n = parseInt(arg, 10);

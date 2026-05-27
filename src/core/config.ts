@@ -1,36 +1,5 @@
 import { z } from "zod";
 
-export const SensorTypeSchema = z.enum(["drift", "debt"]);
-export type SensorType = z.infer<typeof SensorTypeSchema>;
-
-// Thresholds keyed by sensor type. A janitor task fires the moment any single
-// threshold is met. Counts are produced by the orchestrator agent at sensor
-// run-time; the harness does not enforce them itself.
-export const JanitorConfigSchema = z.object({
-  thresholds: z
-    .object({
-      drift: z.number().int().nonnegative().optional(),
-      debt: z.number().int().nonnegative().optional(),
-    })
-    .optional(),
-  // Cap on how many findings the janitor skill tackles per run. Small batches
-  // are the safety mechanism — the skill should pick the highest-impact items.
-  maxFindingsPerRun: z.number().int().positive().optional(),
-  budgetUsd: z.number().nonnegative().optional(),
-  // Optional allowlist; when omitted the janitor consults all configured sensors.
-  sensors: z.array(z.string()).optional(),
-});
-export type JanitorConfig = z.infer<typeof JanitorConfigSchema>;
-
-export const SensorEntrySchema = z.object({
-  name: z.string().min(1, "sensor.name is required"),
-  type: SensorTypeSchema,
-  package: z.string().optional(),
-  configPath: z.string().optional(),
-  guidance: z.string().optional(),
-});
-export type SensorEntry = z.infer<typeof SensorEntrySchema>;
-
 const DurationSchema = z.union([z.string(), z.number()]);
 
 // MCP server configs the harness will forward to the Claude Agent SDK. Mirrors
@@ -59,21 +28,26 @@ export const McpServerConfigSchema = z.union([
 ]);
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 
+// A sensor is a named quality check the user defines. `to-prd` reads these and
+// folds them into each epic's "Refactor and harden" story so the builder runs
+// them and the verifier confirms them — the harness itself does not execute
+// sensors. `guidance` is the shell snippet / instructions for running the check.
+export const SensorEntrySchema = z.object({
+  name: z.string().min(1, "sensor.name is required"),
+  guidance: z.string().min(1, "sensor.guidance is required"),
+});
+export type SensorEntry = z.infer<typeof SensorEntrySchema>;
+
 export const MarmiteConfigSchema = z.object({
   app: z.string().optional(),
   prd: z.string().optional(),
-  // Base branch that PRs target and that the working branch reconciles against
-  // after a merge. Consumed by workflows like pr-on-checkpoint. The working
-  // branch is always whatever the user has checked out — marmite does not
-  // manage it.
-  baseBranch: z.string().optional(),
-  // Workflow controls which agent prompts were installed at init time and which
-  // optional behaviors the orchestrator runs (e.g. opening PRs and halting). The
-  // harness does not act on this field directly — it reads prompts from
-  // `.marmite/prompts/`. The orchestrator prompt may read `workflowConfig` at
-  // runtime (e.g. pr-on-checkpoint reads `kind` and `stories`).
+  // Workflow selects which packaged agent prompts the harness loads and, for
+  // epic-checkpoint, makes it halt at each epic boundary. It maps to a shipped
+  // workflow under src/workflows/<workflow>/. Omitted → defaults to "one-shot".
   workflow: z.string().optional(),
-  workflowConfig: z.record(z.string(), z.unknown()).optional(),
+  // User-defined quality checks surfaced in the per-epic "Refactor and harden"
+  // stories that `to-prd` can append. Empty/omitted → those stories fall back
+  // to generic lint/typecheck/test criteria.
   sensors: z.array(SensorEntrySchema).optional(),
   models: z
     .object({
@@ -104,10 +78,6 @@ export const MarmiteConfigSchema = z.object({
     })
     .optional(),
   maxIterations: z.number().int().positive().optional(),
-  // When present, the orchestrator agent compares post-run sensor counts to
-  // these thresholds and materializes a janitor entry in `progress.json`
-  // whenever any threshold is met. Omit to disable the feature entirely.
-  janitor: JanitorConfigSchema.optional(),
   // Opt-in MCP servers forwarded to every agent (orchestrator, builder,
   // verifier). The harness keeps `strictMcpConfig: true`, so only the servers
   // listed here load — user/global Claude Code MCP config is still ignored to

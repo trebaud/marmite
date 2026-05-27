@@ -11,10 +11,14 @@ export interface HarnessConfig {
   maxIterations: number;
   appPath: string;
   prdPath: string;
-  // Base branch lives on marmite.json (not prd.json) — it's project config,
-  // not feature spec. The working branch is whatever the user has checked out
-  // when they invoke `marmite cook`; marmite never switches branches.
-  baseBranch?: string;
+  // Workflow name from marmite.json. The harness acts on it for epic-checkpoint
+  // (halts at epic boundaries); otherwise it only documents which prompts were
+  // installed. Undefined falls back to one-shot behavior (no halting).
+  workflow?: string;
+  // Set by `marmite cook --approve`. In the epic-checkpoint workflow this
+  // appends an approval for the epic currently blocking and lets the run cross
+  // that one checkpoint; ignored by other workflows.
+  approve: boolean;
   // Model & pricing
   model: string;
   builderModel: string;
@@ -90,11 +94,6 @@ export type HarnessEvent =
   | {
       kind: "run_start";
       runId: string;
-      // Distinguishes a normal `marmite cook` run (iterates the PRD) from a
-      // `marmite refactor` one-shot maintenance pass (forces janitor mode,
-      // single iteration, no fix loop). Older event logs predate this field
-      // and read as `cook` by default downstream.
-      mode?: "cook" | "maintenance";
       maxIterations: number;
       model: string;
       builderModel: string;
@@ -107,15 +106,12 @@ export type HarnessEvent =
   | { kind: "run_abort"; reason: "signal" }
   | { kind: "run_done"; reason: "total_budget_exceeded"; spent: number; budget: number }
   | { kind: "run_done"; reason: "all_stories_passing"; iteration?: number }
-  | { kind: "run_done"; reason: "maintenance_complete"; iteration?: number }
-  | { kind: "run_done"; reason: "maintenance_failed"; iteration?: number; failReason?: string }
   | { kind: "run_end"; reason: "signal" | "max_iterations" }
   | {
       kind: "run_halt";
       iteration: number;
-      reason: "awaiting_pr_review";
-      prNum: number | undefined;
-      branch: string | undefined;
+      reason: "epic_checkpoint";
+      epic: string;
     }
   | {
       kind: "phase_start";
@@ -132,31 +128,6 @@ export type HarnessEvent =
       outcome: SessionOutcome;
     }
   | { kind: "iteration_start"; iteration: number; storyId: string; title: string }
-  | { kind: "sensors_ran"; iteration: number; storyId: string; sensors: string[] }
-  // Emitted by the orchestrator agent (via `marmite emit-event`) before/after
-  // each sensor it runs. Surfaced in the logger so the user sees real-time
-  // sensor activity during the orchestrate phase.
-  | { kind: "sensor_start"; sensor: string; sensorType?: string }
-  | {
-      kind: "sensor_end";
-      sensor: string;
-      sensorType?: string;
-      durationMs: number;
-      exitCode: number;
-    }
-  // Per-sensor health snapshot emitted by the orchestrator agent after each
-  // sensor run (via `marmite emit-event sensor-result`). `findingCount` is the
-  // count the agent observed; `threshold` is copied from marmite.json so the
-  // dashboard can render "current vs trip point" without re-reading config.
-  | {
-      kind: "sensor_result";
-      sensor: string;
-      sensorType?: string;
-      findingCount: number;
-      threshold?: number;
-      durationMs?: number;
-      exitCode?: number;
-    }
   | {
       kind: "verification_verdict";
       iteration: number;
@@ -209,41 +180,6 @@ export type HarnessEvent =
       errorMessage: string | undefined;
     }
   | ({ kind: "story_outcome" } & StoryOutcome)
-  // Emitted by the orchestrator agent when a sensor-threshold trip materializes
-  // a new janitor entry in progress.json. The harness does not emit these
-  // directly — agents call `marmite emit-event` like they do for sensor_*.
-  // Janitor lifecycle events are emitted from subprocess agents via
-  // `marmite emit-event`. The harness injects `iteration` automatically from
-  // the MARMITE_ITERATION env var when present (see events.ts), so callers
-  // don't need to thread it through — it's typed optional here.
-  | {
-      kind: "janitor_triggered";
-      iteration?: number;
-      janitorId: string;
-      triggers: Array<{ sensor: string; findingCount: number; threshold: number }>;
-    }
-  | { kind: "janitor_started"; iteration?: number; janitorId: string }
-  | {
-      kind: "janitor_fix_applied";
-      iteration?: number;
-      janitorId: string;
-      finding: string;
-      commitSha?: string;
-    }
-  | {
-      kind: "janitor_fix_deferred";
-      iteration?: number;
-      janitorId: string;
-      finding: string;
-      reason: string;
-    }
-  | {
-      kind: "janitor_done";
-      iteration?: number;
-      janitorId: string;
-      applied: number;
-      deferred: number;
-    }
   // Anthropic usage / quota limit pause. Emitted by runQueryWithRetry before
   // the harness sleeps until the limit resets. `resumeAt` is the Unix timestamp
   // (seconds) Anthropic gave us; absent when the SDK didn't surface one and the

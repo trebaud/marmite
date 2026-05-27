@@ -82,19 +82,6 @@ describe("parseArgs", () => {
     expect(cli.maxIterations).toBe(5);
   });
 
-  test("strips leading `refactor` subcommand", () => {
-    const { cli } = parseArgs(argv("refactor", "-v"));
-    expect(cli.verbose).toBe(true);
-  });
-
-  test("`refactor` accepts the same flag surface as `cook`", () => {
-    const { cli } = parseArgs(
-      argv("refactor", "--builder-model", "m-build", "--build-timeout", "5m"),
-    );
-    expect(cli.builderModel).toBe("m-build");
-    expect(cli.buildTimeoutMs).toBe(300_000);
-  });
-
   test("--max-iterations and short form", () => {
     expect(parseArgs(argv("-n", "10")).cli.maxIterations).toBe(10);
     expect(parseArgs(argv("--max-iterations", "10")).cli.maxIterations).toBe(10);

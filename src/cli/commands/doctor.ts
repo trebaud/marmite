@@ -1,6 +1,14 @@
 import { existsSync, readFileSync, statSync } from "fs";
 import { resolve } from "path";
-import { FRAMEWORK_PATHS, PATHS, setUserRoot, resolvePrompt, type PromptName } from "../../core/paths.ts";
+import {
+  FRAMEWORK_PATHS,
+  PATHS,
+  setUserRoot,
+  packagedPrompt,
+  promptOverridePath,
+  DEFAULT_WORKFLOW,
+  type PromptName,
+} from "../../core/paths.ts";
 import { MarmiteConfigSchema, formatConfigError, type MarmiteConfig } from "../../core/config.ts";
 import { getVersion } from "../../core/version.ts";
 import { stripJsonc } from "../config.ts";
@@ -8,8 +16,9 @@ import { stripJsonc } from "../config.ts";
 // `marmite doctor` — preflight checker. Validates that the user's project is
 // shaped the way the harness and agent prompts expect: config parses, prompt
 // files exist, contract-fenced regions in the user's prompts still match the
-// shipped templates for the configured workflow, sensor config files referenced
-// in marmite.json resolve, and `.marmite/` artifacts are tracked (not gitignored).
+// packaged prompts for the configured workflow, any prompt overrides in
+// `.marmite/prompts/` still match their shipped template's contract fences, and
+// `.marmite/` artifacts are tracked (not gitignored).
 
 type Severity = "ok" | "warn" | "fail";
 interface Finding {
@@ -18,7 +27,7 @@ interface Finding {
   detail?: string;
 }
 
-const ROLES: PromptName[] = ["orchestrator", "builder", "maintainer", "verifier"];
+const ROLES: PromptName[] = ["orchestrator", "builder", "verifier"];
 
 export async function runDoctor(argv: string[]): Promise<void> {
   const args = argv.slice(3);
@@ -67,28 +76,22 @@ Exit code is non-zero if any check fails (warnings are tolerated).`);
     }
   }
 
-  // 2. Workflow name resolves to a shipped template
-  const workflow = config?.workflow;
+  // 2. Workflow name resolves to a shipped workflow. Omitting the field is fine
+  // — it defaults to one-shot.
+  const workflow = config?.workflow ?? DEFAULT_WORKFLOW;
   let workflowDir: string | undefined;
   if (config !== undefined) {
-    if (!workflow) {
-      findings.push({
-        severity: "warn",
-        message: "marmite.json has no `workflow` field",
-        detail: "doctor cannot verify prompt fences without a configured workflow",
-      });
+    const candidate = resolve(FRAMEWORK_PATHS.workflows, workflow);
+    const labeled = config.workflow ? `workflow "${workflow}"` : `workflow "${workflow}" (default — no \`workflow\` field)`;
+    if (isDir(candidate)) {
+      workflowDir = candidate;
+      findings.push({ severity: "ok", message: `${labeled} resolves to a shipped workflow` });
     } else {
-      const candidate = resolve(FRAMEWORK_PATHS.templates, "workflows", workflow);
-      if (isDir(candidate)) {
-        workflowDir = candidate;
-        findings.push({ severity: "ok", message: `workflow "${workflow}" resolves to a shipped template` });
-      } else {
-        findings.push({
-          severity: "fail",
-          message: `workflow "${workflow}" is not a shipped template`,
-          detail: `expected ${candidate} to exist — typo or removed workflow?`,
-        });
-      }
+      findings.push({
+        severity: "fail",
+        message: `workflow "${workflow}" is not a shipped workflow`,
+        detail: `expected ${candidate} to exist — typo or removed workflow?`,
+      });
     }
   }
 
@@ -107,7 +110,10 @@ Exit code is non-zero if any check fails (warnings are tolerated).`);
     }
   }
 
-  // 4. .marmite/ layout — directory and prompt files
+  // 4. .marmite/ layout. Agent prompts ship with the package and are loaded
+  // from the configured workflow; the project only needs `.marmite/prompts/`
+  // when it overrides one. Confirm the packaged prompts exist (already validated
+  // by the workflow check above) and note any overrides in play.
   const marmiteDir = resolve(projectRoot, ".marmite");
   if (!isDir(marmiteDir)) {
     findings.push({
@@ -118,25 +124,28 @@ Exit code is non-zero if any check fails (warnings are tolerated).`);
   } else {
     findings.push({ severity: "ok", message: ".marmite/ directory present" });
     for (const role of ROLES) {
-      const p = resolvePrompt(role);
-      if (existsSync(p)) {
-        findings.push({ severity: "ok", message: `.marmite/prompts/${role}-prompt.md present` });
-      } else {
+      const override = promptOverridePath(role);
+      if (existsSync(override)) {
         findings.push({
-          severity: "fail",
-          message: `.marmite/prompts/${role}-prompt.md missing`,
-          detail: `run \`marmite init\` to reinstall prompts`,
+          severity: "ok",
+          message: `.marmite/prompts/${role}-prompt.md override present (used instead of packaged "${workflow}" prompt)`,
+        });
+      } else if (workflowDir) {
+        findings.push({
+          severity: "ok",
+          message: `${role} prompt loaded from packaged "${workflow}" workflow (no override)`,
         });
       }
     }
   }
 
-  // 5. Contract fences — for each role, every fenced region in the user's prompt
-  // must match the shipped template's fenced region (same count, same body).
+  // 5. Contract fences — only relevant for prompt overrides. Every fenced region
+  // in an override must match the shipped workflow prompt's fenced region (same
+  // count, same body); without an override there is nothing to drift.
   if (workflowDir) {
     for (const role of ROLES) {
-      const userPath = resolvePrompt(role);
-      const shippedPath = resolve(workflowDir, "prompts", `${role}-prompt.md`);
+      const userPath = promptOverridePath(role);
+      const shippedPath = packagedPrompt(workflow, role);
       if (!existsSync(userPath) || !existsSync(shippedPath)) continue;
       const userFences = extractFences(readFileSync(userPath, "utf-8"));
       const shippedFences = extractFences(readFileSync(shippedPath, "utf-8"));
@@ -156,7 +165,7 @@ Exit code is non-zero if any check fails (warnings are tolerated).`);
           findings.push({
             severity: "fail",
             message: `${where}: contract fence #${i + 1} drifted from shipped template`,
-            detail: `reason: ${shippedFences[i]!.reason}\nedit the prose around the fence rather than the fenced block, or run \`marmite init\` to reinstall`,
+            detail: `reason: ${shippedFences[i]!.reason}\nedit the prose around the fence rather than the fenced block, or delete the override to fall back to the packaged prompt`,
           });
         }
       }
@@ -196,41 +205,7 @@ Exit code is non-zero if any check fails (warnings are tolerated).`);
   }
   // (no .gitignore at all is fine — nothing is being excluded)
 
-  // 7. Sensor configPath files exist. Marmite ships its own configs under
-  // .marmite/sensors/; warn if the entry points at something outside that dir
-  // (legacy pattern from older marmite versions — the orchestrator no longer
-  // expects user-managed configs).
-  if (config?.sensors && config.sensors.length > 0) {
-    for (const sensor of config.sensors) {
-      if (!sensor.configPath) continue;
-      const abs = resolve(projectRoot, sensor.configPath);
-      if (existsSync(abs)) {
-        findings.push({ severity: "ok", message: `sensor "${sensor.name}" configPath resolves (${sensor.configPath})` });
-      } else {
-        findings.push({
-          severity: "fail",
-          message: `sensor "${sensor.name}" configPath does not exist`,
-          detail: `${sensor.configPath} → ${abs} — re-run \`marmite init\` to reinstall the sensor config, or remove the entry`,
-        });
-      }
-      const normalized = sensor.configPath.replace(/^\.\//, "");
-      if (!normalized.startsWith(".marmite/sensors/")) {
-        findings.push({
-          severity: "warn",
-          message: `sensor "${sensor.name}" configPath is outside .marmite/sensors/`,
-          detail: `marmite now ships its own sensor configs under .marmite/sensors/; consider moving "${sensor.configPath}" there so the harness owns the lifecycle`,
-        });
-      }
-    }
-  } else if (config !== undefined) {
-    findings.push({
-      severity: "warn",
-      message: "no sensors declared in marmite.json",
-      detail: "the run will proceed without lint/drift signals",
-    });
-  }
-
-  // 8. PRD exists (warn — `marmite to-prd` may not have run yet)
+  // 7. PRD exists (warn — `marmite to-prd` may not have run yet)
   if (!existsSync(PATHS.prd)) {
     findings.push({
       severity: "warn",

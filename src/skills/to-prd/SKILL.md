@@ -6,21 +6,24 @@ user-invocable: false
 
 # Marmite PRD Converter
 
-You are running as the `marmite to-prd` converter. Your **only job** is to translate the markdown PRD at `$MARMITE_PRD_INPUT` into the JSON schema below and write it to `$MARMITE_PRD_OUTPUT`.
+You are running as the `marmite to-prd` converter. Your job is to translate the markdown PRD at `$MARMITE_PRD_INPUT` into the JSON schema below and write the result to `$MARMITE_PRD_OUTPUT`. You may also, **if the user opts in**, append one refactoring story at the end of each epic.
 
-This is a mechanical conversion — **do not resize, merge, split, reorder, or re-interpret stories.** The markdown PRD is the source of truth; preserve every user story exactly as authored.
+Preserve every authored feature story exactly — **do not merge, split, reorder, or re-interpret them.** The only stories you may add are the per-epic refactoring stories described below, and only when the user asks for them; everything else is a faithful 1:1 conversion.
 
 ---
 
 ## Workflow
 
 1. **Read** `$MARMITE_PRD_INPUT`.
-2. **Convert** the markdown into the JSON schema (rules below).
-3. **Write** the JSON to `$MARMITE_PRD_OUTPUT`.
-4. **Validate**: run `bun run validate-prd.ts $MARMITE_PRD_OUTPUT`. If it exits non-zero, fix the JSON and re-validate. Loop until exit 0.
-5. **Report** one line: `wrote N stories to .marmite/prd.json, validated OK`.
+2. **Ask** the user one question and STOP for their reply: *"Append a 'Refactor and harden' story at the end of each epic? These run the sensors you've defined in `marmite.json` (plus typecheck and tests) on the epic's changed files so debt doesn't accumulate. (yes/no)"* Treat the answer as a yes/no flag for step 4. If they say yes, read `marmite.json` (in the current working directory) and collect its `sensors` array — you'll turn each entry into an acceptance criterion in step 4.
+3. **Convert** each authored story 1:1 (rules below), keeping epic groups in document order.
+4. **Inject** one refactoring story as the last story of every epic (see "Refactoring stories") — **only if the user said yes in step 2.** If they declined, skip this step entirely.
+5. **Assign `priority`** by final position in the ordered list (1-based); when refactoring stories are present, each runs right after its epic's feature stories.
+6. **Write** the JSON to `$MARMITE_PRD_OUTPUT`.
+7. **Validate**: run `bun run validate-prd.ts $MARMITE_PRD_OUTPUT`. If it exits non-zero, fix the JSON and re-validate. Loop until exit 0.
+8. **Report** one line: `wrote N stories (F feature + R refactor across E epics), validated OK` (with `R = 0` if refactoring stories were declined).
 
-Do not prompt the user for confirmation. Do not run `marmite cook`. End the session after step 5.
+Step 2 is the only question you ask. Do not run `marmite cook`. End the session after step 8.
 
 ---
 
@@ -49,7 +52,7 @@ Do not prompt the user for confirmation. Do not run `marmite cook`. End the sess
 Field rules enforced by `validate-prd.ts`:
 
 - `id` matches `US-\d{3,}` (e.g. `US-001`), unique across the list.
-- `priority` is a non-negative integer. Stories execute in priority order.
+- `priority` is a non-negative integer; lower = runs earlier.
 - `passes` must be `false` in a freshly-generated PRD.
 - `dependencies` (optional) must reference existing `US-###` ids with strictly lower `priority`.
 - `epic` is required and non-empty.
@@ -62,52 +65,68 @@ Field rules enforced by `validate-prd.ts`:
 ### Top-level fields
 
 - **`project`**: PRD title (strip leading `PRD:` / `# `).
-- **`description`**: one-line summary from the PRD's Introduction/Overview section. If multi-paragraph, take the first sentence.
+- **`description`**: one-line summary from the PRD's Introduction/Overview. First sentence if multi-paragraph.
 
-### User stories — preserve 1:1
+### Feature stories — preserve 1:1
 
-For each `### US-NNN: ...` heading in the markdown PRD, emit exactly one JSON entry. Do **not** merge, split, or skip stories.
+For each `### US-NNN: ...` heading, emit exactly one JSON entry. Do **not** merge, split, or skip.
 
-- **`id`**: copy from the markdown heading (e.g. `US-001`). Re-number sequentially starting at `US-001` only if the markdown uses a non-conforming scheme.
-- **`title`**: text after the `US-NNN:` prefix in the heading.
+- **`id`**: copy from the heading. Re-number sequentially from `US-001` only if the markdown uses a non-conforming scheme.
+- **`title`**: text after the `US-NNN:` prefix.
 - **`description`**: the `**Description:**` line, verbatim.
-- **`acceptanceCriteria`**: each `- [ ] ...` bullet under `**Acceptance Criteria:**` becomes one string. Strip the `- [ ] ` prefix. Keep wording verbatim.
-- **`priority`**: assigned in document order — first story is `1`, second is `2`, etc.
-- **`passes`**: always `false`.
-- **`notes`**: always `""`.
-- **`dependencies`**: parsed from the `**Dependencies:**` line in the markdown story.
-  - `None` (or missing) → `[]`.
-  - Comma-separated ids → array of those ids (e.g. `"US-001, US-002"` → `["US-001", "US-002"]`).
-- **`epic`**: parsed from the `**Epic:**` line.
-  - Format in markdown is `EP-NNN — [Epic title]`. Use a kebab-case slug of the epic title as the JSON value (e.g. `"EP-001 — Data model"` → `"data-model"`).
-  - If the PRD has no Epics section, use `"main"` for every story.
+- **`acceptanceCriteria`**: each `- [ ] ...` bullet under `**Acceptance Criteria:**`, prefix stripped, verbatim. Append `"Typecheck passes"` if missing.
+- **`passes`**: always `false`. **`notes`**: always `""`.
+- **`dependencies`**: from the `**Dependencies:**` line. `None`/missing → `[]`; comma-separated ids → array.
+- **`epic`**: from the `**Epic:**` line (`EP-NNN — [Title]` → kebab-case slug of the title). No Epics section → `"main"` for every story.
 
-### Acceptance criteria normalization
+### Priority
 
-- Preserve all criteria from the markdown verbatim.
-- If "Typecheck passes" is missing from a story, append it.
-- If the criteria mention browser/UI verification but not the exact dev-browser phrasing, leave the existing wording — do not add or rewrite.
+Assign `priority` by **final position** in the ordered list: walk the epics in document order and number `1, 2, 3, …` down the whole list. When refactoring stories were requested, emit each epic's feature stories then its refactoring story before moving to the next epic — this guarantees an epic's refactoring story has a higher priority number than (i.e. runs after) every feature story in that epic. When they were declined, just number the feature stories in document order.
 
 ---
 
-## Validation Loop
+## Refactoring stories
 
-After `Write`, always run:
+**Only if the user opted in at step 2.** Append **one** refactoring story as the last story of every epic. These keep debt from accumulating as the agent loop adds code — the quality checks live directly in these stories' acceptance criteria, so the builder runs them and the verifier confirms them like any other story.
 
-```bash
-bun run validated-prd.ts $MARMITE_PRD_OUTPUT
+The acceptance criteria are built from the `sensors` array you read in step 2. **Turn each sensor into one acceptance criterion** of the form `Run the \`<name>\` sensor on the files changed in this epic: <guidance>`. Then append `"Typecheck passes"` and `"The full test suite passes"`. If `marmite.json` defines **no** sensors, fall back to a single generic criterion: `"Run the project linter on the files changed in this epic and resolve every finding"` plus the typecheck and test criteria.
+
+For an epic with slug `<epic>` and feature stories `US-A … US-Z`, given sensors `lint` and `arch`:
+
+```json
+{
+  "id": "US-<next-free-number>",
+  "title": "Refactor and harden: <Epic title>",
+  "description": "As a maintainer, I want the code added in the <Epic title> epic to stay clean and architecturally sound, so that technical debt and structural drift do not accumulate as later epics build on it.",
+  "acceptanceCriteria": [
+    "Run the `lint` sensor on the files changed in this epic: <guidance from the lint sensor>",
+    "Run the `arch` sensor on the files changed in this epic: <guidance from the arch sensor>",
+    "Code added in this epic follows the conventions recorded in .marmite/progress.json `patterns[]`.",
+    "Typecheck passes",
+    "The full test suite passes"
+  ],
+  "priority": "<final position>",
+  "passes": false,
+  "notes": "",
+  "dependencies": ["US-A", "…", "US-Z"],
+  "epic": "<epic>"
+}
 ```
 
-If validation fails, read the numbered error list, fix only the cited fields, re-write, and re-run. The validator enforces:
+Rules for the injected story:
 
-- Schema shape (types, required fields, id format).
-- No duplicate ids.
-- `dependencies` resolve to lower-priority stories.
-- `passes` is `false` for every story.
+- **`acceptanceCriteria`**: one criterion per configured sensor (verbatim `guidance`), then typecheck and tests. No sensors configured → the generic fallback above.
+- **`id`**: continue the `US-NNN` sequence past the highest id already used (one per epic, all unique). Zero-pad to at least 3 digits.
+- **`dependencies`**: list every feature story id in the same epic (they all precede it, so they have lower priority — valid).
+- **`epic`**: the same slug as the epic it closes.
+- Scope all checks to **files changed in the epic**, not the whole repo — brownfield code outside the epic is left alone.
+- If a project has a single implicit epic (`"main"`), still append exactly one refactoring story at the very end.
 
 ---
 
 ## Example
+
+This example shows the output **when the user opted in** to refactoring stories, with `marmite.json` defining two sensors — `lint` (guidance: "Run `bun run lint` and clear every finding") and `arch` (guidance: "Run `bun run depcruise` and fix any layer violation or cycle"). If the user declined, the `US-003` and `US-004` "Refactor and harden" entries below would simply be absent and the feature stories renumbered accordingly.
 
 **Input PRD excerpt:**
 ```markdown
@@ -124,11 +143,8 @@ Add ability to mark tasks with different statuses.
 
 ### US-001: Task status schema and server actions
 **Epic:** EP-001 — Data model
-
 **Dependencies:** None
-
 **Description:** As a developer, I need status stored in the DB and exposed via server actions.
-
 **Acceptance Criteria:**
 - [ ] Add status column: 'pending' | 'in_progress' | 'done' (default 'pending')
 - [ ] Server action updateTaskStatus(id, status) persists change
@@ -136,15 +152,11 @@ Add ability to mark tasks with different statuses.
 
 ### US-002: Status badge and inline toggle on task list
 **Epic:** EP-002 — Task UI
-
 **Dependencies:** US-001
-
 **Description:** As a user, I want to see and change task status from the list.
-
 **Acceptance Criteria:**
 - [ ] Each task row shows a colored status badge
 - [ ] Inline dropdown saves immediately via server action
-- [ ] Typecheck passes
 - [ ] Verify in browser using dev-browser skill
 ```
 
@@ -170,34 +182,71 @@ Add ability to mark tasks with different statuses.
       "epic": "data-model"
     },
     {
+      "id": "US-003",
+      "title": "Refactor and harden: Data model",
+      "description": "As a maintainer, I want the code added in the Data model epic to stay clean and architecturally sound, so that technical debt and structural drift do not accumulate as later epics build on it.",
+      "acceptanceCriteria": [
+        "Run the `lint` sensor on the files changed in this epic: Run `bun run lint` and clear every finding.",
+        "Run the `arch` sensor on the files changed in this epic: Run `bun run depcruise` and fix any layer violation or cycle.",
+        "Code added in this epic follows the conventions recorded in .marmite/progress.json patterns[].",
+        "Typecheck passes",
+        "The full test suite passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "",
+      "dependencies": ["US-001"],
+      "epic": "data-model"
+    },
+    {
       "id": "US-002",
       "title": "Status badge and inline toggle on task list",
       "description": "As a user, I want to see and change task status from the list.",
       "acceptanceCriteria": [
         "Each task row shows a colored status badge",
         "Inline dropdown saves immediately via server action",
-        "Typecheck passes",
-        "Verify in browser using dev-browser skill"
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
       ],
-      "priority": 2,
+      "priority": 3,
       "passes": false,
       "notes": "",
       "dependencies": ["US-001"],
+      "epic": "task-ui"
+    },
+    {
+      "id": "US-004",
+      "title": "Refactor and harden: Task UI",
+      "description": "As a maintainer, I want the code added in the Task UI epic to stay clean and architecturally sound, so that technical debt and structural drift do not accumulate as later epics build on it.",
+      "acceptanceCriteria": [
+        "Run the `lint` sensor on the files changed in this epic: Run `bun run lint` and clear every finding.",
+        "Run the `arch` sensor on the files changed in this epic: Run `bun run depcruise` and fix any layer violation or cycle.",
+        "Code added in this epic follows the conventions recorded in .marmite/progress.json patterns[].",
+        "Typecheck passes",
+        "The full test suite passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "",
+      "dependencies": ["US-002"],
       "epic": "task-ui"
     }
   ]
 }
 ```
 
+Note how `US-003` (Data model refactor) slots in at priority 2 — right after its epic's only feature story and before the Task UI epic begins.
+
 ---
 
 ## Pre-write checklist
 
-- [ ] One JSON story per markdown story (no merging, splitting, or dropping).
-- [ ] IDs preserved from markdown (or sequentially assigned if the source is non-conforming).
-- [ ] `priority` matches document order.
+- [ ] One JSON story per markdown story (no merging, splitting, or dropping feature stories).
+- [ ] The user was asked once whether to append refactoring stories, and their answer was honored.
+- [ ] If opted in: exactly one refactoring story appended at the end of each epic, IDs continue the `US-NNN` sequence and are unique, each depends on its epic's feature stories and shares their epic slug. If declined: no refactoring stories were added.
+- [ ] Feature story IDs preserved from markdown.
+- [ ] `priority` assigned by final position; when refactoring stories are present, each runs after its epic's feature stories.
 - [ ] `dependencies` parsed from the `**Dependencies:**` line; `None` → `[]`.
-- [ ] `epic` parsed from the `**Epic:**` line and slugified; `"main"` if no Epics section exists.
-- [ ] Every story has `passes: false`, `notes: ""`.
-- [ ] "Typecheck passes" present in every story's acceptance criteria.
-- [ ] Validator passes
+- [ ] `epic` parsed and slugified; `"main"` if no Epics section.
+- [ ] Every story has `passes: false`, `notes: ""`, and "Typecheck passes" in its acceptance criteria.
+- [ ] Validator passes.

@@ -1,0 +1,5 @@
+{
+  "name": "epic-checkpoint",
+  "label": "Epic checkpoint",
+  "description": "Builds straight through, then halts at the end of each PRD epic. After reviewing the work, resume the next epic with `marmite cook --approve`. Approvals are recorded as immutable entries in the progress timeline — no PRs, branches, or gh involved."
+}

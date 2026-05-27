@@ -1,18 +1,19 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
-  appendJanitorEntry,
-  nextJanitorId,
   pickNextStory,
   readPrd,
   allStoriesPassingOrError,
   markStoryPassing,
-  type JanitorEntry,
+  orderedEpics,
+  epicComplete,
+  approvalExistsFor,
+  blockingEpic,
+  type PrdStory,
   type TimelineEntry,
 } from "../src/core/prd.ts";
-import { setUserRoot, PATHS } from "../src/core/paths.ts";
 import type { Reporter } from "../src/core/reporter.ts";
 import { silentReporter } from "../src/core/reporter.ts";
 
@@ -34,41 +35,41 @@ describe("pickNextStory", () => {
   test("returns null when all stories pass", () => {
     expect(
       pickNextStory([
-        { id: "a", title: "A", priority: 1, passes: true },
-        { id: "b", title: "B", priority: 2, passes: true },
+        { id: "a", title: "A", priority: 1, passes: true, epic: "" },
+        { id: "b", title: "B", priority: 2, passes: true, epic: "" },
       ]),
     ).toBeNull();
   });
 
   test("ignores stories with empty id", () => {
     const r = pickNextStory([
-      { id: "", title: "skip", priority: 1, passes: false },
-      { id: "real", title: "ok", priority: 2, passes: false },
+      { id: "", title: "skip", priority: 1, passes: false, epic: "" },
+      { id: "real", title: "ok", priority: 2, passes: false, epic: "" },
     ]);
     expect(r?.id).toBe("real");
   });
 
   test("picks lowest priority first", () => {
     const r = pickNextStory([
-      { id: "b", title: "B", priority: 2, passes: false },
-      { id: "a", title: "A", priority: 1, passes: false },
-      { id: "c", title: "C", priority: 3, passes: false },
+      { id: "b", title: "B", priority: 2, passes: false, epic: "" },
+      { id: "a", title: "A", priority: 1, passes: false, epic: "" },
+      { id: "c", title: "C", priority: 3, passes: false, epic: "" },
     ]);
     expect(r?.id).toBe("a");
   });
 
   test("breaks ties by id (lex order)", () => {
     const r = pickNextStory([
-      { id: "z", title: "Z", priority: 1, passes: false },
-      { id: "a", title: "A", priority: 1, passes: false },
+      { id: "z", title: "Z", priority: 1, passes: false, epic: "" },
+      { id: "a", title: "A", priority: 1, passes: false, epic: "" },
     ]);
     expect(r?.id).toBe("a");
   });
 
   test("skips passing stories", () => {
     const r = pickNextStory([
-      { id: "a", title: "A", priority: 1, passes: true },
-      { id: "b", title: "B", priority: 2, passes: false },
+      { id: "a", title: "A", priority: 1, passes: true, epic: "" },
+      { id: "b", title: "B", priority: 2, passes: false, epic: "" },
     ]);
     expect(r?.id).toBe("b");
   });
@@ -176,82 +177,60 @@ describe("markStoryPassing", () => {
   });
 });
 
-describe("nextJanitorId", () => {
-  test("0001 when timeline has no janitor entries for the date", () => {
-    expect(nextJanitorId([], "2026-05-25")).toBe("JANITOR-2026-05-25-0001");
+describe("epic checkpoint gate", () => {
+  const story = (id: string, epic: string, priority: number, passes: boolean): PrdStory => ({
+    id,
+    title: id,
+    priority,
+    passes,
+    epic,
+  });
+  // Two epics, contiguous by priority: auth (1,2) then billing (3,4).
+  const twoEpics = (authPass: boolean, billingPass: boolean): PrdStory[] => [
+    story("US-001", "auth", 1, authPass),
+    story("US-002", "auth", 2, authPass),
+    story("US-003", "billing", 3, billingPass),
+    story("US-004", "billing", 4, billingPass),
+  ];
+  const approval = (epic: string): TimelineEntry => ({ kind: "approval", epic, ts: "t" });
+
+  test("orderedEpics sorts by lowest story priority", () => {
+    expect(orderedEpics(twoEpics(false, false))).toEqual(["auth", "billing"]);
   });
 
-  test("ignores story entries and entries for other dates", () => {
-    const timeline: TimelineEntry[] = [
-      { kind: "story", storyId: "US-1", ts: "...", summary: "", commitShas: [] },
-      { kind: "janitor", id: "JANITOR-2026-05-24-0009", ts: "...", passes: true, title: "", triggeredBy: [] },
+  test("epicComplete reflects story passes", () => {
+    const stories = twoEpics(true, false);
+    expect(epicComplete(stories, "auth")).toBe(true);
+    expect(epicComplete(stories, "billing")).toBe(false);
+  });
+
+  test("approvalExistsFor finds approval entries only", () => {
+    const tl: TimelineEntry[] = [
+      { kind: "story", storyId: "US-001", ts: "t", summary: "", commitShas: [] },
+      approval("auth"),
     ];
-    expect(nextJanitorId(timeline, "2026-05-25")).toBe("JANITOR-2026-05-25-0001");
+    expect(approvalExistsFor(tl, "auth")).toBe(true);
+    expect(approvalExistsFor(tl, "billing")).toBe(false);
   });
 
-  test("increments past the highest existing suffix for the date", () => {
-    const timeline: TimelineEntry[] = [
-      { kind: "janitor", id: "JANITOR-2026-05-25-0001", ts: "...", passes: true, title: "", triggeredBy: [] },
-      { kind: "janitor", id: "JANITOR-2026-05-25-0003", ts: "...", passes: false, title: "", triggeredBy: [] },
-      { kind: "janitor", id: "JANITOR-2026-05-25-0002", ts: "...", passes: true, title: "", triggeredBy: [] },
-    ];
-    expect(nextJanitorId(timeline, "2026-05-25")).toBe("JANITOR-2026-05-25-0004");
+  test("no block while still inside the first epic", () => {
+    expect(blockingEpic(twoEpics(false, false), [])).toBeNull();
   });
 
-  test("zero-pads the suffix to four digits", () => {
-    const timeline: TimelineEntry[] = [
-      { kind: "janitor", id: "JANITOR-2026-05-25-0099", ts: "...", passes: true, title: "", triggeredBy: [] },
-    ];
-    expect(nextJanitorId(timeline, "2026-05-25")).toBe("JANITOR-2026-05-25-0100");
-  });
-});
-
-describe("appendJanitorEntry", () => {
-  // appendJanitorEntry writes to PATHS.progress (anchored to userRoot). Point
-  // userRoot at the tmpdir per-test so writes stay isolated.
-  beforeEach(() => {
-    mkdirSync(join(tmp, ".marmite"), { recursive: true });
-    setUserRoot(tmp);
+  test("blocks at the boundary once the first epic is complete and unapproved", () => {
+    expect(blockingEpic(twoEpics(true, false), [])).toEqual({ epic: "auth" });
   });
 
-  test("creates progress.json with the entry when the file doesn't exist", async () => {
-    const entry: JanitorEntry = {
-      kind: "janitor",
-      id: "JANITOR-2026-05-25-0001",
-      ts: "2026-05-25T12:00:00Z",
-      passes: false,
-      title: "Maintenance pass",
-      triggeredBy: [],
-    };
-    await appendJanitorEntry(entry);
-    const written = JSON.parse(readFileSync(PATHS.progress, "utf-8"));
-    expect(written.patterns).toEqual([]);
-    expect(written.timeline).toHaveLength(1);
-    expect(written.timeline[0].id).toBe("JANITOR-2026-05-25-0001");
+  test("does not block once the completed epic is approved", () => {
+    expect(blockingEpic(twoEpics(true, false), [approval("auth")])).toBeNull();
   });
 
-  test("appends without disturbing existing patterns or timeline rows", async () => {
-    writeFileSync(
-      PATHS.progress,
-      JSON.stringify({
-        patterns: [{ name: "p1", description: "", addedInStory: "US-1" }],
-        timeline: [
-          { kind: "story", storyId: "US-1", ts: "...", summary: "first", commitShas: [] },
-        ],
-      }),
-    );
-    await appendJanitorEntry({
-      kind: "janitor",
-      id: "JANITOR-2026-05-25-0001",
-      ts: "...",
-      passes: false,
-      title: "x",
-      triggeredBy: [],
-    });
-    const written = JSON.parse(readFileSync(PATHS.progress, "utf-8"));
-    expect(written.patterns).toHaveLength(1);
-    expect(written.timeline).toHaveLength(2);
-    expect(written.timeline[0].kind).toBe("story");
-    expect(written.timeline[1].kind).toBe("janitor");
+  test("no block when the PRD is complete", () => {
+    expect(blockingEpic(twoEpics(true, true), [])).toBeNull();
+  });
+
+  test("ungrouped stories (no epic) never block", () => {
+    const flat = [story("a", "", 1, true), story("b", "", 2, false)];
+    expect(blockingEpic(flat, [])).toBeNull();
   });
 });

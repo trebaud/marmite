@@ -6,7 +6,9 @@ import { runWizard } from "../wizard.ts";
 // `marmite init` — interactive setup wizard. Loads src/skills/marmite-init/SKILL.md
 // and runs it as an SDK session in the user's cwd. The skill is responsible for
 // inspecting the project, asking questions, and writing marmite.json + copying
-// templates/ into the project. PRD generation lives in `marmite to-prd`.
+// helper skills into the project. Agent prompts are NOT copied — they ship with
+// the package and are loaded from the configured workflow at run time. PRD
+// generation lives in `marmite to-prd`.
 export async function runInit(): Promise<void> {
   const preamble =
     "You are running as the `marmite init` setup wizard for the user's current working directory. " +
@@ -14,14 +16,15 @@ export async function runInit(): Promise<void> {
     "Ask the user ONE question at a time and STOP after each question to wait for their reply. " +
     "After they answer, continue to the next step. The session is multi-turn — do not try to answer " +
     "all questions in a single response.\n\n" +
+    `MARMITE_WORKFLOWS=${FRAMEWORK_PATHS.workflows}\n` +
+    "(Absolute path to the marmite package's shipped workflows. Each subdir has a workflow.json the " +
+    "wizard reads to present choices, plus the agent prompts the harness loads directly at run time. " +
+    "Do NOT copy these prompts into the project — they are used straight from the package.)\n" +
     `MARMITE_TEMPLATES=${FRAMEWORK_PATHS.templates}\n` +
-    "(Absolute path to the marmite package's templates tree. The 'install templates' step copies " +
-    "this tree into the user's project, preserving structure:\n" +
-    "  $MARMITE_TEMPLATES/workflows/<chosen>/prompts/*.md → ./.marmite/prompts/\n" +
-    "  $MARMITE_TEMPLATES/skills/<name>/                  → ./.claude/skills/<name>/\n" +
-    "  $MARMITE_TEMPLATES/sensors/*                       → ./.marmite/sensors/\n" +
-    "The workflow choice is part of the wizard interview. Skip files that already exist in the " +
-    "target — they may be user-customized.)\n\n";
+    "(Absolute path to the marmite package's templates tree. The 'install helper skills' step copies " +
+    "skill folders into the user's project, preserving structure:\n" +
+    "  $MARMITE_TEMPLATES/skills/<name>/ → ./.claude/skills/<name>/\n" +
+    "Skip files that already exist in the target — they may be user-customized.)\n\n";
 
   await runWizard({
     skillName: "marmite-init",

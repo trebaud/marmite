@@ -142,3 +142,12 @@ export function gitCommit(cwd: string, path: string, message: string, reporter: 
   const match = /\[\S+\s+([0-9a-f]+)\]/.exec((commit.stdout ?? "").split("\n")[0] ?? "");
   reporter.gitCommit(match?.[1] ?? "", message);
 }
+
+// Best-effort author name for approval records. Returns undefined when git is
+// unavailable or user.name is unset.
+export function gitUserName(cwd: string): string | undefined {
+  const r = spawnSync("git", ["config", "user.name"], { cwd, encoding: "utf8" });
+  if (r.status !== 0) return undefined;
+  const name = (r.stdout ?? "").trim();
+  return name || undefined;
+}

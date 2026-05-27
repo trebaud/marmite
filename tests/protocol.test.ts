@@ -113,71 +113,54 @@ describe("readCurrentTaskDecision", () => {
     expect(r.kind).toBe("missing");
   });
 
-  test("minimal decision parses with default empty ranSensors", async () => {
+  test("minimal decision parses with just a storyId", async () => {
     writeCurrentTask({ storyId: "s1" });
     const r = await readCurrentTaskDecision();
     expect(r.kind).toBe("present");
     if (r.kind === "present") {
       expect(r.value.storyId).toBe("s1");
-      expect(r.value.ranSensors).toEqual([]);
+      expect(r.value.storyTitle).toBe("");
     }
   });
 
-  test("ranSensors strings round-trip", async () => {
-    writeCurrentTask({ storyId: "s1", ranSensors: ["eslint", "tsc"] });
-    const r = await readCurrentTaskDecision();
-    if (r.kind === "present") expect(r.value.ranSensors).toEqual(["eslint", "tsc"]);
-  });
-
-  test("halt.awaiting_pr_review parses with prNum (gh-opened PR)", async () => {
-    writeCurrentTask({
-      storyId: "s1",
-      halt: { kind: "awaiting_pr_review", prNum: 42, branch: "feature/x", baseBranch: "main" },
-    });
+  test("storyTitle is carried through when present", async () => {
+    writeCurrentTask({ storyId: "s1", storyTitle: "Set up auth" });
     const r = await readCurrentTaskDecision();
     expect(r.kind).toBe("present");
-    if (r.kind === "present" && r.value.halt) {
-      expect(r.value.halt.kind).toBe("awaiting_pr_review");
-      expect(r.value.halt.prNum).toBe(42);
-      expect(r.value.halt.branch).toBe("feature/x");
+    if (r.kind === "present") {
+      expect(r.value.storyTitle).toBe("Set up auth");
     }
   });
 
-  test("halt.awaiting_pr_review parses without prNum (manual PR fallback)", async () => {
-    writeCurrentTask({
-      storyId: "s1",
-      halt: {
-        kind: "awaiting_pr_review",
-        branch: "feature/x",
-        baseBranch: "main",
-        reason: "gh CLI not installed or not authenticated",
-      },
-    });
+  test("epic_checkpoint halt parses", async () => {
+    writeCurrentTask({ halt: { kind: "epic_checkpoint", epic: "auth" } });
     const r = await readCurrentTaskDecision();
     expect(r.kind).toBe("present");
-    if (r.kind === "present" && r.value.halt) {
-      expect(r.value.halt.kind).toBe("awaiting_pr_review");
-      expect(r.value.halt.prNum).toBeUndefined();
-      expect(r.value.halt.branch).toBe("feature/x");
-      expect(r.value.halt.reason).toContain("gh CLI");
+    if (r.kind === "present") {
+      expect(r.value.halt?.kind).toBe("epic_checkpoint");
+      expect(r.value.halt?.epic).toBe("auth");
     }
   });
 
-  test("halt.kind with unknown value → malformed", async () => {
-    writeCurrentTask({ storyId: "s1", halt: { kind: "nope", prNum: 1 } });
+  test("halt with unknown kind → malformed", async () => {
+    writeCurrentTask({ halt: { kind: "awaiting_pr_review", epic: "auth" } });
     const r = await readCurrentTaskDecision();
     expect(r.kind).toBe("malformed");
   });
 
-  test("halt.prNum non-positive → malformed", async () => {
-    writeCurrentTask({ storyId: "s1", halt: { kind: "awaiting_pr_review", prNum: 0 } });
+  test("halt missing epic → malformed", async () => {
+    writeCurrentTask({ halt: { kind: "epic_checkpoint" } });
     const r = await readCurrentTaskDecision();
     expect(r.kind).toBe("malformed");
   });
 
-  test("missing storyId → malformed", async () => {
-    writeCurrentTask({ ranSensors: [] });
+  test("empty handoff parses (harness falls back to priority order)", async () => {
+    writeCurrentTask({ storyTitle: "no id here" });
     const r = await readCurrentTaskDecision();
-    expect(r.kind).toBe("malformed");
+    expect(r.kind).toBe("present");
+    if (r.kind === "present") {
+      expect(r.value.storyId).toBe("");
+      expect(r.value.halt).toBeUndefined();
+    }
   });
 });

@@ -214,19 +214,6 @@ function vFeedbackForceCleared(): void {
   console.log(`  ${c.yellow}[feedback]${c.reset} orchestrator did not delete .marmite/feedback.md — force-cleared`);
 }
 
-function vSensorStart(sensor: string, sensorType?: string): void {
-  const typeTag = sensorType ? ` ${c.dim}(${sensorType})${c.reset}` : "";
-  console.log(`  ${c.cyan}[sensor]${c.reset} ▸ ${c.bold}${sensor}${c.reset}${typeTag} running…`);
-}
-
-function vSensorEnd(sensor: string, sensorType: string | undefined, durationMs: number, exitCode: number): void {
-  const typeTag = sensorType ? ` ${c.dim}(${sensorType})${c.reset}` : "";
-  const ok = exitCode === 0;
-  const sym = ok ? `${c.green}✓${c.reset}` : `${c.red}✗${c.reset}`;
-  const exitTxt = ok ? "" : ` ${c.red}exit=${exitCode}${c.reset}`;
-  console.log(`  ${c.cyan}[sensor]${c.reset} ${sym} ${c.bold}${sensor}${c.reset}${typeTag} ${c.dim}(${fmtDuration(durationMs)})${c.reset}${exitTxt}`);
-}
-
 let vLastRetryAttempt = -1;
 function vTransientRetry(attempt: number, delayMs: number, kind: "transient_error" | "timeout"): void {
   // The session sleep loop calls this once per second to drive the terse
@@ -478,8 +465,6 @@ export const verboseReporter: Reporter = {
   gitCommit: vGitCommit,
   feedbackDetected: vFeedbackDetected,
   feedbackForceCleared: vFeedbackForceCleared,
-  sensorStart: vSensorStart,
-  sensorEnd: vSensorEnd,
   budgetExceeded: vBudgetExceeded,
   transientRetry: vTransientRetry,
   usageLimitWait: vUsageLimitWait,
@@ -647,19 +632,6 @@ function tFeedbackForceCleared(): void {
   // Skipped in terse — surface only via --verbose.
 }
 
-function tSensorStart(sensor: string, sensorType?: string): void {
-  const typeTag = sensorType ? ` ${c.dim}(${sensorType})${c.reset}` : "";
-  emitLine(`  ${c.cyan}▸${c.reset} sensor ${c.bold}${sensor}${c.reset}${typeTag} ${c.dim}running…${c.reset}`);
-}
-
-function tSensorEnd(sensor: string, sensorType: string | undefined, durationMs: number, exitCode: number): void {
-  const typeTag = sensorType ? ` ${c.dim}(${sensorType})${c.reset}` : "";
-  const ok = exitCode === 0;
-  const sym = ok ? `${c.green}✓${c.reset}` : `${c.red}✗${c.reset}`;
-  const exitTxt = ok ? "" : ` ${c.red}exit=${exitCode}${c.reset}`;
-  emitLine(`  ${sym} sensor ${c.bold}${sensor}${c.reset}${typeTag} ${c.dim}(${fmtDuration(durationMs)})${c.reset}${exitTxt}`);
-}
-
 function tTransientRetry(_attempt: number, delayMs: number, kind: "transient_error" | "timeout"): void {
   spinnerRetryUntil = Date.now() + delayMs;
   spinnerRetryKind = kind;
@@ -750,8 +722,6 @@ export const terseReporter: Reporter = {
   gitCommit: tGitCommit,
   feedbackDetected: tFeedbackDetected,
   feedbackForceCleared: tFeedbackForceCleared,
-  sensorStart: tSensorStart,
-  sensorEnd: tSensorEnd,
   budgetExceeded: tBudgetExceeded,
   transientRetry: tTransientRetry,
   usageLimitWait: tUsageLimitWait,

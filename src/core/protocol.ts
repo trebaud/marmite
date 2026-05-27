@@ -71,44 +71,31 @@ export async function readVerificationResultFile(): Promise<ParsedVerification> 
 }
 
 
-// Halt instruction written by the orchestrator when a workflow needs to stop the
-// harness mid-run (e.g. waiting on a human PR merge in pr-on-checkpoint).
-// The harness reads this after the orchestrate phase and exits 0 cleanly.
-//
-// `awaiting_pr_review` — the harness has paused for a PR to be reviewed and
-// merged. `prNum` is present when the orchestrator opened the PR itself via
-// `gh pr create`; absent when gh was unavailable and the user is expected to
-// open the PR manually from the pushed branch. `reason` carries an optional
-// explanation surfaced in the CLI (e.g. "gh CLI not installed").
+// Halt the orchestrator agent writes to current-task.json instead of selecting
+// a story. In the epic-checkpoint workflow the agent emits this when it reaches
+// the end of an epic that has no approval entry yet. The harness honors it:
+// emits a run_halt and exits 0. `marmite cook --approve` records the approval
+// and the next run proceeds. `epic` names the completed epic awaiting review.
 const HaltSchema = z.object({
-  kind: z.literal("awaiting_pr_review"),
-  prNum: z.number().int().positive().optional(),
-  branch: z.string().optional(),
-  baseBranch: z.string().optional(),
-  reason: z.string().optional(),
+  kind: z.literal("epic_checkpoint"),
+  epic: z.string().min(1, "halt.epic required"),
 });
 export type Halt = z.infer<typeof HaltSchema>;
 
+// The orchestrator agent writes its handoff here: either a story selection
+// (storyId/storyTitle) or a `halt`. storyId is optional so a halt-only handoff
+// parses; the harness falls back to priority-order selection when neither a
+// usable storyId nor a halt is present.
 const CurrentTaskDecisionSchema = z
   .object({
-    storyId: z.string().min(1, "missing storyId"),
+    storyId: z.string().optional(),
     storyTitle: z.string().optional(),
-    ranSensors: z.array(z.string()).default([]),
     halt: HaltSchema.optional(),
-    // "janitor" — sensor-debt-driven refactor task instead of a user story
-    // (mark-passing routes to progress.json instead of prd.json).
-    // "pr-review" — addressing PR review comments on an already-passing story
-    // while the pr-on-checkpoint workflow is awaiting merge. The harness runs
-    // build+verify but does NOT mark anything passing or write a verify commit
-    // (the underlying story is already passes:true).
-    kind: z.enum(["story", "janitor", "pr-review"]).optional(),
   })
   .transform((r) => ({
-    storyId: r.storyId,
+    storyId: r.storyId ?? "",
     storyTitle: r.storyTitle ?? "",
-    ranSensors: r.ranSensors,
     halt: r.halt,
-    kind: r.kind ?? "story",
   }));
 
 export type CurrentTaskDecision = z.infer<typeof CurrentTaskDecisionSchema>;

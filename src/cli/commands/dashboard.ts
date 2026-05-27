@@ -152,17 +152,14 @@ interface TimelineStoryEntry {
   commitShas?: string[];
 }
 
-interface TimelineJanitorEntry {
-  kind: "janitor";
-  id: string;
+interface TimelineApprovalEntry {
+  kind: "approval";
+  epic: string;
   ts: string;
-  passes?: boolean;
-  title?: string;
-  appliedFixes?: string[];
-  commitShas?: string[];
+  by?: string;
 }
 
-type TimelineEntry = TimelineStoryEntry | TimelineJanitorEntry;
+type TimelineEntry = TimelineStoryEntry | TimelineApprovalEntry;
 
 interface ProgressFile {
   patterns: Pattern[];
@@ -226,13 +223,10 @@ interface StoryRollup {
   commitStats?: CommitStat[];
   completedAt?: string;
   verdict?: string;
-  appliedFixes?: string[];
-  isJanitor?: boolean;
 }
 
 interface MarmiteConfigInfo {
   workflow: string | null;
-  baseBranch: string | null;
   app: string | null;
   models: {
     default?: string;
@@ -245,12 +239,6 @@ interface MarmiteConfigInfo {
     total?: number;
   };
   maxIterations: number | null;
-  sensors: { name: string; type: string }[];
-  janitor: {
-    thresholds?: { drift?: number; debt?: number };
-    maxFindingsPerRun?: number;
-  } | null;
-  workflowConfig: Record<string, unknown> | null;
 }
 
 function readMarmiteConfig(path: string): MarmiteConfigInfo | null {
@@ -260,14 +248,8 @@ function readMarmiteConfig(path: string): MarmiteConfigInfo | null {
     if (!obj || typeof obj !== "object") return null;
     const models = (obj.models as Record<string, string> | undefined) ?? {};
     const budget = (obj.budget as Record<string, number> | undefined) ?? {};
-    const sensorsRaw = Array.isArray(obj.sensors) ? (obj.sensors as Record<string, unknown>[]) : [];
-    const sensors = sensorsRaw
-      .filter((s) => typeof s?.name === "string" && typeof s?.type === "string")
-      .map((s) => ({ name: s.name as string, type: s.type as string }));
-    const janitorRaw = obj.janitor as Record<string, unknown> | undefined;
     return {
       workflow: typeof obj.workflow === "string" ? obj.workflow : null,
-      baseBranch: typeof obj.baseBranch === "string" ? obj.baseBranch : null,
       app: typeof obj.app === "string" ? obj.app : null,
       models: {
         default: models.default,
@@ -280,20 +262,6 @@ function readMarmiteConfig(path: string): MarmiteConfigInfo | null {
         total: typeof budget.total === "number" ? budget.total : undefined,
       },
       maxIterations: typeof obj.maxIterations === "number" ? obj.maxIterations : null,
-      sensors,
-      janitor: janitorRaw
-        ? {
-            thresholds: janitorRaw.thresholds as { drift?: number; debt?: number } | undefined,
-            maxFindingsPerRun:
-              typeof janitorRaw.maxFindingsPerRun === "number"
-                ? (janitorRaw.maxFindingsPerRun as number)
-                : undefined,
-          }
-        : null,
-      workflowConfig:
-        obj.workflowConfig && typeof obj.workflowConfig === "object"
-          ? (obj.workflowConfig as Record<string, unknown>)
-          : null,
     };
   } catch {
     return null;
@@ -384,14 +352,6 @@ interface QaResult {
   passed?: boolean;
 }
 
-interface HaltInfo {
-  kind?: string;
-  prNum?: number;
-  branch?: string;
-  baseBranch?: string;
-  reason?: string;
-}
-
 interface CurrentTaskFile {
   storyId?: string;
   storyTitle?: string;
@@ -402,9 +362,6 @@ interface CurrentTaskFile {
   notes?: string;
   guidance?: string;
   reasoning?: string;
-  sensorSummary?: string;
-  ranSensors?: string[];
-  halt?: HaltInfo;
   verdict?: string;
   summary?: string;
   qaResults?: QaResult[];
@@ -425,7 +382,7 @@ function readCurrentTask(path: string): CurrentTaskFile | null {
 interface CurrentTask {
   storyId: string;
   title: string;
-  kind: "story" | "janitor" | "pr-review" | "unknown";
+  kind: "story" | "unknown";
   phase: string | null;
   attempt: number | null;
   iteration: number | null;
@@ -438,17 +395,12 @@ interface CurrentTask {
   notes?: string;
   guidance?: string;
   reasoning?: string;
-  sensorSummary?: string;
-  ranSensors?: string[];
-  halt?: HaltInfo;
   verdict?: string;
   verifierSummary?: string;
   qaResults?: QaResult[];
   verifiedAt?: string;
   epic?: string;
   epicLabel?: string;
-  prNum?: number;
-  prUrl?: string;
 }
 
 function deriveCurrentTask(
@@ -528,11 +480,7 @@ function deriveCurrentTask(
     }
   }
 
-  const ctKind = ct && ct.storyId === storyId ? ct.kind : undefined;
-  const kind: CurrentTask["kind"] =
-    ctKind === "janitor" || ctKind === "story" || ctKind === "pr-review"
-      ? ctKind
-      : storyId.toUpperCase().startsWith("JANITOR") ? "janitor" : "story";
+  const kind: CurrentTask["kind"] = "story";
 
   const phaseDurationMs = phaseStartedAt
     ? Math.max(0, Date.now() - Date.parse(phaseStartedAt))
@@ -555,9 +503,6 @@ function deriveCurrentTask(
     notes: ctMatches ? ct.notes : undefined,
     guidance: ctMatches ? ct.guidance : undefined,
     reasoning: ctMatches ? ct.reasoning : undefined,
-    sensorSummary: ctMatches ? ct.sensorSummary : undefined,
-    ranSensors: ctMatches ? ct.ranSensors : undefined,
-    halt: ctMatches ? ct.halt : undefined,
     verdict: ctMatches ? ct.verdict : undefined,
     verifierSummary: ctMatches ? ct.summary : undefined,
     qaResults: ctMatches ? ct.qaResults : undefined,
@@ -582,11 +527,9 @@ interface NextUpInfo {
 interface HaltStatus {
   reason: string;
   iteration: number | null;
-  prNum: number | null;
-  prUrl: string | null;
-  branch: string | null;
+  // The completed epic awaiting approval before the next epic can build.
+  epic: string | null;
   at: string | null;
-  haltedStoryId: string | null;
   nextUp: NextUpInfo | null;
 }
 
@@ -596,10 +539,6 @@ interface Dashboard {
   progressSource: string | null;
   project: string | null;
   runId: string | null;
-  // The latest run's `mode` from its `run_start`. Older event logs predate
-  // the field; treated as "cook" downstream. "maintenance" reflects a one-shot
-  // `marmite refactor` pass and is surfaced as a badge in the header.
-  runMode: "cook" | "maintenance" | null;
   startedAt: string | null;
   endedAt: string | null;
   status: "in_progress" | "completed" | "failed" | "halted" | "unknown";
@@ -618,7 +557,6 @@ interface Dashboard {
   githubSlug: string | null;
   halt: HaltStatus | null;
   usageLimit: UsageLimitStatus;
-  sensorHealth: SensorHealth;
 }
 
 interface UsageLimitActive {
@@ -642,30 +580,6 @@ interface UsageLimitStatus {
   totalWaitedMs: number;
   // Set when the current run is mid-pause (start without matching resume).
   active: UsageLimitActive | null;
-}
-
-interface SensorHealthEntry {
-  sensor: string;
-  sensorType: string | null;
-  latestFindingCount: number | null;
-  latestThreshold: number | null;
-  latestIteration: number | null;
-  latestTs: string | null;
-  // Per-iteration findingCount points (oldest → newest, capped) for the sparkline.
-  history: { iteration: number; findingCount: number }[];
-  // Janitor trips this sensor has caused — drawn from janitor_triggered events.
-  janitorTrips: number;
-  // True when the sensor appears in marmite.json (even if no result events yet).
-  configured: boolean;
-}
-
-interface SensorHealth {
-  entries: SensorHealthEntry[];
-  janitor: {
-    triggered: number;
-    applied: number;
-    deferred: number;
-  };
 }
 
 function pickLatestRun(events: Event[]): string | null {
@@ -699,48 +613,19 @@ function buildDashboard(
   // status of the run currently in flight.
   const currentRunEvents = runId ? events.filter((e) => e.runId === runId) : events;
   const runStart = currentRunEvents.find((e) => e.kind === "run_start");
-  const runMode: "cook" | "maintenance" | null =
-    runStart && (runStart as any).mode === "maintenance" ? "maintenance" : runStart ? "cook" : null;
   const runEnd = [...currentRunEvents].reverse().find((e) => e.kind === "run_end");
-  // `run_halt` is emitted by the orchestrator before `process.exit(0)`, so
-  // there's no `run_end` after it. Surface this state distinctly.
+  // `run_halt` is emitted by the harness before `process.exit(0)` at an epic
+  // checkpoint, so there's no `run_end` after it. Surface this state distinctly.
   const runHalt = [...currentRunEvents].reverse().find((e) => e.kind === "run_halt");
-  // A run_halt is "current" only if no later run_start/run_end has happened
-  // (run_start would mean we resumed; run_end would override the halt anyway).
+  // A run_halt is "current" only if no later run_end has happened (a follow-up
+  // `marmite cook` that crosses the checkpoint emits its own run_start, but the
+  // halt stays authoritative until the run actually ends or re-halts).
   const haltIsCurrent = runHalt && !runEnd;
-  // current-task.json's halt block is the orchestrator's authoritative "next
-  // action" record. When it carries `awaiting_pr_review` we treat the harness
-  // as halted even if the latest run_halt event was overwritten by a later
-  // run_start (e.g. a follow-up `marmite cook` invocation that didn't yet
-  // produce its own run_halt). Without this, stale phase_start events from a
-  // previous build would make the dashboard claim a story is in progress
-  // while the harness is actually waiting on PR review.
-  const fileHalt = currentTaskFile?.halt?.kind === "awaiting_pr_review"
-    ? currentTaskFile.halt
-    : null;
 
   let halt: HaltStatus | null = null;
   if (haltIsCurrent && runHalt) {
-    const prNum = typeof runHalt.prNum === "number" ? runHalt.prNum : null;
-    const branch = typeof runHalt.branch === "string" ? runHalt.branch : null;
-    const prUrl = prNum && githubSlug ? `https://github.com/${githubSlug}/pull/${prNum}` : null;
-
-    // The story that was being worked on when the run halted — preferred from
-    // the halt event itself, then current-task.json, then the most recent
-    // storyId we've seen in the run.
-    let haltedStoryId: string | null =
-      typeof runHalt.storyId === "string" ? runHalt.storyId : null;
-    if (!haltedStoryId && currentTaskFile?.storyId) haltedStoryId = currentTaskFile.storyId;
-    if (!haltedStoryId) {
-      for (let i = currentRunEvents.length - 1; i >= 0; i--) {
-        const e = currentRunEvents[i]!;
-        if (typeof e.storyId === "string") { haltedStoryId = e.storyId; break; }
-      }
-    }
-
-    // Once the PR merges and the run resumes, the orchestrator will mark the
-    // halted story as passed and pick the next unpassed PRD story in priority
-    // order. Surface that as "Next up" so the user knows what's queued.
+    // The first unpassed story in priority order is the head of the next epic —
+    // what builds once the checkpoint is approved. Surface it as "Next up".
     let nextUp: NextUpInfo | null = null;
     if (prd) {
       const sorted = [...prd.userStories].sort((a, b) => {
@@ -749,51 +634,15 @@ function buildDashboard(
         if (ap !== bp) return ap - bp;
         return a.id.localeCompare(b.id, undefined, { numeric: true });
       });
-      const next = sorted.find(
-        (s) => s.passes !== true && s.id !== haltedStoryId,
-      );
+      const next = sorted.find((s) => s.passes !== true);
       if (next) nextUp = { storyId: next.id, title: next.title || next.id, epic: next.epic };
     }
 
     halt = {
       reason: typeof runHalt.reason === "string" ? runHalt.reason : "halted",
       iteration: typeof runHalt.iteration === "number" ? runHalt.iteration : null,
-      prNum,
-      prUrl,
-      branch,
+      epic: typeof runHalt.epic === "string" ? runHalt.epic : null,
       at: typeof runHalt.ts === "string" ? runHalt.ts : null,
-      haltedStoryId,
-      nextUp,
-    };
-  } else if (fileHalt && !runEnd) {
-    // Fallback: no live run_halt event in the current run, but current-task.json
-    // still declares an awaiting_pr_review halt. Trust the file.
-    const prNum = typeof fileHalt.prNum === "number" ? fileHalt.prNum : null;
-    const branch = typeof fileHalt.branch === "string" ? fileHalt.branch : null;
-    const prUrl = prNum && githubSlug ? `https://github.com/${githubSlug}/pull/${prNum}` : null;
-
-    const haltedStoryId = currentTaskFile?.storyId ?? null;
-
-    let nextUp: NextUpInfo | null = null;
-    if (prd) {
-      const sorted = [...prd.userStories].sort((a, b) => {
-        const ap = typeof a.priority === "number" ? a.priority : Number.MAX_SAFE_INTEGER;
-        const bp = typeof b.priority === "number" ? b.priority : Number.MAX_SAFE_INTEGER;
-        if (ap !== bp) return ap - bp;
-        return a.id.localeCompare(b.id, undefined, { numeric: true });
-      });
-      const next = sorted.find((s) => s.passes !== true && s.id !== haltedStoryId);
-      if (next) nextUp = { storyId: next.id, title: next.title || next.id, epic: next.epic };
-    }
-
-    halt = {
-      reason: "awaiting_pr_review",
-      iteration: null,
-      prNum,
-      prUrl,
-      branch,
-      at: null,
-      haltedStoryId,
       nextUp,
     };
   }
@@ -884,7 +733,7 @@ function buildDashboard(
     });
   }
 
-  const getStory = (id: string, isJanitor = false): StoryRollup => {
+  const getStory = (id: string): StoryRollup => {
     let s = storyMap.get(id);
     if (!s) {
       s = {
@@ -896,11 +745,9 @@ function buildDashboard(
         attempts: 0,
         totalCostUsd: 0,
         phases: [],
-        isJanitor: isJanitor || id.toUpperCase().startsWith("JANITOR"),
       };
       storyMap.set(id, s);
     }
-    if (isJanitor) s.isJanitor = true;
     return s;
   };
 
@@ -922,8 +769,8 @@ function buildDashboard(
 
   for (const e of events) {
     const storyId = typeof e.storyId === "string" ? e.storyId : null;
-    // `story_selected` carries the human-readable title for janitors and any
-    // story that isn't in the PRD (e.g. an old PRD on disk).
+    // `story_selected` carries the human-readable title for any story that
+    // isn't in the PRD (e.g. an old PRD on disk).
     if (e.kind === "story_selected" && storyId) {
       const s = getStory(storyId);
       if (typeof e.title === "string" && !s.inPrd) s.title = e.title;
@@ -932,9 +779,8 @@ function buildDashboard(
     // finalizeStoryOutcome after the verifier and (if needed) fix loop settle.
     if (e.kind === "story_outcome" && storyId) {
       const s = getStory(storyId);
-      // Don't downgrade a confirmed pass — janitor retries within the same
-      // run can emit a fail outcome before a later pass, and PRD-confirmed
-      // passes from earlier runs should stick.
+      // Don't downgrade a confirmed pass — PRD-confirmed passes from earlier
+      // runs should stick.
       if (typeof e.passed === "boolean" && s.passed !== true) s.passed = e.passed;
     }
     // `verification_verdict` is emitted before story_outcome; treat a "pass"
@@ -968,10 +814,9 @@ function buildDashboard(
     }
   }
 
-  // Layer in progress.json — adds rich summaries, commits, janitor entries
-  // not in the PRD, and authoritative pass markers for janitors.
+  // Layer in progress.json — adds rich summaries, commits, and authoritative
+  // pass markers.
   if (progress) {
-    let janitorPriority = 10_000;
     for (const entry of progress.timeline) {
       if (entry.kind === "story") {
         const s = getStory(entry.storyId);
@@ -981,17 +826,6 @@ function buildDashboard(
         s.verdict = entry.verdict;
         if (entry.verdict === "pass" && s.passed !== true) s.passed = true;
         if (entry.verdict === "fail_abort" && s.passed === null) s.passed = false;
-      } else if (entry.kind === "janitor") {
-        const s = getStory(entry.id, true);
-        if (entry.title) s.title = entry.title;
-        s.commitShas = entry.commitShas;
-        s.appliedFixes = entry.appliedFixes;
-        s.completedAt = entry.ts;
-        // `passes: false` on a janitor entry is the initial placeholder the
-        // harness writes when the janitor is queued; only `true` flips passed.
-        // Failure is signaled via story_outcome events, not progress.json.
-        if (entry.passes === true && s.passed !== true) s.passed = true;
-        if (s.priority === Number.MAX_SAFE_INTEGER) s.priority = janitorPriority++;
       }
     }
   }
@@ -1003,8 +837,7 @@ function buildDashboard(
     ? prd.userStories.filter((s) => s.passes === true).length
     : [...storyMap.values()].filter((s) => s.passed === true).length;
 
-  // Sort: PRD order first (by priority), then janitor entries by their
-  // completion timestamp, then anything else.
+  // Sort: PRD order first (by priority), then anything else.
   const stories = [...storyMap.values()].sort((a, b) => {
     if (a.priority !== b.priority) return a.priority - b.priority;
     return a.storyId.localeCompare(b.storyId, undefined, { numeric: true });
@@ -1022,19 +855,19 @@ function buildDashboard(
     if (stats.length) s.commitStats = stats;
   }
 
-  // Group by epic in PRD order. Stories without an epic (janitors, ad-hoc)
-  // land in a synthetic "maintenance" bucket so they stay grouped at the end.
+  // Group by epic in PRD order. Stories without an epic (ad-hoc) land in a
+  // synthetic "Other" bucket so they stay grouped at the end.
   const epicMap = new Map<string, EpicGroup>();
   const epicSeen: string[] = [];
   const epicLabel = (slug: string): string =>
     slug.split(/[-_]+/).map((w) => w.length === 0 ? w : w[0]!.toUpperCase() + w.slice(1)).join(" ");
   for (const s of stories) {
-    const slug = s.epic ?? (s.isJanitor ? "__maintenance" : "__other");
+    const slug = s.epic ?? "__other";
     let group = epicMap.get(slug);
     if (!group) {
       group = {
         slug,
-        label: slug === "__maintenance" ? "Maintenance" : slug === "__other" ? "Other" : epicLabel(slug),
+        label: slug === "__other" ? "Other" : epicLabel(slug),
         storiesTotal: 0,
         storiesPassed: 0,
         stories: [],
@@ -1063,7 +896,6 @@ function buildDashboard(
     progressSource,
     project: prd?.project ?? null,
     runId,
-    runMode,
     startedAt,
     endedAt,
     status,
@@ -1086,12 +918,6 @@ function buildDashboard(
                 ct.epic = story.epic;
                 ct.epicLabel = epicMap.get(story.epic)?.label ?? epicLabel(story.epic);
               }
-              if (ct.kind === "pr-review" && ct.halt?.prNum) {
-                ct.prNum = ct.halt.prNum;
-                if (githubSlug) {
-                  ct.prUrl = `https://github.com/${githubSlug}/pull/${ct.halt.prNum}`;
-                }
-              }
             }
             return ct;
           })()
@@ -1104,114 +930,7 @@ function buildDashboard(
     githubSlug,
     halt,
     usageLimit: computeUsageLimitStatus(events, runId),
-    sensorHealth: computeSensorHealth(events, config),
   };
-}
-
-// Walks the events log to build a per-sensor health snapshot. `sensor_result`
-// events carry the post-filter finding count + threshold the orchestrator
-// observed; `janitor_triggered` events surface threshold trips for the cadence
-// summary. Configured sensors with no result events yet are included so the
-// panel shows the full surface area, not just sensors that have already run.
-function computeSensorHealth(
-  events: Event[],
-  config: MarmiteConfigInfo | null,
-): SensorHealth {
-  // Cap the per-sensor history to keep the payload small — the sparkline only
-  // needs the recent trend, not full history.
-  const HISTORY_CAP = 30;
-
-  const bySensor = new Map<string, SensorHealthEntry>();
-  const ensure = (name: string, sensorType: string | null): SensorHealthEntry => {
-    let entry = bySensor.get(name);
-    if (!entry) {
-      entry = {
-        sensor: name,
-        sensorType,
-        latestFindingCount: null,
-        latestThreshold: null,
-        latestIteration: null,
-        latestTs: null,
-        history: [],
-        janitorTrips: 0,
-        configured: false,
-      };
-      bySensor.set(name, entry);
-    } else if (sensorType && !entry.sensorType) {
-      entry.sensorType = sensorType;
-    }
-    return entry;
-  };
-
-  if (config?.sensors) {
-    for (const s of config.sensors) {
-      ensure(s.name, s.type).configured = true;
-    }
-  }
-
-  let triggered = 0;
-  let applied = 0;
-  let deferred = 0;
-
-  for (const e of events) {
-    if (e.kind === "sensor_result") {
-      const name = typeof e.sensor === "string" ? e.sensor : null;
-      if (!name) continue;
-      const type = typeof e.sensorType === "string" ? e.sensorType : null;
-      const findingCount = typeof e.findingCount === "number" ? e.findingCount : null;
-      if (findingCount == null) continue;
-      const entry = ensure(name, type);
-      entry.latestFindingCount = findingCount;
-      if (typeof e.threshold === "number") entry.latestThreshold = e.threshold;
-      else if (entry.latestThreshold == null) entry.latestThreshold = null;
-      if (typeof e.iteration === "number") entry.latestIteration = e.iteration;
-      if (typeof e.ts === "string") entry.latestTs = e.ts;
-      const point = {
-        iteration: typeof e.iteration === "number" ? e.iteration : entry.history.length + 1,
-        findingCount,
-      };
-      // Replace any prior point for the same iteration so the trend stays one-
-      // per-iteration even if the agent emits multiple times.
-      const dupIdx = entry.history.findIndex((p) => p.iteration === point.iteration);
-      if (dupIdx >= 0) entry.history[dupIdx] = point;
-      else entry.history.push(point);
-      if (entry.history.length > HISTORY_CAP) entry.history.shift();
-    } else if (e.kind === "janitor_triggered") {
-      triggered++;
-      const triggers = Array.isArray(e.triggers) ? (e.triggers as { sensor?: string }[]) : [];
-      for (const t of triggers) {
-        if (typeof t?.sensor === "string") ensure(t.sensor, null).janitorTrips++;
-      }
-    } else if (e.kind === "janitor_fix_applied") {
-      applied++;
-    } else if (e.kind === "janitor_fix_deferred") {
-      deferred++;
-    }
-  }
-
-  // Fall back to config thresholds when the agent didn't supply one with the
-  // sensor_result. Keeps the gauge usable even before prompts catch up.
-  if (config?.janitor?.thresholds) {
-    for (const entry of bySensor.values()) {
-      if (entry.latestThreshold != null) continue;
-      if (entry.sensorType === "debt" && config.janitor.thresholds.debt != null) {
-        entry.latestThreshold = config.janitor.thresholds.debt;
-      } else if (entry.sensorType === "drift" && config.janitor.thresholds.drift != null) {
-        entry.latestThreshold = config.janitor.thresholds.drift;
-      }
-    }
-  }
-
-  const entries = [...bySensor.values()].sort((a, b) => {
-    // Configured + with-data first; alphabetical within groups.
-    const aActive = a.latestFindingCount != null;
-    const bActive = b.latestFindingCount != null;
-    if (aActive !== bActive) return aActive ? -1 : 1;
-    if (a.configured !== b.configured) return a.configured ? -1 : 1;
-    return a.sensor.localeCompare(b.sensor);
-  });
-
-  return { entries, janitor: { triggered, applied, deferred } };
 }
 
 // Walks the events log to count usage-limit pauses, sum elapsed wait time, and
@@ -1292,8 +1011,6 @@ const INDEX_HTML = `<!DOCTYPE html>
             --warning: #d97706;
             --warning-soft: #fefce8;
             --warning-strong: #92400e;
-            --janitor: #7c3aed;
-            --janitor-soft: #ede9fe;
             --shadow-sm: 0 1px 3px rgba(15,23,42,0.06);
             --shadow: 0 2px 8px rgba(15,23,42,0.06);
             --shadow-hover: 0 6px 18px rgba(15,23,42,0.10);
@@ -1325,8 +1042,6 @@ const INDEX_HTML = `<!DOCTYPE html>
             --warning: #fbbf24;
             --warning-soft: #2a1f08;
             --warning-strong: #fcd34d;
-            --janitor: #a78bfa;
-            --janitor-soft: #1e1b4b;
             --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
             --shadow: 0 2px 8px rgba(0,0,0,0.5);
             --shadow-hover: 0 6px 18px rgba(0,0,0,0.6);
@@ -1359,8 +1074,6 @@ const INDEX_HTML = `<!DOCTYPE html>
                 --warning: #fbbf24;
                 --warning-soft: #2a1f08;
                 --warning-strong: #fcd34d;
-                --janitor: #a78bfa;
-                --janitor-soft: #1e1b4b;
                 --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
                 --shadow: 0 2px 8px rgba(0,0,0,0.5);
                 --shadow-hover: 0 6px 18px rgba(0,0,0,0.6);
@@ -1484,7 +1197,6 @@ const INDEX_HTML = `<!DOCTYPE html>
         @media (prefers-reduced-motion: reduce) {
             .pipeline-icon.active-run { animation: none; }
         }
-        .pipeline-icon.janitor { background: var(--janitor); }
         .pipeline-text { flex: 1; min-width: 0; }
         .pipeline-id { font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; }
         .pipeline-title {
@@ -1758,113 +1470,11 @@ const INDEX_HTML = `<!DOCTYPE html>
             font-size: 11px; font-weight: 600;
             padding: 2px 8px; border-radius: 10px; margin-right: 4px;
         }
-        .sensor-health {
-            background: var(--bg-surface-2);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 12px 16px;
-            margin-top: 14px;
-            color: var(--text-primary);
-        }
-        .sensor-health-header {
-            font-size: 11px; font-weight: 700; color: var(--text-muted);
-            text-transform: uppercase; letter-spacing: 0.7px;
-            margin-bottom: 10px;
-            display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
-        }
-        .sensor-health-janitor-summary {
-            font-size: 11px; font-weight: 500;
-            color: var(--text-secondary); text-transform: none; letter-spacing: 0;
-        }
-        .sensor-health-empty {
-            font-size: 12px; color: var(--text-muted); font-style: italic;
-            padding: 4px 0;
-        }
-        .sensor-grid {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 10px;
-        }
-        .sensor-card {
-            background: var(--bg-surface);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 10px 12px;
-            display: flex; flex-direction: column; gap: 6px;
-        }
-        .sensor-card.warn { border-color: #f59e0b; }
-        .sensor-card.danger { border-color: #dc2626; }
-        .sensor-card-top {
-            display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
-        }
-        .sensor-card-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-        .sensor-card-type {
-            font-size: 10px; font-weight: 600;
-            text-transform: uppercase; letter-spacing: 0.5px;
-            padding: 1px 6px; border-radius: 8px;
-            background: var(--accent-soft); color: var(--accent);
-        }
-        .sensor-card-type.debt { background: rgba(245, 158, 11, 0.15); color: #b45309; }
-        .sensor-card-type.drift { background: rgba(124, 58, 237, 0.15); color: #6d28d9; }
-        [data-theme="dark"] .sensor-card-type.debt { color: #fbbf24; }
-        [data-theme="dark"] .sensor-card-type.drift { color: #c4b5fd; }
-        @media (prefers-color-scheme: dark) {
-            [data-theme="auto"] .sensor-card-type.debt { color: #fbbf24; }
-            [data-theme="auto"] .sensor-card-type.drift { color: #c4b5fd; }
-        }
-        .sensor-card-count {
-            font-size: 20px; font-weight: 700; color: var(--text-primary);
-            font-variant-numeric: tabular-nums;
-        }
-        .sensor-card.warn .sensor-card-count { color: #b45309; }
-        .sensor-card.danger .sensor-card-count { color: #dc2626; }
-        [data-theme="dark"] .sensor-card.warn .sensor-card-count { color: #fbbf24; }
-        [data-theme="dark"] .sensor-card.danger .sensor-card-count { color: #f87171; }
-        .sensor-card-threshold {
-            font-size: 11px; color: var(--text-muted);
-            font-variant-numeric: tabular-nums;
-        }
-        .sensor-card-bar {
-            position: relative;
-            background: var(--bg-muted);
-            border-radius: 999px;
-            height: 4px; overflow: hidden;
-        }
-        .sensor-card-bar-fill {
-            position: absolute; left: 0; top: 0; bottom: 0;
-            background: var(--accent);
-            border-radius: 999px;
-        }
-        .sensor-card.warn .sensor-card-bar-fill { background: #f59e0b; }
-        .sensor-card.danger .sensor-card-bar-fill { background: #dc2626; }
-        .sensor-card-spark { display: block; width: 100%; height: 22px; }
-        .sensor-card-foot {
-            display: flex; justify-content: space-between; gap: 6px;
-            font-size: 10px; color: var(--text-muted);
-            text-transform: uppercase; letter-spacing: 0.4px;
-        }
-        .sensor-card-foot .trips { color: var(--text-secondary); font-weight: 600; }
-        .sensor-card.empty .sensor-card-count { color: var(--text-muted); font-size: 13px; font-weight: 500; }
         .config-workflow-badge {
             display: inline-block;
             background: var(--text-primary); color: var(--bg-surface);
             font-size: 12px; font-weight: 700;
             padding: 3px 10px; border-radius: 12px;
-            text-transform: uppercase; letter-spacing: 0.5px;
-        }
-        .mode-badge.maintenance {
-            display: inline-block;
-            background: var(--janitor-soft); color: var(--janitor);
-            border: 1px solid var(--janitor);
-            font-size: 11px; font-weight: 700;
-            padding: 2px 8px; border-radius: 10px;
-            text-transform: uppercase; letter-spacing: 0.5px;
-        }
-        .mode-badge.pr-review {
-            display: inline-block;
-            background: var(--accent-soft); color: var(--accent);
-            border: 1px solid var(--accent);
-            font-size: 11px; font-weight: 700;
-            padding: 2px 8px; border-radius: 10px;
             text-transform: uppercase; letter-spacing: 0.5px;
         }
 
@@ -2141,8 +1751,6 @@ const INDEX_HTML = `<!DOCTYPE html>
             margin: 14px 0 4px 0;
             display: flex; gap: 14px; align-items: flex-start;
         }
-        .current-task.janitor { background: var(--janitor-soft); border-color: var(--janitor); }
-        .current-task.pr-review { background: var(--accent-soft); border-color: var(--accent); }
         .current-task-spinner {
             width: 24px; height: 24px; flex-shrink: 0;
             border: 3px solid var(--border);
@@ -2151,8 +1759,6 @@ const INDEX_HTML = `<!DOCTYPE html>
             animation: spin 1s linear infinite;
             margin-top: 2px;
         }
-        .current-task.janitor .current-task-spinner { border-top-color: var(--janitor); }
-        .current-task.pr-review .current-task-spinner { border-top-color: var(--accent); }
         @media (prefers-reduced-motion: reduce) {
             .current-task-spinner { animation: none; }
         }
@@ -2161,8 +1767,6 @@ const INDEX_HTML = `<!DOCTYPE html>
             font-size: 11px; font-weight: 700; color: var(--warning-strong);
             text-transform: uppercase; letter-spacing: 0.7px; margin-bottom: 4px;
         }
-        .current-task.janitor .current-task-label { color: var(--janitor); }
-        .current-task.pr-review .current-task-label { color: var(--accent); }
         .current-task-title { font-size: 16px; font-weight: 700; color: var(--text-primary); line-height: 1.4; }
         .current-task-id { font-size: 12px; color: var(--text-muted); font-weight: 600; }
         .current-task-meta {
@@ -2190,8 +1794,6 @@ const INDEX_HTML = `<!DOCTYPE html>
             text-transform: uppercase; letter-spacing: 0.7px;
             margin-bottom: 4px;
         }
-        .current-task.janitor .current-task-section-label { color: var(--janitor); }
-        .current-task.pr-review .current-task-section-label { color: var(--accent); }
         .current-task-section-body { color: var(--text-primary); line-height: 1.5; white-space: pre-wrap; }
         .current-task-description {
             font-size: 13px; color: var(--text-primary); line-height: 1.5; margin-top: 8px;
@@ -2313,7 +1915,6 @@ const INDEX_HTML = `<!DOCTYPE html>
                 <div class="summary-grid" id="summary"></div>
                 <div id="sparkline"></div>
                 <div id="configPanel"></div>
-                <div id="sensorHealth"></div>
             </header>
             <div id="content"></div>
             <div id="patternsWrap"></div>
@@ -2360,7 +1961,7 @@ const INDEX_HTML = `<!DOCTYPE html>
         halted: '⏸ ',
         unknown: '',
       };
-      const HALT_LABEL = { awaiting_pr_review: 'Awaiting PR Review' };
+      const HALT_LABEL = { epic_checkpoint: 'Awaiting Approval' };
 
       const storyState = (s) => s.passed === true ? 'passed' : s.passed === false ? 'failed' : 'pending';
 
@@ -2641,12 +2242,8 @@ const INDEX_HTML = `<!DOCTYPE html>
       // ── Current task ────────────────────────────────────────
       const renderCurrentTask = (ct) => {
         if (!ct) return '';
-        const kindCls = ct.kind === 'janitor' ? 'janitor' : ct.kind === 'pr-review' ? 'pr-review' : '';
-        const kindLabel = ct.kind === 'janitor'
-          ? 'Janitor in progress'
-          : ct.kind === 'pr-review'
-            ? 'PR review in progress'
-            : 'Story in progress';
+        const kindCls = '';
+        const kindLabel = 'Story in progress';
         const phaseBits = [];
         if (ct.phase) {
           const phaseTxt = ct.phase + (ct.attempt && ct.attempt > 1 ? ' · attempt ' + ct.attempt : '');
@@ -2696,20 +2293,6 @@ const INDEX_HTML = `<!DOCTYPE html>
             })()
           : '';
 
-        const sensors = (ct.ranSensors && ct.ranSensors.length) || ct.sensorSummary
-          ? '<div class="current-task-section">'
-            + '<div class="current-task-section-label">Sensors</div>'
-            + (ct.ranSensors && ct.ranSensors.length
-                ? '<div class="current-task-tags">'
-                  + ct.ranSensors.map((s) => '<span class="current-task-tag">' + escape(s) + '</span>').join('')
-                  + '</div>'
-                : '')
-            + (ct.sensorSummary
-                ? '<div class="current-task-section-body" style="margin-top:6px;">' + escape(ct.sensorSummary) + '</div>'
-                : '')
-            + '</div>'
-          : '';
-
         const section = (label, body) => '<div class="current-task-section">'
           + '<div class="current-task-section-label">' + label + '</div>'
           + '<div class="current-task-section-body">' + escape(body) + '</div>'
@@ -2726,30 +2309,9 @@ const INDEX_HTML = `<!DOCTYPE html>
             + '</div>'
           : '';
 
-        const halt = ct.halt
-          ? '<div class="current-task-halt">'
-            + '<strong>Halted:</strong> ' + escape(ct.halt.kind || 'unknown')
-            + (ct.halt.prNum ? ' · PR #' + ct.halt.prNum : '')
-            + (ct.halt.branch ? ' · branch <code>' + escape(ct.halt.branch) + '</code>' : '')
-            + (ct.halt.reason ? '<div style="margin-top:4px;">' + escape(ct.halt.reason) + '</div>' : '')
-            + '</div>'
-          : '';
-
-        const isPrReview = ct.kind === 'pr-review';
-        const headerTitle = isPrReview && ct.epicLabel ? ct.epicLabel : ct.title;
-        const headerHref = isPrReview && ct.epic ? ('#epic-' + escape(ct.epic)) : ('#story-' + escape(ct.storyId));
-        const prLink = isPrReview && ct.prNum
-          ? (ct.prUrl
-              ? '<a href="' + escape(ct.prUrl) + '" target="_blank" rel="noopener">PR #' + ct.prNum + ' ↗</a>'
-              : 'PR #' + ct.prNum)
-          : '';
-        const headerSubline = isPrReview
-          ? [
-              ct.epic ? 'Epic · ' + escape(ct.epic) : null,
-              prLink || null,
-              'addressing review on ' + escape(ct.storyId),
-            ].filter(Boolean).join(' · ')
-          : escape(ct.storyId);
+        const headerTitle = ct.title;
+        const headerHref = '#story-' + escape(ct.storyId);
+        const headerSubline = escape(ct.storyId);
         return '<div class="current-task ' + kindCls + '" data-current-task-id="' + escape(ct.storyId) + '">'
           + '<div class="current-task-spinner"></div>'
           + '<div class="current-task-body">'
@@ -2758,7 +2320,7 @@ const INDEX_HTML = `<!DOCTYPE html>
           + escape(headerTitle) + '</a></div>'
           + '<div class="current-task-id">' + headerSubline + '</div>'
           + '<div class="current-task-meta">' + phaseBits.join('') + '</div>'
-          + description + criteria + sensors + guidance + reasoning + notes + verifierSummary + halt
+          + description + criteria + guidance + reasoning + notes + verifierSummary
           + '</div></div>';
       };
 
@@ -2775,39 +2337,27 @@ const INDEX_HTML = `<!DOCTYPE html>
         const reason = typeof d.halt.reason === 'string' ? d.halt.reason : 'halted';
         const label = HALT_LABEL[reason] || reason.replace(/_/g, ' ');
         const bits = [];
-        if (d.halt.prNum) {
-          if (d.halt.prUrl) {
-            bits.push('<a href="' + escape(d.halt.prUrl) + '" target="_blank" rel="noopener">PR #' + d.halt.prNum + ' ↗</a>');
-          } else {
-            bits.push('<span>PR <strong>#' + d.halt.prNum + '</strong></span>');
-          }
-        }
-        if (d.halt.branch) bits.push('<span>branch <strong>' + escape(d.halt.branch) + '</strong></span>');
         if (d.halt.at) bits.push('<span>since <strong>' + escape(new Date(d.halt.at).toLocaleString()) + '</strong></span>');
 
-        const haltedStory = findStory(d, d.halt.haltedStoryId);
-        const haltedEpic = reason === 'awaiting_pr_review' && haltedStory && haltedStory.epic
-          ? (d.epics || []).find((e) => e.slug === haltedStory.epic)
+        // The completed epic awaiting approval.
+        const completedEpic = d.halt.epic
+          ? (d.epics || []).find((e) => e.slug === d.halt.epic)
           : null;
         let haltedRow = '';
-        if (haltedEpic) {
-          const passed = haltedEpic.storiesPassed || 0;
-          const total = haltedEpic.storiesTotal || 0;
+        if (completedEpic) {
+          const passed = completedEpic.storiesPassed || 0;
+          const total = completedEpic.storiesTotal || 0;
           haltedRow = '<div class="halt-banner-story">'
-            + '<span class="halt-banner-story-label">In review</span>'
-            + '<a class="halt-banner-story-link" href="#epic-' + escape(haltedEpic.slug) + '">'
-            +   '<strong>Epic · ' + escape(haltedEpic.label) + '</strong>'
+            + '<span class="halt-banner-story-label">Completed</span>'
+            + '<a class="halt-banner-story-link" href="#epic-' + escape(completedEpic.slug) + '">'
+            +   '<strong>Epic · ' + escape(completedEpic.label) + '</strong>'
             + '</a>'
             + '<span class="halt-banner-next-epic">' + passed + ' / ' + total + ' stories</span>'
             + '</div>';
-        } else if (haltedStory) {
+        } else if (d.halt.epic) {
           haltedRow = '<div class="halt-banner-story">'
-            + '<span class="halt-banner-story-label">'
-            +   (reason === 'awaiting_pr_review' ? 'In review' : 'Halted on')
-            + '</span>'
-            + '<a class="halt-banner-story-link" href="#story-' + escape(haltedStory.storyId) + '">'
-            +   '<strong>' + escape(haltedStory.storyId) + '</strong> · ' + escape(haltedStory.title || haltedStory.storyId)
-            + '</a>'
+            + '<span class="halt-banner-story-label">Completed</span>'
+            + '<span class="halt-banner-story-link"><strong>Epic · ' + escape(d.halt.epic) + '</strong></span>'
             + '</div>';
         }
 
@@ -2822,10 +2372,6 @@ const INDEX_HTML = `<!DOCTYPE html>
             + '</div>'
           : '';
 
-        const actionText = reason === 'awaiting_pr_review'
-          ? 'Once the PR is merged, re-run'
-          : 'Resolve the halt condition, then re-run';
-
         return '<div class="halt-banner">'
           + '<div class="halt-banner-icon">' + PAUSE_SVG + '</div>'
           + '<div class="halt-banner-body">'
@@ -2834,7 +2380,7 @@ const INDEX_HTML = `<!DOCTYPE html>
           + '<div class="halt-banner-meta">' + bits.join('') + '</div>'
           + haltedRow + nextRow
           + '<div class="halt-banner-action">'
-          +   actionText + ' <code>marmite cook</code>'
+          +   'Review the work, then re-run <code>marmite cook --approve</code>'
           +   ' <button class="copy-btn" id="copyResumeBtn" type="button">Copy</button>'
           + '</div>'
           + '</div></div>';
@@ -2880,7 +2426,6 @@ const INDEX_HTML = `<!DOCTYPE html>
         const c = d.config;
         const rows = [];
         if (c.workflow) rows.push(['Workflow', '<span class="config-workflow-badge">' + escape(c.workflow) + '</span>']);
-        if (c.baseBranch) rows.push(['Base branch', '<code>' + escape(c.baseBranch) + '</code>']);
         if (d.githubSlug) {
           rows.push(['Repo',
             '<a href="https://github.com/' + escape(d.githubSlug) + '" target="_blank" rel="noopener">'
@@ -2897,19 +2442,6 @@ const INDEX_HTML = `<!DOCTYPE html>
         if (c.budget.perStory != null) budgetBits.push('per story: <strong>$' + c.budget.perStory.toFixed(2) + '</strong>');
         if (c.budget.total != null) budgetBits.push('total: <strong>$' + c.budget.total.toFixed(2) + '</strong>');
         if (budgetBits.length) rows.push(['Budget', budgetBits.join('<br>')]);
-        if (c.sensors && c.sensors.length) {
-          rows.push(['Sensors',
-            c.sensors.map((s) => '<span class="config-tag">' + escape(s.name) + ' · ' + escape(s.type) + '</span>').join('')]);
-        }
-        if (c.janitor) {
-          const jBits = [];
-          if (c.janitor.thresholds) {
-            if (c.janitor.thresholds.debt != null) jBits.push('debt ≥ <strong>' + c.janitor.thresholds.debt + '</strong>');
-            if (c.janitor.thresholds.drift != null) jBits.push('drift ≥ <strong>' + c.janitor.thresholds.drift + '</strong>');
-          }
-          if (c.janitor.maxFindingsPerRun != null) jBits.push('max/run: <strong>' + c.janitor.maxFindingsPerRun + '</strong>');
-          if (jBits.length) rows.push(['Janitor', jBits.join('<br>')]);
-        }
         if (!rows.length) return '';
         const grid = rows.map(([k, v]) =>
           '<div class="config-row">'
@@ -2921,90 +2453,6 @@ const INDEX_HTML = `<!DOCTYPE html>
         return '<div class="config-panel">'
           + '<div class="config-panel-header"><span>Project Configuration</span>' + sourceTag + '</div>'
           + '<div class="config-grid">' + grid + '</div>'
-          + '</div>';
-      };
-
-      // ── Sensor health panel ─────────────────────────────────
-      // Renders one card per sensor (configured + any that have emitted
-      // results). Empty state hides the panel entirely so projects without
-      // sensors don't see a stray header.
-      const renderSensorSparkline = (history) => {
-        if (!Array.isArray(history) || history.length < 2) return '';
-        const w = 100, h = 22, pad = 2;
-        const counts = history.map((p) => p.findingCount);
-        const max = Math.max(1, ...counts);
-        const min = Math.min(0, ...counts);
-        const range = Math.max(1, max - min);
-        const step = (w - pad * 2) / (history.length - 1);
-        const pts = history.map((p, i) => {
-          const x = pad + i * step;
-          const y = pad + (h - pad * 2) * (1 - (p.findingCount - min) / range);
-          return x.toFixed(1) + ',' + y.toFixed(1);
-        }).join(' ');
-        return '<svg class="sensor-card-spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">'
-          + '<polyline fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" points="' + pts + '"/>'
-          + '</svg>';
-      };
-
-      const renderSensorCard = (entry) => {
-        const hasData = entry.latestFindingCount != null;
-        const threshold = typeof entry.latestThreshold === 'number' ? entry.latestThreshold : null;
-        const count = hasData ? entry.latestFindingCount : null;
-        let cls = '';
-        let pct = 0;
-        if (hasData && threshold != null && threshold > 0) {
-          pct = Math.min(100, (count / threshold) * 100);
-          if (count >= threshold) cls = 'danger';
-          else if (count >= threshold * 0.8) cls = 'warn';
-        }
-        if (!hasData) cls += ' empty';
-        const typeLabel = entry.sensorType ? entry.sensorType : '';
-        const typeCls = typeLabel === 'debt' || typeLabel === 'drift' ? typeLabel : '';
-        const typeChip = typeLabel
-          ? '<span class="sensor-card-type ' + typeCls + '">' + escape(typeLabel) + '</span>'
-          : '';
-        const countText = hasData ? String(count) : 'no data';
-        const thresholdText = threshold != null
-          ? '/ ' + threshold + (typeLabel ? ' (' + escape(typeLabel) + ' trip)' : '')
-          : 'no threshold set';
-        const bar = hasData && threshold != null && threshold > 0
-          ? '<div class="sensor-card-bar"><div class="sensor-card-bar-fill" style="width:' + pct.toFixed(1) + '%"></div></div>'
-          : '';
-        const spark = renderSensorSparkline(entry.history);
-        const iter = entry.latestIteration != null
-          ? 'iter ' + entry.latestIteration
-          : (entry.configured ? 'awaiting run' : '');
-        const trips = entry.janitorTrips > 0
-          ? '<span class="trips">' + entry.janitorTrips + ' trip' + (entry.janitorTrips === 1 ? '' : 's') + '</span>'
-          : '';
-        return '<div class="sensor-card ' + cls.trim() + '">'
-          + '<div class="sensor-card-top">'
-          + '<span class="sensor-card-name">' + escape(entry.sensor) + '</span>'
-          + typeChip
-          + '</div>'
-          + '<div class="sensor-card-count">' + escape(countText)
-          + ' <span class="sensor-card-threshold">' + escape(thresholdText) + '</span></div>'
-          + bar
-          + spark
-          + '<div class="sensor-card-foot"><span>' + escape(iter) + '</span>' + trips + '</div>'
-          + '</div>';
-      };
-
-      const renderSensorHealth = (d) => {
-        const h = d && d.sensorHealth;
-        if (!h || !Array.isArray(h.entries) || h.entries.length === 0) return '';
-        const cards = h.entries.map(renderSensorCard).join('');
-        const j = h.janitor || { triggered: 0, applied: 0, deferred: 0 };
-        const summaryBits = [];
-        if (j.triggered) summaryBits.push(j.triggered + ' triggered');
-        if (j.applied) summaryBits.push(j.applied + ' fix' + (j.applied === 1 ? '' : 'es') + ' applied');
-        if (j.deferred) summaryBits.push(j.deferred + ' deferred');
-        const summary = summaryBits.length
-          ? '<span class="sensor-health-janitor-summary">Janitor: ' + summaryBits.join(' · ') + '</span>'
-          : '';
-        return '<div class="sensor-health">'
-          + '<div class="sensor-health-header"><span>Sensor Health</span>' + summary + '</div>'
-          + '<div class="sensor-grid">' + cards + '</div>'
           + '</div>';
       };
 
@@ -3091,7 +2539,6 @@ const INDEX_HTML = `<!DOCTYPE html>
         else if (s.passed === false) { iconCls = 'fail'; iconChar = '✗'; }
         else if (isActive) { iconCls = 'active-run'; iconChar = '•'; }
         else { iconCls = 'pending'; iconChar = '○'; }
-        if (s.isJanitor && s.passed !== true && s.passed !== false) iconCls = 'janitor';
         const title = escape(s.title || s.storyId);
         return '<a class="pipeline-item" href="#story-' + escape(s.storyId) + '" data-story="' + escape(s.storyId) + '">'
           + '<div class="pipeline-icon ' + iconCls + '">' + iconChar + '</div>'
@@ -3225,19 +2672,9 @@ const INDEX_HTML = `<!DOCTYPE html>
         const workflowBit = d.config && d.config.workflow
           ? ' · Workflow: <code>' + escape(d.config.workflow) + '</code>'
           : '';
-        // An in-flight pr-review task takes precedence over the maintenance
-        // mode chip: a cook run addressing PR review comments otherwise looks
-        // identical to a normal iteration in the header.
-        const isPrReview = d.currentTask && d.currentTask.kind === 'pr-review';
-        const modeBit = isPrReview
-          ? ' · <span class="mode-badge pr-review" title="Addressing PR review comments">💬 PR Review</span>'
-          : d.runMode === 'maintenance'
-            ? ' · <span class="mode-badge maintenance" title="One-shot maintenance pass (marmite refactor)">🧹 Maintenance</span>'
-            : '';
         document.getElementById('meta').innerHTML = live
           + 'Run ID: <code>' + escape(d.runId || 'n/a') + '</code>'
-          + workflowBit
-          + modeBit;
+          + workflowBit;
 
         renderInto('haltBanner',  d.halt, renderHaltBanner.bind(null, d));
         renderInto('usageLimitBanner', d.usageLimit, () => renderUsageLimitBanner(d));
@@ -3245,7 +2682,6 @@ const INDEX_HTML = `<!DOCTYPE html>
         renderInto('summary',     { d: { status, total: d.totalCostUsd, passed: d.storiesPassed, of: d.storiesTotal, dur: d.durationMs, started: d.startedAt, budget: d.config && d.config.budget } }, () => renderSummary(d));
         renderInto('sparkline',   d.stories ? d.stories.map((s) => [s.storyId, s.totalCostUsd, s.passed]) : null, () => renderSparkline(d));
         renderInto('configPanel', { config: d.config, github: d.githubSlug, src: d.configSource }, () => renderConfigPanel(d));
-        renderInto('sensorHealth', d.sensorHealth, () => renderSensorHealth(d));
         renderInto('content',     d.epics, () => renderEpicMain(d));
         renderInto('patternsWrap', d.patterns, () => renderPatterns(d.patterns));
         renderInto('pipeline',     { epics: d.epics, collapsed: [...ls.getSet('collapsed-epics')] }, () => renderPipeline(d));
@@ -3353,7 +2789,7 @@ const INDEX_HTML = `<!DOCTYPE html>
         }
         const copyBtn = ev.target.closest && ev.target.closest('#copyResumeBtn');
         if (copyBtn) {
-          navigator.clipboard.writeText('marmite cook').then(() => {
+          navigator.clipboard.writeText('marmite cook --approve').then(() => {
             copyBtn.classList.add('done');
             const old = copyBtn.textContent;
             copyBtn.textContent = '✓ Copied';

@@ -9,6 +9,10 @@ const PrdStorySchema = z.object({
   title: z.string().default(""),
   priority: z.number().default(Number.MAX_SAFE_INTEGER),
   passes: z.boolean().default(false),
+  // Epic slug the story belongs to. Set by `marmite to-prd`; the epic-checkpoint
+  // workflow halts the run at each epic boundary. Empty string means "ungrouped":
+  // stories with no epic form a single bucket, so the run never halts (like one-shot).
+  epic: z.string().default(""),
 });
 export type PrdStory = z.infer<typeof PrdStorySchema>;
 
@@ -17,9 +21,9 @@ const PrdFileSchema = z.object({
 });
 
 // ── progress.json ─────────────────────────────────────────────────────────────
-// Replaces the older free-form `progress.txt`. Holds a single interleaved
-// timeline of story completions and janitor runs, plus a top-level patterns
-// list. Tracked in git like prd.json — collaborators share the history.
+// Replaces the older free-form `progress.txt`. Holds a timeline of story
+// completions plus a top-level patterns list. Tracked in git like prd.json —
+// collaborators share the history.
 
 const PatternSchema = z.object({
   name: z.string().default(""),
@@ -39,30 +43,19 @@ const StoryEntrySchema = z.object({
 });
 export type StoryEntry = z.infer<typeof StoryEntrySchema>;
 
-const JanitorTriggerSchema = z.object({
-  sensor: z.string(),
-  findingCount: z.number().int().nonnegative(),
-  threshold: z.number().int().nonnegative(),
-});
-export type JanitorTrigger = z.infer<typeof JanitorTriggerSchema>;
-
-const JanitorEntrySchema = z.object({
-  kind: z.literal("janitor"),
-  id: z.string(),
+// Immutable approval record appended when a human approves an epic checkpoint
+// (via `marmite cook --approve`). The epic-checkpoint gate derives "resume the
+// next epic?" purely from the presence of one of these — nothing is ever
+// mutated or removed.
+const ApprovalEntrySchema = z.object({
+  kind: z.literal("approval"),
+  epic: z.string(),
   ts: z.string(),
-  passes: z.boolean().default(false),
-  title: z.string().default(""),
-  triggeredBy: z.array(JanitorTriggerSchema).default([]),
-  appliedFixes: z.array(z.string()).optional(),
-  deferredFindings: z.array(z.string()).optional(),
-  commitShas: z.array(z.string()).optional(),
+  by: z.string().optional(),
 });
-export type JanitorEntry = z.infer<typeof JanitorEntrySchema>;
+export type ApprovalEntry = z.infer<typeof ApprovalEntrySchema>;
 
-const TimelineEntrySchema = z.discriminatedUnion("kind", [
-  StoryEntrySchema,
-  JanitorEntrySchema,
-]);
+const TimelineEntrySchema = z.discriminatedUnion("kind", [StoryEntrySchema, ApprovalEntrySchema]);
 export type TimelineEntry = z.infer<typeof TimelineEntrySchema>;
 
 const ProgressFileSchema = z.object({
@@ -96,79 +89,6 @@ export async function readProgress(): Promise<ProgressState> {
   return { kind: "ok", patterns: parsed.data.patterns, timeline: parsed.data.timeline };
 }
 
-// Next sequence number for a janitor ID on `date`. Janitor IDs are
-// `JANITOR-<YYYY-MM-DD>-<NNNN>`; the NNNN suffix is one more than the highest
-// existing suffix for that date in the timeline, or `0001`. Same format the
-// orchestrator prompt produces, lifted into typed code so the harness can
-// generate IDs deterministically (e.g. `marmite refactor`).
-export function nextJanitorId(timeline: TimelineEntry[], date: string): string {
-  const prefix = `JANITOR-${date}-`;
-  let maxSeq = 0;
-  for (const entry of timeline) {
-    if (entry.kind !== "janitor") continue;
-    if (!entry.id.startsWith(prefix)) continue;
-    const suffix = entry.id.slice(prefix.length);
-    const n = parseInt(suffix, 10);
-    if (Number.isFinite(n) && n > maxSeq) maxSeq = n;
-  }
-  return `${prefix}${String(maxSeq + 1).padStart(4, "0")}`;
-}
-
-// Append a new janitor entry to `.marmite/progress.json.timeline` without
-// touching the rest of the file. The harness uses this in maintenance mode
-// (where it materializes the entry directly instead of asking the orchestrator
-// agent to do it).
-export async function appendJanitorEntry(entry: JanitorEntry): Promise<void> {
-  const read = await readJson<Record<string, unknown>>(PATHS.progress);
-  const file = read.kind === "present" && read.value ? read.value : { patterns: [], timeline: [] };
-  const timeline = Array.isArray(file.timeline) ? file.timeline : [];
-  timeline.push(entry);
-  file.timeline = timeline;
-  if (!Array.isArray(file.patterns)) file.patterns = [];
-  await writeAtomicJson(PATHS.progress, file);
-}
-
-export function findUnfinishedJanitorEntry(timeline: TimelineEntry[]): JanitorEntry | null {
-  for (let i = timeline.length - 1; i >= 0; i--) {
-    const entry = timeline[i]!;
-    if (entry.kind === "janitor" && !entry.passes) return entry;
-  }
-  return null;
-}
-
-// The harness flips passes:true on a janitor entry the same way it does for a
-// prd story. Returns false if the entry isn't found or the file is unreadable.
-export async function markJanitorPassing(
-  janitorId: string,
-  reporter: Reporter,
-): Promise<boolean> {
-  const read = await readJson<Record<string, unknown>>(PATHS.progress);
-  if (read.kind !== "present") {
-    reporter.error(
-      `could not update progress.json for ${janitorId}`,
-      read.kind === "malformed" ? read.error.message : "missing",
-      "progress",
-    );
-    return false;
-  }
-  const progress = read.value;
-  const timeline = Array.isArray(progress.timeline) ? progress.timeline : [];
-  let matched = false;
-  for (const e of timeline) {
-    if (e && typeof e === "object" && (e as any).kind === "janitor" && (e as any).id === janitorId) {
-      (e as any).passes = true;
-      matched = true;
-      break;
-    }
-  }
-  if (!matched) {
-    reporter.error(`janitor entry ${janitorId} not found in progress.json`, "", "progress");
-    return false;
-  }
-  await writeAtomicJson(PATHS.progress, progress);
-  return true;
-}
-
 export interface PrdState {
   kind: "ok" | "parse_error";
   stories: PrdStory[];
@@ -197,6 +117,66 @@ export function pickNextStory(stories: PrdStory[]): PrdStory | null {
   if (open.length === 0) return null;
   open.sort((a, b) => (a.priority - b.priority) || a.id.localeCompare(b.id));
   return open[0]!;
+}
+
+// ── Epic checkpoint gate ────────────────────────────────────────────────────
+// The epic-checkpoint workflow halts at each epic boundary until an approval
+// record exists. All functions below are pure derivations over the immutable
+// state (prd stories + progress timeline) — they never mutate anything.
+
+// Epics in build order: ordered by the lowest story priority within each epic,
+// ties broken by first appearance. Matches the order `pickNextStory` walks.
+export function orderedEpics(stories: PrdStory[]): string[] {
+  const minPriority = new Map<string, number>();
+  const firstSeen = new Map<string, number>();
+  stories.forEach((s, idx) => {
+    const e = s.epic;
+    if (!minPriority.has(e) || s.priority < minPriority.get(e)!) minPriority.set(e, s.priority);
+    if (!firstSeen.has(e)) firstSeen.set(e, idx);
+  });
+  return [...minPriority.keys()].sort(
+    (a, b) => (minPriority.get(a)! - minPriority.get(b)!) || (firstSeen.get(a)! - firstSeen.get(b)!),
+  );
+}
+
+export function epicComplete(stories: PrdStory[], epic: string): boolean {
+  const inEpic = stories.filter((s) => s.epic === epic && s.id !== "");
+  return inEpic.length > 0 && inEpic.every((s) => s.passes);
+}
+
+export function approvalExistsFor(timeline: TimelineEntry[], epic: string): boolean {
+  return timeline.some((e) => e.kind === "approval" && e.epic === epic);
+}
+
+// The epic blocking the next story: the nearest earlier epic that is complete
+// but not yet approved. Returns null when nothing blocks (first/ungrouped epic,
+// already approved, or PRD complete) — i.e. the run may proceed.
+export function blockingEpic(stories: PrdStory[], timeline: TimelineEntry[]): { epic: string } | null {
+  const next = pickNextStory(stories);
+  if (!next) return null;
+  const epics = orderedEpics(stories);
+  const k = epics.indexOf(next.epic);
+  for (let j = k - 1; j >= 0; j--) {
+    const e = epics[j]!;
+    if (!epicComplete(stories, e)) continue;
+    if (!approvalExistsFor(timeline, e)) return { epic: e };
+  }
+  return null;
+}
+
+// Appends an immutable approval record to the progress timeline. Reads the file
+// raw (like markStoryPassing) so unknown fields are preserved. The caller is
+// responsible for committing the file to git.
+export async function appendApproval(epic: string, by: string | undefined): Promise<boolean> {
+  const read = await readJson<Record<string, unknown>>(PATHS.progress);
+  const progress: Record<string, unknown> =
+    read.kind === "present" && read.value && typeof read.value === "object" ? read.value : {};
+  const timeline = Array.isArray(progress.timeline) ? progress.timeline : [];
+  timeline.push({ kind: "approval", epic, ts: new Date().toISOString(), ...(by ? { by } : {}) });
+  progress.timeline = timeline;
+  if (!Array.isArray(progress.patterns)) progress.patterns = [];
+  await writeAtomicJson(PATHS.progress, progress);
+  return true;
 }
 
 export async function markStoryPassing(
@@ -237,15 +217,5 @@ export async function allStoriesPassingOrError(
   const prd = await readPrd(prdPath);
   if (prd.kind === "parse_error") return { kind: "error", message: prd.error ?? "parse error" };
   if (prd.stories.length === 0) return { kind: "not_done" };
-  const storiesDone = prd.stories.every((s) => s.passes);
-  if (!storiesDone) return { kind: "not_done" };
-  // Story queue is empty — but a pending janitor task blocks completion too.
-  const progress = await readProgress();
-  if (progress.kind === "parse_error") {
-    return { kind: "error", message: `progress.json: ${progress.error ?? "parse error"}` };
-  }
-  if (progress.kind === "ok" && findUnfinishedJanitorEntry(progress.timeline)) {
-    return { kind: "not_done" };
-  }
-  return { kind: "done" };
+  return prd.stories.every((s) => s.passes) ? { kind: "done" } : { kind: "not_done" };
 }

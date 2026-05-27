@@ -1,17 +1,15 @@
-import { spawnSync } from "child_process";
 import type { HarnessConfig, RunStats } from "./types.ts";
 import type { Reporter } from "./reporter.ts";
 import { silentReporter } from "./reporter.ts";
-import { PATHS, resolvePrompt } from "./paths.ts";
-import { emitEvent, initEventLog, setCurrentIteration, setRunId, tailEvents } from "./events.ts";
-import { fileExists, formatDate, gitCommit, sleep, writeAtomicJson } from "./utils.ts";
+import { PATHS, resolvePrompt, packagedPrompt, DEFAULT_WORKFLOW } from "./paths.ts";
+import { emitEvent, initEventLog, setCurrentIteration, setRunId } from "./events.ts";
+import { fileExists, gitCommit, gitUserName, sleep, writeAtomicJson } from "./utils.ts";
 import { detectAndAnnounceFeedback, forceClearFeedbackIfPresent } from "./feedback.ts";
 import {
   allStoriesPassingOrError,
-  findUnfinishedJanitorEntry,
-  markJanitorPassing,
+  appendApproval,
+  blockingEpic,
   markStoryPassing,
-  nextJanitorId,
   pickNextStory,
   readPrd,
   readProgress,
@@ -32,8 +30,8 @@ import {
 export async function run(config: HarnessConfig, reporter: Reporter = silentReporter): Promise<void> {
   initEventLog(PATHS.events);
 
-  // Stamp every event in this run with a UUID. The agent subprocesses inherit
-  // it via env so events they emit (via `marmite emit-event`) match.
+  // Stamp every event in this run with a UUID, exposed to agent subprocesses
+  // via env (MARMITE_RUN_ID) so any tooling they spawn can correlate.
   const runId = crypto.randomUUID();
   setRunId(runId);
   process.env.MARMITE_RUN_ID = runId;
@@ -54,12 +52,18 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     await writeAtomicJson(PATHS.progress, { patterns: [], timeline: [] });
   }
 
-  // Validate prompt + PRD files up front. Prompts are installed by `marmite init`
-  // into `.marmite/prompts/`; if any are missing the user likely skipped init or
-  // deleted them — fail fast with a hint.
-  for (const p of [resolvePrompt("orchestrator"), resolvePrompt("builder"), resolvePrompt("verifier")]) {
-    if (!(await fileExists(p))) {
-      reporter.error(`prompt file missing — run \`marmite init\` to install agent prompts`, p, "fatal");
+  // Validate prompt + PRD files up front. Agent prompts ship with the package
+  // under the configured workflow; `.marmite/prompts/` only holds optional
+  // overrides. If the packaged prompt is missing, the `workflow` in marmite.json
+  // is a typo or names a removed workflow — fail fast with a hint.
+  const workflow = config.workflow ?? DEFAULT_WORKFLOW;
+  for (const role of ["orchestrator", "builder", "verifier"] as const) {
+    if (!(await fileExists(packagedPrompt(workflow, role)))) {
+      reporter.error(
+        `workflow "${workflow}" has no ${role} prompt — check the \`workflow\` field in marmite.json`,
+        packagedPrompt(workflow, role),
+        "fatal",
+      );
       process.exit(2);
     }
   }
@@ -98,6 +102,24 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
   const warnedBudgetThresholds = new Set<number>();
 
+  // `marmite cook --approve` clears the epic checkpoint the run is currently
+  // stopped at, then builds the next epic. Approval is an append-only entry in
+  // the progress timeline, derived from the immutable state (prd passes +
+  // existing approvals) and committed so collaborators share it. It crosses
+  // exactly the one pending checkpoint; the agent halts again at the next epic.
+  if (config.approve && config.workflow === "epic-checkpoint") {
+    const prdNow = await readPrd(config.prdPath);
+    const progressNow = await readProgress();
+    const block = prdNow.kind === "ok" ? blockingEpic(prdNow.stories, progressNow.timeline) : null;
+    if (block) {
+      await appendApproval(block.epic, gitUserName(PATHS.projectRoot));
+      gitCommit(PATHS.projectRoot, PATHS.progress, `approve: epic ${block.epic}`, reporter);
+      reporter.info(`Approved epic '${block.epic}'.`);
+    } else {
+      reporter.info("--approve: no epic checkpoint is pending; nothing to approve.");
+    }
+  }
+
   for (let i = 1; i <= config.maxIterations; i++) {
     if (runAbort.signal.aborted) break;
     const iterationStartedAtMs = Date.now();
@@ -124,33 +146,23 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       process.exit(0);
     }
 
-    // Pre-check: anything left to do? An unfinished janitor entry in
-    // progress.json blocks completion just like an unfinished story does.
+    // Pre-check: anything left to do?
     const prdState = await readPrd(config.prdPath);
     if (prdState.kind === "parse_error") {
       reporter.error(`prd.json became unreadable mid-run`, prdState.error, "fatal");
       break;
     }
-    const progressState = await readProgress();
-    if (progressState.kind === "parse_error") {
-      reporter.error(`progress.json became unreadable mid-run`, progressState.error, "fatal");
-      break;
-    }
-    const pendingJanitor = progressState.kind === "ok"
-      ? findUnfinishedJanitorEntry(progressState.timeline)
-      : null;
     const nextStory = pickNextStory(prdState.stories);
-    if (!nextStory && !pendingJanitor) {
+    if (!nextStory) {
       reporter.complete(i - 1, config.maxIterations);
       await emitEvent("run_done", { reason: "all_stories_passing" });
       reporter.finalReport(runStats);
       process.exit(0);
     }
-    // Opening picture for the orchestrate phase. Janitor takes priority when
-    // present; the agent gets the final say via current-task.json.
-    const initialTask = pendingJanitor
-      ? { kind: "janitor" as const, id: pendingJanitor.id, title: pendingJanitor.title }
-      : { kind: "story" as const, id: nextStory!.id, title: nextStory!.title };
+
+    // Opening picture for the orchestrate phase. The agent gets the final say
+    // via current-task.json.
+    const initialTask = { id: nextStory.id, title: nextStory.title };
 
     // ── Phase 0: Orchestrate ──
     const feedbackWasDetected = await detectAndAnnounceFeedback(i, reporter);
@@ -158,23 +170,13 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     await emitEvent("phase_start", { phase: "orchestrate", iteration: i, storyId: initialTask.id });
     reporter.phaseStart("orchestrate", { iteration: i, storyId: initialTask.id });
 
-    // Tail events.jsonl during the orchestrate session so sensor_start /
-    // sensor_end events emitted by the agent (via `marmite emit-event`)
-    // show up in the logger in real time.
-    const tailAbort = new AbortController();
-    tailEvents(PATHS.events, (evt) => {
-      if (evt.kind === "sensor_start") reporter.sensorStart(evt.sensor, evt.sensorType);
-      else if (evt.kind === "sensor_end") reporter.sensorEnd(evt.sensor, evt.sensorType, evt.durationMs, evt.exitCode);
-    }, tailAbort.signal);
-
-    const orchestratorPrompt = await readPromptFile(resolvePrompt("orchestrator"));
+    const orchestratorPrompt = await readPromptFile(resolvePrompt("orchestrator", workflow));
     const orchestrate = await runQueryWithRetry(orchestratorPrompt, config, {
       phase: "orchestrate",
       reporter,
       parentSignal: runAbort.signal,
       agentLabel: `orchestrator n=${i}`,
     });
-    tailAbort.abort();
     recordSession(runStats, orchestrate, "orchestrate", i, initialTask.id, reporter);
     await emitEvent("phase_end", { phase: "orchestrate", iteration: i, outcome: orchestrate.outcome });
 
@@ -182,103 +184,42 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
 
     if (runAbort.signal.aborted) break;
 
-    // Read orchestrator decision from current-task.json — determine actual task selected.
+    // Read orchestrator decision from current-task.json — determine actual story selected.
     const decisionParsed = await readCurrentTaskDecision();
-    let currentTaskKind: "story" | "janitor" | "pr-review" = initialTask.kind;
     let currentTaskId = initialTask.id;
     let currentTaskTitle = initialTask.title;
     let storySource: "orchestrator" | "fallback" = "fallback";
 
     if (decisionParsed.kind === "present") {
       const decision = decisionParsed.value;
-      // Workflow-driven halt (e.g. pr-on-checkpoint waiting for PR merge). The
-      // orchestrator agent writes this; the harness exits 0 so the next
-      // `marmite cook` invocation resumes from the same current-task.json.
+      // Epic checkpoint: the agent reached the end of an unapproved epic and
+      // asked to stop. The harness exits 0; `marmite cook --approve` resumes.
       if (decision.halt) {
-        const branchHint = decision.halt.branch ? ` (branch \`${decision.halt.branch}\`)` : "";
-        if (decision.halt.prNum !== undefined) {
-          reporter.info(
-            `\nHalting: awaiting PR review for PR #${decision.halt.prNum}${branchHint}. ` +
-              `Re-run \`marmite cook\` once the PR is merged.`,
-          );
-        } else {
-          reporter.info(
-            `\nHalting: awaiting PR review${branchHint}. ` +
-              (decision.halt.reason ? `${decision.halt.reason}\n` : "\n") +
-              `  → The GitHub CLI (\`gh\`) is not installed, so marmite could not open the PR automatically.\n` +
-              `    Install gh (https://cli.github.com — \`brew install gh\` on macOS) and \`gh auth login\`\n` +
-              `    so future checkpoints open PRs automatically. In the meantime, open & merge a PR\n` +
-              `    from the pushed branch by hand, then re-run \`marmite cook\`.`,
-          );
-        }
-        await emitEvent("run_halt", {
-          iteration: i,
-          reason: "awaiting_pr_review",
-          prNum: decision.halt.prNum,
-          branch: decision.halt.branch,
-        });
+        reporter.info(
+          `\nEpic '${decision.halt.epic}' complete — awaiting approval.\n` +
+            `  → Review the work, then re-run \`marmite cook --approve\` to build the next epic.`,
+        );
+        await emitEvent("run_halt", { iteration: i, reason: "epic_checkpoint", epic: decision.halt.epic });
         runStats.iterationsCompleted = i - 1;
         reporter.finalReport(runStats);
         process.exit(0);
       }
-      currentTaskKind = decision.kind;
-      if (decision.kind === "janitor") {
-        // Janitor entry must already exist in progress.json — the orchestrator
-        // agent appends it before writing current-task.json. Re-read to pick
-        // up any append the agent just did this phase.
-        const fresh = await readProgress();
-        const entry = fresh.kind === "ok"
-          ? fresh.timeline.find((e) => e.kind === "janitor" && e.id === decision.storyId)
-          : null;
-        if (entry && entry.kind === "janitor") {
-          currentTaskId = entry.id;
-          currentTaskTitle = entry.title;
-          storySource = "orchestrator";
-        } else {
-          reporter.error(
-            `orchestrator picked unknown janitor entry '${decision.storyId}'; no matching entry in progress.json`,
-            undefined,
-            "orchestrate",
-          );
-        }
-      } else if (decision.kind === "pr-review") {
-        // Addressing review comments on an already-passing story while the
-        // pr-on-checkpoint workflow waits for merge. storyId points at the
-        // underlying story (already passes:true); harness will NOT re-mark it
-        // or write a verify commit.
-        const decidedStory = prdState.stories.find((s) => s.id === decision.storyId);
-        if (decidedStory) {
-          currentTaskId = decidedStory.id;
-          currentTaskTitle = decidedStory.title;
-          storySource = "orchestrator";
-        } else {
-          // Fall back to the storyId verbatim — pr-review may target an epic-
-          // level identifier that isn't in prd.json.
-          currentTaskId = decision.storyId;
-          currentTaskTitle = decision.storyTitle || decision.storyId;
-          storySource = "orchestrator";
-        }
+      const decidedStory = prdState.stories.find((s) => s.id === decision.storyId);
+      if (decidedStory) {
+        currentTaskId = decidedStory.id;
+        currentTaskTitle = decidedStory.title;
+        storySource = "orchestrator";
       } else {
-        const decidedStory = prdState.stories.find((s) => s.id === decision.storyId);
-        if (decidedStory) {
-          currentTaskId = decidedStory.id;
-          currentTaskTitle = decidedStory.title;
-          storySource = "orchestrator";
-        } else {
-          reporter.error(
-            `orchestrator picked unknown story '${decision.storyId}', falling back to priority order`,
-            undefined,
-            "orchestrate",
-          );
-        }
-      }
-      if (decision.ranSensors.length > 0) {
-        await emitEvent("sensors_ran", { iteration: i, storyId: currentTaskId, sensors: decision.ranSensors });
+        reporter.error(
+          `orchestrator picked unknown story '${decision.storyId}', falling back to priority order`,
+          undefined,
+          "orchestrate",
+        );
       }
     } else if (decisionParsed.kind === "malformed") {
       reporter.error(`current-task.json malformed after orchestrate`, decisionParsed.error, "orchestrate");
     } else {
-      reporter.info("  current-task.json not found after orchestrate — using priority-order task selection.");
+      reporter.info("  current-task.json not found after orchestrate — using priority-order story selection.");
     }
 
     await emitEvent("story_selected", { iteration: i, storyId: currentTaskId, title: currentTaskTitle, source: storySource });
@@ -289,26 +230,12 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     await emitEvent("phase_start", { phase: "build", iteration: i, storyId: currentTaskId });
     reporter.phaseStart("build", { iteration: i, storyId: currentTaskId });
 
-    // Janitor tasks go to the maintainer prompt; story / pr-review tasks go to
-    // the builder. Both run in the "build" phase (same model + timeout budget).
-    const buildAgent = currentTaskKind === "janitor" ? "maintainer" : "builder";
-    const buildPromptPath = resolvePrompt(buildAgent);
-    if (!(await fileExists(buildPromptPath))) {
-      reporter.error(
-        `${buildAgent}-prompt.md missing — run \`marmite init\` to install agent prompts`,
-        buildPromptPath,
-        "fatal",
-      );
-      finalizeStoryOutcome(runStats, currentTaskId, i, false, `build_fatal:missing_prompt:${buildAgent}`);
-      runStats.iterationsCompleted = i;
-      break;
-    }
-    const builderPrompt = await readPromptFile(buildPromptPath);
+    const builderPrompt = await readPromptFile(resolvePrompt("builder", workflow));
     const build = await runQueryWithRetry(builderPrompt, config, {
       phase: "build",
       reporter,
       parentSignal: runAbort.signal,
-      agentLabel: `${buildAgent} n=${i}`,
+      agentLabel: `builder n=${i}`,
     });
     recordSession(runStats, build, "build", i, currentTaskId, reporter);
     await emitEvent("phase_end", { phase: "build", iteration: i, outcome: build.outcome });
@@ -343,7 +270,7 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
       await emitEvent("phase_start", { phase: "verify", iteration: i, attempt: fix + 1 });
       reporter.phaseStart("verify", { iteration: i, storyId: currentTaskId, attempt: fix + 1 });
 
-      const verifierPrompt = await readPromptFile(resolvePrompt("verifier"));
+      const verifierPrompt = await readPromptFile(resolvePrompt("verifier", workflow));
       const verify = await runQueryWithRetry(verifierPrompt, config, {
         phase: "verify",
         reporter,
@@ -440,21 +367,9 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
     // ── Finalize iteration ──
     runStats.iterationsCompleted = i;
     if (passed) {
-      if (currentTaskKind === "janitor") {
-        const marked = await markJanitorPassing(currentTaskId, reporter);
-        if (marked) {
-          gitCommit(PATHS.projectRoot, PATHS.progress, `verify(janitor): ${currentTaskId} - passed verification`, reporter);
-        }
-      } else if (currentTaskKind === "pr-review") {
-        // The underlying story is already passes:true; addressing PR review
-        // comments does not advance state. Skip mark-passing and the verify:
-        // commit so passedCount in Phase B (origin/base..HEAD) stays accurate
-        // and we don't refire the checkpoint on the next orchestrate.
-      } else {
-        const marked = await markStoryPassing(config, currentTaskId, reporter);
-        if (marked) {
-          gitCommit(PATHS.projectRoot, config.prdPath, `verify: ${currentTaskId} - passed verification`, reporter);
-        }
+      const marked = await markStoryPassing(config, currentTaskId, reporter);
+      if (marked) {
+        gitCommit(PATHS.projectRoot, config.prdPath, `verify: ${currentTaskId} - passed verification`, reporter);
       }
       finalizeStoryOutcome(runStats, currentTaskId, i, true);
     } else {
@@ -495,243 +410,4 @@ export async function run(config: HarnessConfig, reporter: Reporter = silentRepo
   await emitEvent("run_end", { reason: terminated ? "signal" : "max_iterations" });
   reporter.finalReport(runStats);
   process.exit(terminated ? 130 : 1);
-}
-
-// One-shot maintenance pass driven by `marmite refactor`. Skips the
-// orchestrate phase entirely — the harness writes the janitor entry +
-// current-task.json directly, then dispatches build → verify. The maintainer
-// agent runs the `janitor` skill, which enumerates sensors, fills in
-// `triggeredBy`, and applies fixes. The verifier compares post-fix counts to
-// that baseline.
-//
-// No fix loop in maintenance mode: if verify fails, exit non-zero so the user
-// can inspect and re-invoke. PRD stories are not advanced; only the new
-// janitor entry in progress.json is touched.
-export async function runMaintenance(
-  config: HarnessConfig,
-  reporter: Reporter = silentReporter,
-): Promise<void> {
-  initEventLog(PATHS.events);
-
-  const runId = crypto.randomUUID();
-  setRunId(runId);
-  process.env.MARMITE_RUN_ID = runId;
-
-  await emitEvent("run_start", {
-    runId,
-    mode: "maintenance",
-    maxIterations: 1,
-    model: config.model,
-    builderModel: config.builderModel,
-    verifierModel: config.verifierModel,
-    costBudgetUsdPerStory: config.costBudgetUsdPerStory,
-    costBudgetUsdTotal: config.costBudgetUsdTotal,
-    buildTimeoutMs: config.buildTimeoutMs,
-    verifyTimeoutMs: config.verifyTimeoutMs,
-  });
-
-  if (!(await fileExists(PATHS.progress))) {
-    await writeAtomicJson(PATHS.progress, { patterns: [], timeline: [] });
-  }
-
-  // We don't run the orchestrator agent in maintenance mode, but maintainer
-  // and verifier are still LLM-driven and need their prompts installed.
-  for (const p of [resolvePrompt("maintainer"), resolvePrompt("verifier")]) {
-    if (!(await fileExists(p))) {
-      reporter.error(`prompt file missing — run \`marmite init\` to install agent prompts`, p, "fatal");
-      process.exit(2);
-    }
-  }
-
-  const runStats: RunStats = {
-    startedAt: new Date(),
-    sessions: [],
-    storyOutcomes: [],
-    iterationsCompleted: 0,
-    storiesPassed: 0,
-    storiesFailed: 0,
-  };
-
-  const runAbort = new AbortController();
-  let terminated = false;
-  const onTerminate = () => {
-    if (terminated) return;
-    terminated = true;
-    reporter.info("\n\nReceived termination signal. Aborting in-flight sessions...\n");
-    runAbort.abort();
-    emitEvent("run_abort", { reason: "signal" });
-    setTimeout(() => {
-      reporter.finalReport(runStats);
-      process.exit(130);
-    }, 500);
-  };
-  process.on("SIGINT", onTerminate);
-  process.on("SIGTERM", onTerminate);
-
-  reporter.start(1);
-
-  const iteration = 1;
-  const iterationStartedAtMs = Date.now();
-  setCurrentIteration(iteration);
-  process.env.MARMITE_ITERATION = String(iteration);
-
-  // ── Snapshot uncommitted .marmite/ state ──
-  // The orchestrator agent's step 0 used to do this in the cook flow. We
-  // replicate it here so a user's in-progress .marmite/ edits are captured
-  // before the builder makes its own changes on top.
-  snapshotMarmiteState(reporter);
-
-  // ── Pick a janitor ID and hand off via current-task.json ──
-  // The harness owns the handoff file. It does NOT write progress.json — the
-  // maintainer (step J2 in maintainer-prompt.md) appends the JanitorEntry
-  // itself after it has run sensors and knows the real triggeredBy[] baseline.
-  // This keeps progress.json an agent-owned, append-only timeline of work
-  // actually done.
-  const progress = await readProgress();
-  if (progress.kind === "parse_error") {
-    reporter.error(`progress.json parse failure`, progress.error, "fatal");
-    await emitEvent("run_done", { reason: "maintenance_failed", iteration, failReason: "progress_parse_error" });
-    process.exit(2);
-  }
-  const janitorId = nextJanitorId(progress.kind === "ok" ? progress.timeline : [], formatDate());
-  const janitorTitle = "Maintenance pass: scheduled refactor";
-
-  await writeAtomicJson(PATHS.currentTask, {
-    version: "1",
-    storyId: janitorId,
-    storyTitle: janitorTitle,
-    kind: "janitor",
-    guidance:
-      "Maintenance pass via `marmite refactor`. The harness did NOT pre-create a JanitorEntry — " +
-      "your J1 lookup will not find one, so J2 must append it. Run every sensor in " +
-      "marmite.json.sensors[] (no threshold gating), scope findings to changed files and added/ " +
-      "modified lines vs marmite.json.baseBranch, apply the top janitor.maxFindingsPerRun fixes " +
-      "(default 5), then finalize. If no sensor produces any findings post-filter, write " +
-      "triggeredBy: [] on the new entry, skip the fix loop, and stop.",
-    sensorSummary: "",
-    ranSensors: [],
-    reasoning: `marmite refactor — single maintenance pass. Janitor ID ${janitorId} reserved by the harness; the maintainer will materialize the timeline entry.`,
-  });
-
-  await emitEvent("story_selected", { iteration, storyId: janitorId, title: janitorTitle, source: "orchestrator" });
-  reporter.iterationStart(iteration, 1, janitorId, janitorTitle);
-  await emitEvent("iteration_start", { iteration, storyId: janitorId, title: janitorTitle });
-
-  // ── Phase 1: Build (runs the janitor skill, which runs sensors) ──
-  // Tail sensor_* events so the reporter surfaces sensor activity in real
-  // time the same way it does during orchestrate in the cook flow.
-  const tailAbort = new AbortController();
-  tailEvents(PATHS.events, (evt) => {
-    if (evt.kind === "sensor_start") reporter.sensorStart(evt.sensor, evt.sensorType);
-    else if (evt.kind === "sensor_end") reporter.sensorEnd(evt.sensor, evt.sensorType, evt.durationMs, evt.exitCode);
-  }, tailAbort.signal);
-
-  await emitEvent("phase_start", { phase: "build", iteration, storyId: janitorId });
-  reporter.phaseStart("build", { iteration, storyId: janitorId });
-
-  const maintainerPrompt = await readPromptFile(resolvePrompt("maintainer"));
-  const build = await runQueryWithRetry(maintainerPrompt, config, {
-    phase: "build",
-    reporter,
-    parentSignal: runAbort.signal,
-    agentLabel: `maintainer`,
-  });
-  recordSession(runStats, build, "build", iteration, janitorId, reporter);
-  await emitEvent("phase_end", { phase: "build", iteration, outcome: build.outcome });
-  tailAbort.abort();
-
-  if (runAbort.signal.aborted) {
-    reporter.finalReport(runStats);
-    process.exit(130);
-  }
-
-  let passed = false;
-  let failReason: string | undefined;
-
-  if (build.outcome === "fatal_error") {
-    failReason = `build_fatal:${build.errorMessage?.slice(0, 60) ?? ""}`;
-  } else {
-    await sleep(1000);
-
-    // ── Phase 2: Verify (single shot — no fix loop in maintenance mode) ──
-    await emitEvent("phase_start", { phase: "verify", iteration, attempt: 1 });
-    reporter.phaseStart("verify", { iteration, storyId: janitorId, attempt: 1 });
-
-    const verifierPrompt = await readPromptFile(resolvePrompt("verifier"));
-    const verify = await runQueryWithRetry(verifierPrompt, config, {
-      phase: "verify",
-      reporter,
-      parentSignal: runAbort.signal,
-      agentLabel: `verifier (maintenance)`,
-    });
-    recordSession(runStats, verify, "verify", iteration, janitorId, reporter, 1);
-    await emitEvent("phase_end", { phase: "verify", iteration, attempt: 1, outcome: verify.outcome });
-
-    if (verify.outcome !== "success") {
-      failReason = `verify_${verify.outcome}`;
-    } else {
-      const parsed = await readVerificationResultFile();
-      if (parsed.kind === "missing") {
-        failReason = "missing_results";
-      } else if (parsed.kind === "malformed") {
-        reporter.error(`current-task.json verdict malformed`, parsed.error, "verify");
-        failReason = "malformed_results";
-      } else {
-        const v = parsed.value;
-        await emitEvent("verification_verdict", {
-          iteration,
-          storyId: v.storyId,
-          verdict: v.verdict,
-          qaPass: v.qaResults.filter((q) => q.passed).length,
-          qaFail: v.qaResults.filter((q) => !q.passed).length,
-        });
-        if (v.verdict === "pass") passed = true;
-        else failReason = v.verdict;
-      }
-    }
-  }
-
-  runStats.iterationsCompleted = iteration;
-  if (passed) {
-    const marked = await markJanitorPassing(janitorId, reporter);
-    if (marked) {
-      gitCommit(PATHS.projectRoot, PATHS.progress, `verify(janitor): ${janitorId} - passed maintenance`, reporter);
-    }
-  }
-  finalizeStoryOutcome(runStats, janitorId, iteration, passed, failReason);
-
-  reporter.iterationEnd({
-    iteration,
-    storyId: janitorId,
-    storyTitle: janitorTitle,
-    passed,
-    reason: failReason,
-    durationMs: Date.now() - iterationStartedAtMs,
-    costUsd: iterationCost(runStats, iteration),
-    fixAttempts: 0,
-  });
-
-  await emitEvent("run_done", {
-    reason: passed ? "maintenance_complete" : "maintenance_failed",
-    iteration,
-    ...(passed ? {} : { failReason: failReason ?? "unknown" }),
-  });
-  setCurrentIteration(null);
-  reporter.finalReport(runStats);
-  process.exit(passed ? 0 : 1);
-}
-
-// Commits any uncommitted changes under .marmite/ before a maintenance run.
-// In the cook flow the orchestrator agent does this in step 0; for `marmite
-// refactor` we skip orchestrate, so the harness has to do it itself. No-ops
-// when the working tree under .marmite/ is clean.
-function snapshotMarmiteState(reporter: Reporter): void {
-  const cwd = PATHS.projectRoot;
-  const status = spawnSync("git", ["status", "--porcelain", ".marmite/"], { cwd, encoding: "utf8" });
-  if (status.status !== 0) {
-    // Not a git repo, or git isn't on PATH — non-fatal; just skip.
-    return;
-  }
-  if (!status.stdout.trim()) return;
-  gitCommit(cwd, ".marmite", "chore(marmite): snapshot before maintenance pass", reporter);
 }

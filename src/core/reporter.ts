@@ -43,10 +43,6 @@ export interface Reporter {
   gitCommit(sha: string, message: string): void;
   feedbackDetected(bytes: number, preview: string): void;
   feedbackForceCleared(): void;
-  // Surfaced from events.jsonl during the orchestrate phase (the agent emits
-  // these around each sensor it runs via `marmite emit-event`).
-  sensorStart(sensor: string, sensorType?: string): void;
-  sensorEnd(sensor: string, sensorType: string | undefined, durationMs: number, exitCode: number): void;
   budgetExceeded(storyId: string, spent: number, budget: number): void;
   // Called when a phase hits a transient error and the harness is about to
   // sleep before retrying. Terse renderers should reflect the wait in the
@@ -78,8 +74,6 @@ export const silentReporter: Reporter = {
   gitCommit: () => {},
   feedbackDetected: () => {},
   feedbackForceCleared: () => {},
-  sensorStart: () => {},
-  sensorEnd: () => {},
   budgetExceeded: () => {},
   transientRetry: () => {},
   usageLimitWait: () => {},

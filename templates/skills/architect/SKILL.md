@@ -1,6 +1,6 @@
 ---
 name: architect
-description: "Fix structural violations and enforce the layered architecture. Use when the drift sensor detects import violations, circular dependencies, or misplaced domain logic."
+description: "Fix structural violations and enforce the layered architecture. Use for import violations, circular dependencies, or misplaced domain logic."
 ---
 
 # Architect
@@ -11,7 +11,7 @@ Move misplaced code to the correct layer. Introduce interfaces at domain boundar
 
 ## Rules
 
-- Fix all layer violations flagged by the drift sensor
+- Fix all layer violations (import-boundary breaks, circular dependencies)
 - Domain layer must have zero external dependencies
 - Infrastructure implements domain interfaces — never the reverse
 - Application layer orchestrates domain logic — no business rules here
