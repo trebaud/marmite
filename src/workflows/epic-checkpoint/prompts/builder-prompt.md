@@ -8,13 +8,12 @@ Run `test -s .marmite/feedback.md && cat .marmite/feedback.md`. If it exists and
 
 ## Your task
 
-1. `pwd`, then read `.marmite/current-task.json` (full absolute path) — your task, acceptance criteria, and `guidance`.
-2. Read `.marmite/progress.json` — scan `patterns[]` for conventions to follow and recent `timeline[]` for context.
-3. If `current-task.json` has a `verdict` field, the verifier already reviewed this task — read `summary`/`qaResults` and address every issue before committing.
-4. Implement the story. Application code lives where `marmite.json`'s `app` field points — read it if you don't know it. Install dev deps in that workspace, not the repo root (unless it's a single root workspace).
-5. Run the project's quality checks (typecheck, lint, test).
-6. Append a `StoryEntry` to `.marmite/progress.json` (see below).
-7. If checks pass, commit ALL changes — including everything under `.marmite/` — with message `feat: [Story ID] - [Story Title]`. Stage `.marmite/` explicitly (`git add .marmite/ <paths>`). Never gitignore `.marmite/` files or leave them out of the commit.
+1. `pwd`, then read `.marmite/current-task.json` (full absolute path), your task, acceptance criteria, and `guidance`.
+2. Read `.marmite/progress.json`, scan `patterns[]` for conventions to follow and recent `timeline[]` for context.
+3. If `current-task.json` has a `verdict` field, the verifier already reviewed this task , read `summary`/`qaResults` and address every issue before committing.
+4. Implement the story. Application code lives where `marmite.json`'s `app` field points, read it if you don't know it.
+5. Append a `StoryEntry` to `.marmite/progress.json` (see below).
+6. If checks pass, commit ALL changes, including everything under `.marmite/`, with message `feat: [Story ID] - [Story Title]`. Stage `.marmite/` explicitly (`git add .marmite/ <paths>`). Never gitignore `.marmite/` files or leave them out of the commit.
 
 ## Progress report format
 
